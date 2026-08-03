@@ -24,15 +24,18 @@ logger = logging.getLogger(__name__)
 
 
 class IntentCategory(Enum):
-    QUERY      = "query"       # 查询信息
-    COMPLAINT  = "complaint"   # 投诉不满
-    REQUEST    = "request"     # 请求操作
-    GREETING   = "greeting"    # 问候
-    ESCALATION = "escalation"  # 要求升级/转人工
-    TECHNICAL  = "technical"   # 技术问题
-    BILLING    = "billing"     # 账单/退款
-    ACCOUNT    = "account"     # 账户管理
-    FEEDBACK   = "feedback"    # 正面反馈
+    # 通用维度（与具体业务领域无关）
+    QUERY      = "query"        # 信息查询
+    REQUEST    = "request"      # 请求操作
+    GREETING   = "greeting"     # 问候
+    COMPLAINT  = "complaint"    # 投诉不满
+    FEEDBACK   = "feedback"     # 正面反馈
+    ESCALATION = "escalation"   # 转人工/升级
+    # 西电校园场景的领域意图
+    ACADEMIC   = "academic"     # 学业支持：选课/课表/考试/成绩/绩点/重修
+    CAMPUS_LIFE = "campus_life" # 校园生活：宿舍/食堂/校车/校园卡/快递
+    AFFAIRS    = "affairs"      # 校务咨询：校历/请假/奖学金/办事流程/注册
+    IT_HELP    = "it_help"      # IT 助手：教务系统/校园网/VPN/邮箱/统一身份认证
     OTHER      = "other"
 
 
@@ -54,23 +57,25 @@ class IntentResult:
 
 
 # ── Few-shot 模板（同时用于 LLM 示例和 Embedding 匹配）────────────────────────
+# 围绕西电校园场景的典型表达，覆盖四个领域 Agent + 通用维度。
 _TEMPLATES: Dict[IntentCategory, List[str]] = {
-    IntentCategory.QUERY:      ["我的订单状态是什么？", "如何重置密码？", "快递什么时候到？"],
-    IntentCategory.COMPLAINT:  ["等了好几个小时！", "服务太差了！", "一直没人处理！"],
-    IntentCategory.REQUEST:    ["帮我取消订单", "我需要修改地址", "请协助退款"],
-    IntentCategory.GREETING:   ["你好", "嗨，有人吗", "早上好"],
-    IntentCategory.ESCALATION: ["我要投诉！", "转人工客服", "找你们经理"],
-    IntentCategory.TECHNICAL:  ["应用一直崩溃", "无法登录", "出现500错误"],
-    IntentCategory.BILLING:    ["为什么扣了两次款？", "申请退款", "发票问题"],
-    IntentCategory.ACCOUNT:    ["修改邮箱", "注销账户", "更新个人信息"],
-    IntentCategory.FEEDBACK:   ["服务很棒！", "非常满意", "给个好评"],
+    IntentCategory.QUERY:       ["西电校历这学期什么时候放假？", "图书馆几点开门？", "南校区快递站在哪？"],
+    IntentCategory.REQUEST:     ["帮我查一下选课时间", "我要请假怎么走流程", "校园卡丢了怎么补办"],
+    IntentCategory.GREETING:    ["你好", "嗨", "在吗", "早上好"],
+    IntentCategory.COMPLAINT:   ["宿舍热水一直不来！", "校车等了半小时还没来", "食堂排队太久了"],
+    IntentCategory.FEEDBACK:    ["这个助手很实用！", "回答得很清楚，谢谢", "帮我大忙了"],
+    IntentCategory.ESCALATION:  ["我要找辅导员", "转人工老师", "这个问题得找教务处"],
+    IntentCategory.ACADEMIC:    ["这学期选课什么时候开始？", "绩点怎么算的？", "重修怎么报名？", "保研有什么条件？"],
+    IntentCategory.CAMPUS_LIFE: ["南校区食堂几点关门？", "校车最后一班几点？", "宿舍怎么报修？", "校园卡在哪充值？"],
+    IntentCategory.AFFAIRS:     ["奖学金什么时候评？", "请假流程怎么走？", "在读证明在哪开？", "学费缴费方式有哪些？"],
+    IntentCategory.IT_HELP:     ["教务系统登录不上", "校园网连不上", "VPN怎么配置？", "学校邮箱收不到邮件"],
 }
 
 # 紧急关键词
 _URGENCY_KEYWORDS = {
-    UrgencyLevel.CRITICAL: ["紧急", "emergency", "urgent", "asap", "立刻"],
-    UrgencyLevel.HIGH:     ["今天", "马上", "尽快", "hurry", "now"],
-    UrgencyLevel.MEDIUM:   ["这周", "soon", "快点"],
+    UrgencyLevel.CRITICAL: ["紧急", "emergency", "urgent", "asap", "立刻", "马上要交"],
+    UrgencyLevel.HIGH:     ["今天", "马上", "尽快", "hurry", "now", "截止前"],
+    UrgencyLevel.MEDIUM:   ["这周", "soon", "快点", "这学期"],
 }
 
 
@@ -195,7 +200,7 @@ class IntentRecognizer:
                 for m in history[-3:]
             )
 
-        prompt = f"""你是客服意图分析专家。根据示例判断用户意图，返回 JSON。
+        prompt = f"""你是西电校园智慧助手（EchoGuide）的意图分析模块。根据示例判断用户意图，返回 JSON。
 
 示例:
 {examples}
@@ -246,20 +251,37 @@ class IntentRecognizer:
             return {"intent": IntentCategory.OTHER, "confidence": 0.0}
 
     def _pattern_recognize(self, message: str) -> Dict[str, Any]:
-        """策略 3：关键词模式匹配（同步，零延迟兜底）。"""
+        """
+        策略 3：关键词模式匹配（同步，零延迟兜底）。
+
+        领域关键词（选课/食堂/请假/教务系统等）比通用疑问词（怎么/几点/什么时候）
+        更具判别力，因此先匹配领域意图；无领域命中时才用通用意图兜底。
+        """
         msg = message.lower()
-        patterns = {
-            IntentCategory.ESCALATION: ["投诉", "经理", "转人工", "supervisor"],
-            IntentCategory.COMPLAINT:  ["太差", "糟糕", "horrible", "等了很久"],
-            IntentCategory.QUERY:      ["?", "？", "怎么", "什么", "status"],
-            IntentCategory.REQUEST:    ["帮我", "需要", "please", "help"],
-            IntentCategory.GREETING:   ["你好", "嗨", "hello", "hi"],
-            IntentCategory.BILLING:    ["退款", "扣款", "发票", "refund"],
-            IntentCategory.TECHNICAL:  ["崩溃", "报错", "error", "crash"],
-            IntentCategory.ACCOUNT:    ["密码", "邮箱", "账户", "password"],
+        domain_patterns = {
+            IntentCategory.ACADEMIC:   ["选课", "课表", "考试", "成绩", "绩点", "学分", "重修", "保研", "转专业", "挂科"],
+            IntentCategory.CAMPUS_LIFE:["食堂", "宿舍", "校车", "校园卡", "快递", "水电", "超市", "运动场", "社团"],
+            IntentCategory.AFFAIRS:    ["校历", "请假", "奖学金", "助学金", "证明", "缴费", "学费", "注册", "办事"],
+            IntentCategory.IT_HELP:    ["教务系统", "校园网", "vpn", "邮箱", "登录不上", "报错", "密码重置", "统一身份"],
+            IntentCategory.ESCALATION: ["转人工", "找辅导员", "教务处", "找老师", "escalate"],
         }
         best_cat, best_score = IntentCategory.OTHER, 0.0
-        for cat, kws in patterns.items():
+        for cat, kws in domain_patterns.items():
+            hits = sum(1 for kw in kws if kw in msg)
+            if hits:
+                score = hits / len(kws)
+                if score > best_score:
+                    best_score, best_cat = score, cat
+        if best_cat is not IntentCategory.OTHER:
+            return {"intent": best_cat, "confidence": best_score}
+
+        generic_patterns = {
+            IntentCategory.COMPLAINT:  ["太差", "糟糕", "等了很久", "一直没人"],
+            IntentCategory.QUERY:      ["?", "？", "怎么", "什么", "几点", "在哪", "什么时候"],
+            IntentCategory.REQUEST:    ["帮我", "需要", "我要", "怎么申请", "怎么办理"],
+            IntentCategory.GREETING:   ["你好", "嗨", "hello", "hi", "在吗"],
+        }
+        for cat, kws in generic_patterns.items():
             hits = sum(1 for kw in kws if kw in msg)
             if hits:
                 score = hits / len(kws)
@@ -294,11 +316,12 @@ class IntentRecognizer:
     # ── 实体提取 ──────────────────────────────────────────────────────────────
 
     async def _extract_entities(self, message: str) -> Dict[str, List[str]]:
-        """用 LLM 从消息中提取结构化实体。"""
+        """用 LLM 从消息中提取结构化实体（西电校园场景）。"""
         message = self._clean_text(message)
-        prompt = f"""从客服消息中提取实体，返回 JSON（字段值为列表，没有则为空列表）:
+        prompt = f"""从西电校园用户消息中提取实体，返回 JSON（字段值为列表，没有则为空列表）:
 消息: "{message}"
-格式: {{"order_id":[],"product":[],"date":[],"amount":[],"error_code":[]}}"""
+格式: {{"course":[],"term":[],"location":[],"campus":[],"system":[]}}
+（course=课程名, term=学期/时间, location=地点, campus=南校区/北校区, system=教务系统/校园网/VPN/邮箱等）"""
         prompt = self._clean_text(prompt)
         try:
             resp = await self.client.messages.create(
@@ -309,7 +332,7 @@ class IntentRecognizer:
             s, e = raw.find("{"), raw.rfind("}") + 1
             return json.loads(raw[s:e])
         except Exception:
-            return {"order_id": [], "product": [], "date": [], "amount": [], "error_code": []}
+            return {"course": [], "term": [], "location": [], "campus": [], "system": []}
 
     # ── 辅助 ──────────────────────────────────────────────────────────────────
 

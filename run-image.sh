@@ -1,18 +1,18 @@
 #!/bin/bash
 
-# EchoMind 镜像运行脚本
+# EchoGuide 镜像运行脚本
 # 提供多种运行配置选项
 
 set -e
 
 # 配置
-IMAGE_NAME="echomind"
-CONTAINER_NAME="echomind-app"
+IMAGE_NAME="echoguide"
+CONTAINER_NAME="echoguide-app"
 VERSION=${VERSION:-latest}
 REGISTRY=""  # 如果镜像在私有仓库，设置为 registry.example.com/
 
 # 默认端口映射
-API_PORT=8000
+API_PORT=8100
 PROMETHEUS_PORT=9090
 
 # 默认卷映射
@@ -40,7 +40,7 @@ print_error() {
 
 show_help() {
     cat << EOF
-EchoMind Docker 镜像运行工具
+EchoGuide Docker 镜像运行工具
 
 用法: ./run-image.sh [命令] [选项]
 

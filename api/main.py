@@ -1,7 +1,7 @@
 """
-EchoMind 智能客服系统 — FastAPI 入口
+西电校园智慧助手（EchoGuide）— FastAPI 入口
 
-启动时打印小熊饼干图案。
+启动时打印校徽风格图案。
 所有核心组件在 lifespan 中初始化，通过环境变量配置。
 """
 import asyncio
@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 BANNER = r"""
     ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ
    ╔══════════════════════╗
-   ║   EchoMind  v2.0     ║
-   ║   智能客服 AI 系统    ║
+   ║  EchoGuide  v2.0     ║
+   ║  西电校园智慧助手     ║
    ╚══════════════════════╝
     ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ
 """
@@ -49,6 +49,7 @@ _memory       = None
 _tool_manager = None
 _monitor      = None
 _evaluator    = None
+_skill_manager = None
 
 
 def _anthropic_cfg() -> Dict[str, Any]:
@@ -67,7 +68,7 @@ def _anthropic_cfg() -> Dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _orchestrator, _memory, _tool_manager, _monitor, _evaluator
+    global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _skill_manager
 
     print(BANNER, flush=True)
 
@@ -78,6 +79,7 @@ async def lifespan(app: FastAPI):
     from mcp.tool_manager import MCPToolManager, Tool
     from memory.conversation_memory import MemoryManager
     from monitor.performance_monitor import PerformanceMonitor
+    from core.skill_loader import SkillManager
 
     cfg = _anthropic_cfg()
     logger.info(f"模型: {cfg['model']}  base_url: {cfg.get('base_url', '(官方)')}")
@@ -89,11 +91,20 @@ async def lifespan(app: FastAPI):
         model=cfg["model"],
     )
 
+    # Skills：启动时从目录加载业务能力说明，并在 Agent 调用 LLM 时动态注入。
+    skills_dir = os.getenv("ECHOGUIDE_SKILLS_DIR", str(pathlib.Path(_ROOT) / "skills"))
+    _skill_manager = SkillManager(
+        root_dir=skills_dir,
+        max_prompt_chars=int(os.getenv("ECHOGUIDE_SKILLS_MAX_PROMPT_CHARS", "5000")),
+    )
+    _skill_manager.load()
+
     # Agent 编排器
     _orchestrator = AgentOrchestrator(
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url"),
         model=cfg["model"],
+        skill_manager=_skill_manager,
     )
 
     # 记忆管理器（Redis 工作记忆 + ChromaDB 情景记忆/用户画像）
@@ -124,7 +135,7 @@ async def lifespan(app: FastAPI):
         query = params.get("query", "")
         return [{
             "title": "知识库降级结果",
-            "content": f"知识库暂时不可用，未能完成对“{query}”的语义检索。请稍后重试，或转人工客服确认。",
+            "content": f"知识库暂时不可用，未能完成对“{query}”的语义检索。请稍后重试，或联系辅导员/教务老师确认。",
             "score": 0.0,
             "fallback": True,
             "error": error,
@@ -168,16 +179,16 @@ async def lifespan(app: FastAPI):
         baseline_path=os.getenv("EVAL_BASELINE_PATH", "/app/data/eval/baseline.json"),
     )
 
-    logger.info("EchoMind 已就绪")
+    logger.info("EchoGuide 西电校园智慧助手已就绪")
     yield
 
     await _monitor.stop()
-    logger.info("EchoMind 已关闭")
+    logger.info("EchoGuide 已关闭")
 
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="EchoMind 智能客服",
+    title="西电校园智慧助手 EchoGuide",
     version="2.0.0",
     lifespan=lifespan,
     docs_url="/docs",
@@ -214,6 +225,25 @@ async def health():
     if _orchestrator is None:
         raise HTTPException(503, "服务未就绪")
     return {"status": "ok", "agents": _orchestrator.get_stats()}
+
+
+@app.get("/skills", tags=["Skills"])
+async def skills_summary():
+    """查看当前已加载的 Skills，便于确认热加载结果和排查解析错误。"""
+    if _skill_manager is None:
+        raise HTTPException(503, "Skills 未初始化")
+    return _skill_manager.summary()
+
+
+@app.post("/skills/reload", tags=["Skills"])
+async def reload_skills():
+    """运行时重新扫描 Skill 目录，不需要重启服务。"""
+    if _skill_manager is None:
+        raise HTTPException(503, "Skills 未初始化")
+    _skill_manager.reload()
+    if _orchestrator is not None:
+        _orchestrator.set_skill_manager(_skill_manager)
+    return _skill_manager.summary()
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -304,7 +334,7 @@ async def _build_knowledge_context(message: str, top_k: int = 3) -> tuple[str, b
 
         if not used:
             return "", False
-        parts.append("请优先依据以上知识库内容回答；如果知识库内容不足，再结合通用客服能力说明。")
+        parts.append("请优先依据以上知识库内容回答；如果知识库内容不足，再结合西电校园常识说明，并提示以学校官方通知为准。")
         return "\n".join(parts), True
     except Exception as ex:
         logger.warning(f"构建知识库上下文失败: {ex}")
@@ -312,19 +342,20 @@ async def _build_knowledge_context(message: str, top_k: int = 3) -> tuple[str, b
 
 
 def _should_use_knowledge(message: str) -> bool:
-    """跳过纯寒暄，业务类问题才检索知识库，避免无关 RAG 干扰回复。"""
+    """跳过纯寒暄，校园业务类问题才检索知识库，避免无关 RAG 干扰回复。"""
     msg = (message or "").strip().lower()
     if not msg:
         return False
     greetings = {"你好", "您好", "嗨", "hi", "hello", "hey", "早上好", "晚上好"}
     if msg in greetings:
         return False
-    business_keywords = [
-        "退款", "订单", "物流", "配送", "发票", "扣款", "支付", "账单", "订阅",
-        "登录", "报错", "错误", "崩溃", "会员", "积分", "账户", "密码", "地址",
-        "refund", "order", "invoice", "payment", "error", "login",
+    campus_keywords = [
+        "选课", "课表", "考试", "成绩", "绩点", "学分", "重修", "保研", "转专业",
+        "食堂", "宿舍", "校车", "校园卡", "快递", "水电", "图书馆", "自习",
+        "校历", "请假", "奖学金", "助学金", "证明", "缴费", "学费", "注册",
+        "教务系统", "校园网", "vpn", "邮箱", "统一身份", "报错", "登录不上",
     ]
-    return len(msg) >= 4 or any(kw in msg for kw in business_keywords)
+    return len(msg) >= 4 or any(kw in msg for kw in campus_keywords)
 
 
 @app.get("/monitor")
@@ -396,8 +427,8 @@ async def add_knowledge(body: BatchDocInput):
     ```json
     {
       "documents": [
-        {"title": "退款政策", "content": "用户在购买后 7 天内可以申请无理由退款..."},
-        {"title": "配送说明", "content": "标准配送 3-5 个工作日..."}
+        {"title": "选课指南", "content": "西电选课通过教务系统进行，分预选、正选、退改选阶段..."},
+        {"title": "校园穿梭车", "content": "校园穿梭车连接南校区与北校区，工作日班次较多..."}
       ]
     }
     ```
@@ -518,13 +549,24 @@ async def run_eval(body: Optional[EvalRunInput] = None):
 # ── 交互式 CLI ────────────────────────────────────────────────────────────────
 async def _cli():
     print(BANNER)
-    print("EchoMind CLI — 输入 quit 退出\n")
+    print("EchoGuide CLI — 输入 quit 退出\n")
 
     from agents.agent_orchestrator import AgentOrchestrator, Request
     from memory.conversation_memory import MemoryManager, MsgRole
+    from core.skill_loader import SkillManager
 
     cfg = _anthropic_cfg()
-    orch = AgentOrchestrator(api_key=cfg["api_key"], base_url=cfg.get("base_url"), model=cfg["model"])
+    skill_manager = SkillManager(
+        root_dir=os.getenv("ECHOGUIDE_SKILLS_DIR", str(pathlib.Path(_ROOT) / "skills")),
+        max_prompt_chars=int(os.getenv("ECHOGUIDE_SKILLS_MAX_PROMPT_CHARS", "5000")),
+    )
+    skill_manager.load()
+    orch = AgentOrchestrator(
+        api_key=cfg["api_key"],
+        base_url=cfg.get("base_url"),
+        model=cfg["model"],
+        skill_manager=skill_manager,
+    )
     mem  = MemoryManager(
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         chroma_host=os.getenv("CHROMA_HOST", "localhost"),
@@ -558,7 +600,7 @@ async def _cli():
         await mem.add_message(user_id, conv_id, MsgRole.USER, msg)
         await mem.add_message(user_id, conv_id, MsgRole.ASSISTANT, result.response)
 
-        print(f"\nEchoMind [{result.agent_type.value}]: {result.response}\n")
+        print(f"\nEchoGuide [{result.agent_type.value}]: {result.response}\n")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# EchoMind 智能客服系统 - Docker 部署脚本
+# EchoGuide 智能客服系统 - Docker 部署脚本
 
 
 set -e
@@ -12,7 +12,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # 配置
-PROJECT_NAME="echomind"
+PROJECT_NAME="echoguide"
 COMPOSE_FILE="docker-compose.yml"
 ENV_FILE=".env"
 
@@ -38,7 +38,7 @@ check_dependencies() {
         exit 1
     fi
 
-    if ! command -v docker-compose &> /dev/null; then
+    if ! command -v docker compose &> /dev/null; then
         print_error "Docker Compose 未安装，请先安装 Docker Compose"
         exit 1
     fi
@@ -84,7 +84,7 @@ check_env_file() {
 build_images() {
     print_info "构建 Docker 镜像..."
 
-    docker-compose build --no-cache
+    docker compose build --no-cache
 
     print_info "镜像构建完成"
 }
@@ -93,7 +93,7 @@ build_images() {
 start_services() {
     print_info "启动服务..."
 
-    docker-compose up -d
+    docker compose up -d
 
     print_info "服务启动完成"
 }
@@ -102,7 +102,7 @@ start_services() {
 stop_services() {
     print_info "停止服务..."
 
-    docker-compose down
+    docker compose down
 
     print_info "服务已停止"
 }
@@ -111,7 +111,7 @@ stop_services() {
 restart_services() {
     print_info "重启服务..."
 
-    docker-compose restart
+    docker compose restart
 
     print_info "服务已重启"
 }
@@ -120,7 +120,7 @@ restart_services() {
 status_services() {
     print_info "服务状态:"
 
-    docker-compose ps
+    docker compose ps
 }
 
 # 函数：查看日志
@@ -129,10 +129,10 @@ view_logs() {
 
     if [ -z "$service" ]; then
         print_info "查看所有服务日志..."
-        docker-compose logs -f
+        docker compose logs -f
     else
         print_info "查看 $service 服务日志..."
-        docker-compose logs -f "$service"
+        docker compose logs -f "$service"
     fi
 }
 
@@ -151,7 +151,7 @@ health_check() {
     fi
 
     # 检查 Redis
-    if docker-compose exec -T redis redis-cli ping | grep -q PONG; then
+    if docker compose exec -T redis redis-cli ping | grep -q PONG; then
         print_info "✓ Redis 健康"
     else
         print_error "✗ Redis 不健康"
@@ -180,7 +180,7 @@ cleanup() {
     echo
 
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        docker-compose down -v
+        docker compose down -v
         print_info "清理完成"
     else
         print_info "清理已取消"
@@ -196,11 +196,11 @@ backup_data() {
     mkdir -p "$backup_dir"
 
     # 备份 Redis 数据
-    docker-compose exec -T redis redis-cli SAVE
-    docker cp echomind-redis:/data/dump.rdb "$backup_dir/"
+    docker compose exec -T redis redis-cli SAVE
+    docker cp echoguide-redis:/data/dump.rdb "$backup_dir/"
 
     # 备份 ChromaDB 数据
-    docker cp echomind-chromadb:/chroma/chroma "$backup_dir/"
+    docker cp echoguide-chromadb:/chroma/chroma "$backup_dir/"
 
     # 备份配置
     cp .env "$backup_dir/"
@@ -229,13 +229,13 @@ restore_data() {
 
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # 停止服务
-        docker-compose stop
+        docker compose stop
 
         # 恢复 Redis 数据
-        docker cp "$backup_dir/dump.rdb" echomind-redis:/data/
+        docker cp "$backup_dir/dump.rdb" echoguide-redis:/data/
 
         # 恢复 ChromaDB 数据
-        docker cp "$backup_dir/chroma" echomind-chromadb:/chroma/
+        docker cp "$backup_dir/chroma" echoguide-chromadb:/chroma/
 
         # 恢复配置
         cp "$backup_dir/.env" .env
@@ -243,7 +243,7 @@ restore_data() {
         cp -r "$backup_dir/config" config
 
         # 启动服务
-        docker-compose start
+        docker compose start
 
         print_info "恢复完成"
     else
@@ -254,7 +254,7 @@ restore_data() {
 # 函数：显示帮助信息
 show_help() {
     cat << EOF
-EchoMind 智能客服系统 - Docker 部署脚本
+EchoGuide 智能客服系统 - Docker 部署脚本
 
 用法: ./docker-deploy.sh [命令]
 
@@ -275,7 +275,7 @@ EchoMind 智能客服系统 - Docker 部署脚本
 示例:
     ./docker-deploy.sh install
     ./docker-deploy.sh start
-    ./docker-deploy.sh logs echomind
+    ./docker-deploy.sh logs echoguide
     ./docker-deploy.sh backup
     ./docker-deploy.sh restore backups/20231201_120000
 

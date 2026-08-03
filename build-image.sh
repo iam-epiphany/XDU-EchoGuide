@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# EchoMind 镜像构建脚本
+# EchoGuide 镜像构建脚本
 # 提供多种构建选项供不同场景使用
 
 set -e
@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # 配置
-IMAGE_NAME="echomind"
+IMAGE_NAME="echoguide"
 REGISTRY=""  # 如果需要推送到私有仓库，设置为 registry.example.com/
 VERSION=${VERSION:-latest}
 BUILD_ARGS=""
@@ -37,7 +37,7 @@ print_step() {
 # 显示使用帮助
 show_help() {
     cat << EOF
-EchoMind Docker 镜像构建工具
+EchoGuide Docker 镜像构建工具
 
 用法: ./build-image.sh [命令] [选项]
 

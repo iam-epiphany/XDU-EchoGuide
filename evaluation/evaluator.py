@@ -90,7 +90,7 @@ class LLMJudge:
     注意：LLM Judge 本身也有偏差，建议定期用人工标注校准。
     """
 
-    JUDGE_PROMPT = """你是一个客服质量评估专家。请对以下客服响应进行评分。
+    JUDGE_PROMPT = """你是一个西电校园助手答复质量评估专家。请对以下校园助手响应进行评分。
 
 用户问题: {question}
 Agent 响应: {response}
@@ -477,20 +477,24 @@ class EndToEndEvaluator:
 # ── 内置测试用例（开箱即用）──────────────────────────────────────────────────
 
 DEFAULT_INTENT_CASES: List[IntentTestCase] = [
-    IntentTestCase("我的订单什么时候到？",       "query"),
-    IntentTestCase("帮我取消订单",               "request"),
-    IntentTestCase("你们服务太差了！",            "complaint"),
-    IntentTestCase("应用一直报500错误",           "technical"),
-    IntentTestCase("为什么扣了两次款？",          "billing"),
-    IntentTestCase("我要投诉，转人工！",          "escalation"),
+    IntentTestCase("这学期选课什么时候开始？",   "academic"),
+    IntentTestCase("帮我查一下课表",              "request"),
+    IntentTestCase("南校区食堂几点关门？",        "campus_life"),
+    IntentTestCase("校园卡丢了怎么补办？",        "campus_life"),
+    IntentTestCase("教务系统登录不上怎么办？",    "it_help"),
+    IntentTestCase("校园网连不上",                "it_help"),
+    IntentTestCase("奖学金什么时候评定？",        "affairs"),
+    IntentTestCase("请假流程怎么走？",            "affairs"),
+    IntentTestCase("我要找辅导员",                "escalation"),
     IntentTestCase("你好",                        "greeting"),
-    IntentTestCase("修改我的邮箱地址",            "account"),
+    IntentTestCase("这个助手很实用！",            "feedback"),
+    IntentTestCase("宿舍热水一直不来！",          "complaint"),
 ]
 
 DEFAULT_DIALOG_CASES: List[Dict[str, Any]] = [
-    {"question": "我的订单 #12345 还没到，已经超时了"},
-    {"question": "应用登录一直报错 401"},
-    {"question": "为什么这个月多扣了 50 块钱？"},
-    {"question": "帮我把收货地址改成北京市朝阳区"},
-    {"turns": ["你好，我想退款", "订单号是 #12345", "退款多久能到账？"]},
+    {"question": "这学期选课什么时候开始？我想提前准备一下"},
+    {"question": "教务系统一直登录不上，报错说密码错误"},
+    {"question": "南校区食堂晚上几点关门？"},
+    {"question": "我要办在读证明，需要带什么材料？"},
+    {"turns": ["你好，我想问下校车时刻", "南校区到北校区的", "末班车是几点？"]},
 ]

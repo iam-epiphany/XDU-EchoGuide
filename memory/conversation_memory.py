@@ -9,7 +9,7 @@
 关键设计：
   - 上下文构建时三级记忆融合，按重要性 + 时效性排序
   - 工作记忆超过阈值时自动压缩（LLM 摘要），防止 context 爆炸
-  - 所有 Embedding 通过 Anthropic API 生成，无本地模型
+  - Embedding 由 ChromaDB 内置模型生成（all-MiniLM-L6-v2），不依赖外部 Embedding API
 """
 import hashlib
 import json
@@ -101,7 +101,12 @@ class MemoryManager:
 
         # ChromaDB：优先连接独立服务（docker compose 模式），连不上则降级为本地嵌入式
         try:
-            chroma = chromadb.HttpClient(host=chroma_host, port=chroma_port)
+            # HttpClient 默认也会初始化 ChromaDB telemetry；显式关闭避免 posthog 兼容性错误日志。
+            chroma = chromadb.HttpClient(
+                host=chroma_host,
+                port=chroma_port,
+                settings=chromadb.Settings(anonymized_telemetry=False),
+            )
             chroma.heartbeat()  # 测试连接
             logger.info(f"ChromaDB 已连接: {chroma_host}:{chroma_port}")
         except Exception:
@@ -161,11 +166,11 @@ class MemoryManager:
             return
 
         text = self._safe_text("\n".join(f"{m.role.value}: {m.content}" for m in messages[-10:]))
-        prompt = f"""从以下对话中提炼用户偏好和关键实体，返回 JSON。
+        prompt = f"""从以下西电校园用户对话中提炼用户偏好和关键实体，返回 JSON。
 对话:
 {text}
 
-返回格式: {{"preferences": ["..."], "entities": {{"产品": [], "问题类型": []}}}}"""
+返回格式: {{"preferences": ["..."], "entities": {{"院系专业": [], "年级": [], "校区": [], "诉求类型": []}}}}"""
         prompt = self._safe_text(prompt)
 
         try:

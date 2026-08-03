@@ -6,7 +6,7 @@
 路由策略（三层决策）：
   1. 意图路由 —— 根据 IntentCategory 直接映射到专属 Agent
   2. 性能路由 —— 同类 Agent 有多个时，选成功率最高、延迟最低的
-  3. 降级路由 —— 专属 Agent 不可用时，自动降级到 GeneralAgent
+  3. 降级路由 —— 专属 Agent 不可用时，自动降级到 AcademicAgent（校园通用接待）
 
 并行协作：
   - 复杂问题（如"技术问题 + 账单问题"）可同时派发给多个 Agent
@@ -33,10 +33,11 @@ logger = logging.getLogger(__name__)
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
 
 class AgentType(Enum):
-    GENERAL   = "general"    # 通用客服
-    TECHNICAL = "technical"  # 技术支持
-    BILLING   = "billing"    # 账单/退款
-    ESCALATION = "escalation" # 人工升级（占位）
+    ACADEMIC   = "academic"   # 学业支持：选课/课表/考试/成绩/绩点/重修
+    CAMPUS_LIFE = "campus_life"  # 校园生活：宿舍/食堂/校车/校园卡/快递
+    AFFAIRS    = "affairs"    # 校务咨询：校历/请假/奖学金/办事流程/注册
+    IT_HELP    = "it_help"    # IT 助手：教务系统/校园网/VPN/邮箱/统一身份认证
+    ESCALATION = "escalation"  # 转人工（辅导员/教务老师）
 
 
 @dataclass
@@ -102,9 +103,10 @@ class BaseAgent:
     agent_type: AgentType
     system_prompt: str
 
-    def __init__(self, client: AsyncAnthropic, model: str):
+    def __init__(self, client: AsyncAnthropic, model: str, skill_manager: Optional[Any] = None):
         self._client = client
         self._model  = model
+        self._skill_manager = skill_manager
         self.stats   = AgentStats()
 
     async def handle(self, req: Request) -> AgentResponse:
@@ -129,7 +131,7 @@ class BaseAgent:
             logger.error(f"{self.agent_type.value} 处理失败: {ex}")
             return AgentResponse(
                 agent_type=self.agent_type,
-                content="抱歉，处理您的请求时出现问题，请稍后重试。",
+                content="抱歉，处理你的请求时出现了问题，请稍后重试，或换个方式描述一下。",
                 success=False,
                 latency_ms=ms,
             )
@@ -147,38 +149,66 @@ class BaseAgent:
         resp = await self._client.messages.create(
             model=self._model,
             max_tokens=1024,
-            system=self.system_prompt,
+            system=self._build_system_prompt(req),
             messages=messages,
         )
         return resp.content[0].text
 
+    def _build_system_prompt(self, req: Request) -> str:
+        """把动态加载的 Skills 拼入 system prompt，让业务规则随请求生效。"""
+        if self._skill_manager is None:
+            return self.system_prompt
+        skill_prompt = self._skill_manager.prompt_for(req.message, self.agent_type.value)
+        if not skill_prompt:
+            return self.system_prompt
+        return f"{self.system_prompt}\n\n[动态 Skills]\n{skill_prompt}"
+
     def _needs_escalation(self, content: str) -> bool:
         """检测 Agent 是否建议升级（简单关键词检测）。"""
-        keywords = ["转人工", "人工客服", "escalate", "specialist", "无法处理"]
+        keywords = ["转人工", "找辅导员", "教务老师", "escalate", "无法处理", "建议联系"]
         return any(kw in content for kw in keywords)
 
 
-class GeneralAgent(BaseAgent):
-    agent_type    = AgentType.GENERAL
+class AcademicAgent(BaseAgent):
+    """学业支持：选课、课表、考试、成绩、绩点、重修、转专业、保研。"""
+    agent_type    = AgentType.ACADEMIC
     system_prompt = (
-        "你是 EchoMind 智能客服。友好、简洁地回答用户问题。"
-        "如果问题超出你的能力范围，明确说明并建议转接专业客服。"
+        "你是西电校园智慧助手（EchoGuide）的学业支持顾问。"
+        "友好、简洁地回答西安电子科技大学学生的学业问题，包括选课、课表、考试安排、成绩与绩点、重修、转专业、保研等。"
+        "回答基于西电教务规则和公开常识，步骤清晰、用语克制。"
+        "不要编造具体分数、排名或个人成绩数据；涉及具体成绩或学籍操作时，提示学生前往教务系统或学院教务老师处确认。"
     )
 
 
-class TechnicalAgent(BaseAgent):
-    agent_type    = AgentType.TECHNICAL
+class CampusLifeAgent(BaseAgent):
+    """校园生活：宿舍、食堂、校车、校园卡、快递、水电、社团、运动。"""
+    agent_type    = AgentType.CAMPUS_LIFE
     system_prompt = (
-        "你是技术支持专家。专注于：故障排查、错误诊断、系统配置。"
-        "提供清晰的步骤化解决方案。遇到需要后台操作的问题，说明需要升级处理。"
+        "你是西电校园智慧助手（EchoGuide）的校园生活向导，熟悉西安电子科技大学南、北校区的日常生活信息。"
+        "覆盖宿舍、食堂、校园穿梭车、校园卡充值与挂失、快递、水电、社团、运动场馆等问题。"
+        "回答尽量给出位置（校区/楼栋）和时段，步骤清晰。"
+        "不要编造精确的电话、价格或人员信息；涉及报修、补办等需现场办理的事项，指引用户到对应服务网点。"
     )
 
 
-class BillingAgent(BaseAgent):
-    agent_type    = AgentType.BILLING
+class AffairsAgent(BaseAgent):
+    """校务咨询：校历、请假、奖学金、助学金、证明开具、办事流程、学费注册。"""
+    agent_type    = AgentType.AFFAIRS
     system_prompt = (
-        "你是账单服务专家。专注于：账单查询、退款申请、发票问题、订阅管理。"
-        "对财务问题保持准确和专业。涉及实际退款操作时，说明需要人工审核。"
+        "你是西电校园智慧助手（EchoGuide）的校务咨询顾问，负责西安电子科技大学的校务办事指引。"
+        "覆盖校历、请假流程、奖学金与助学金评定、各类证明开具、学籍注册、学费缴纳等事项。"
+        "回答以办事流程、所需材料、办理地点和系统入口为主，清晰可执行。"
+        "不要编造具体的截止日期、金额或审批结果；涉及实际审批的事项，提示以学院或学生处最新通知为准。"
+    )
+
+
+class ITHelpAgent(BaseAgent):
+    """IT 助手：教务系统、校园网、VPN、邮箱、统一身份认证排障。"""
+    agent_type    = AgentType.IT_HELP
+    system_prompt = (
+        "你是西电校园智慧助手（EchoGuide）的 IT 支持助手，帮助西安电子科技大学学生解决校园信息系统使用问题。"
+        "覆盖教务系统、校园网、VPN、学校邮箱、统一身份认证的故障排查与配置指引。"
+        "提供清晰的步骤化解决方案。遇到需要后台操作或账号重置的问题，说明需联系信息化建设处或网络中心处理。"
     )
 
 
@@ -186,21 +216,22 @@ class BillingAgent(BaseAgent):
 
 class AgentOrchestrator:
     """
-    多 Agent 编排器。
+    西电校园智慧助手的多 Agent 编排器。
 
     路由逻辑（三层）：
-      1. 意图 → Agent 类型映射
+      1. 意图 → Agent 类型映射（学业/生活/校务/IT 四大领域）
       2. 同类多实例时按 routing_score() 选最优
-      3. 专属 Agent 失败时降级到 GeneralAgent
+      3. 专属 Agent 失败时降级到 AcademicAgent（校园最高频诉求，承担通用接待）
     """
 
     # 意图 → Agent 类型的静态映射（路由表）
     _INTENT_ROUTING: Dict[IntentCategory, AgentType] = {
-        IntentCategory.TECHNICAL:  AgentType.TECHNICAL,
-        IntentCategory.BILLING:    AgentType.BILLING,
-        IntentCategory.ACCOUNT:    AgentType.BILLING,
-        IntentCategory.ESCALATION: AgentType.ESCALATION,
-        # 其余意图 → GENERAL（默认）
+        IntentCategory.ACADEMIC:    AgentType.ACADEMIC,
+        IntentCategory.CAMPUS_LIFE: AgentType.CAMPUS_LIFE,
+        IntentCategory.AFFAIRS:     AgentType.AFFAIRS,
+        IntentCategory.IT_HELP:     AgentType.IT_HELP,
+        IntentCategory.ESCALATION:  AgentType.ESCALATION,
+        # 通用意图（QUERY/REQUEST/GREETING 等）默认 → ACADEMIC（兜底接待）
     }
 
     def __init__(
@@ -208,6 +239,7 @@ class AgentOrchestrator:
         api_key:  str,
         base_url: Optional[str] = None,
         model:    str = "claude-3-5-sonnet-20241022",
+        skill_manager: Optional[Any] = None,
     ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -215,13 +247,22 @@ class AgentOrchestrator:
         client = AsyncAnthropic(**kwargs)
 
         self._intent_recognizer = IntentRecognizer(api_key=api_key, base_url=base_url, model=model)
+        self._skill_manager = skill_manager
 
         # Agent 池：每种类型可有多个实例（水平扩展）
         self._pool: Dict[AgentType, List[BaseAgent]] = {
-            AgentType.GENERAL:   [GeneralAgent(client, model)],
-            AgentType.TECHNICAL: [TechnicalAgent(client, model)],
-            AgentType.BILLING:   [BillingAgent(client, model)],
+            AgentType.ACADEMIC:    [AcademicAgent(client, model, skill_manager)],
+            AgentType.CAMPUS_LIFE: [CampusLifeAgent(client, model, skill_manager)],
+            AgentType.AFFAIRS:     [AffairsAgent(client, model, skill_manager)],
+            AgentType.IT_HELP:     [ITHelpAgent(client, model, skill_manager)],
         }
+
+    def set_skill_manager(self, skill_manager: Optional[Any]) -> None:
+        """更新 SkillManager 引用，供运行时重载或测试替换使用。"""
+        self._skill_manager = skill_manager
+        for agents in self._pool.values():
+            for agent in agents:
+                agent._skill_manager = skill_manager
 
     # ── 主入口 ────────────────────────────────────────────────────────────────
 
@@ -238,7 +279,7 @@ class AgentOrchestrator:
             req.intent  = intent_result.intent
             req.urgency = intent_result.urgency
 
-        # 复杂问题自动并行协作，例如同一句同时涉及登录故障和扣款/退款。
+        # 复杂问题自动并行协作，例如同一句同时涉及教务系统故障和选课问题。
         collaboration = self._collaboration_targets(req)
         if len(collaboration) > 1:
             return await self.run_parallel(req, collaboration)
@@ -254,7 +295,7 @@ class AgentOrchestrator:
         if response.escalate or req.urgency == UrgencyLevel.CRITICAL or req.intent == IntentCategory.ESCALATION:
             escalated = True
             logger.warning(f"请求 {req.request_id} 触发升级: urgency={req.urgency}")
-            # 生产环境：此处创建工单、通知人工客服
+            # 生产环境：此处创建工单、通知辅导员/教务老师
 
         return OrchestratorResult(
             request_id=req.request_id,
@@ -280,7 +321,7 @@ class AgentOrchestrator:
             if isinstance(r, AgentResponse) and r.success:
                 parts.append(f"[{r.agent_type.value}]\n{r.content}")
 
-        combined = "\n\n".join(parts) if parts else "抱歉，所有 Agent 均处理失败。"
+        combined = "\n\n".join(parts) if parts else "抱歉，多个助手模块暂时都没能处理成功，请稍后重试。"
         escalated = any(isinstance(r, AgentResponse) and r.escalate for r in responses)
 
         return OrchestratorResult(
@@ -297,9 +338,9 @@ class AgentOrchestrator:
     def _route(self, intent: Optional[IntentCategory], urgency: Optional[UrgencyLevel]) -> AgentType:
         """
         三层路由决策：
-          1. 意图映射
-          2. 紧急度覆盖（CRITICAL 直接升级）
-          3. 默认 GENERAL
+          1. 意图映射（学业/生活/校务/IT 四大领域）
+          2. 紧急度覆盖（CRITICAL 直接升级到转人工）
+          3. 默认 ACADEMIC（校园最高频诉求，承担通用接待）
         """
         if urgency == UrgencyLevel.CRITICAL:
             return AgentType.ESCALATION
@@ -310,25 +351,31 @@ class AgentOrchestrator:
             if target in self._pool and self._pool[target]:
                 return target
 
-        return AgentType.GENERAL
+        return AgentType.ACADEMIC
 
     def _collaboration_targets(self, req: Request) -> List[AgentType]:
         """
         判断是否需要多个 Agent 并行协作。
 
         意图识别通常只返回一个主意图；这里用领域关键词补充检测复合问题，
-        例如"登录报错且被重复扣款"需要技术和账单 Agent 同时处理。
+        例如"教务系统打不开 + 选课问题"需要 IT 助手和学业支持 Agent 同时处理。
         """
         msg = req.message.lower()
         targets: List[AgentType] = []
 
-        technical_kws = ["崩溃", "报错", "error", "crash", "无法登录", "登录失败", "500", "401"]
-        billing_kws = ["退款", "扣款", "发票", "账单", "支付", "订阅", "refund", "invoice"]
+        academic_kws = ["选课", "课表", "考试", "成绩", "绩点", "学分", "重修", "保研", "转专业"]
+        campus_kws = ["食堂", "宿舍", "校车", "校园卡", "快递", "水电", "超市", "社团"]
+        affairs_kws = ["校历", "请假", "奖学金", "助学金", "证明", "缴费", "学费", "注册"]
+        it_kws = ["教务系统", "校园网", "vpn", "邮箱", "登录不上", "报错", "统一身份", "密码重置"]
 
-        if req.intent == IntentCategory.TECHNICAL or any(kw in msg for kw in technical_kws):
-            targets.append(AgentType.TECHNICAL)
-        if req.intent in (IntentCategory.BILLING, IntentCategory.ACCOUNT) or any(kw in msg for kw in billing_kws):
-            targets.append(AgentType.BILLING)
+        if req.intent == IntentCategory.ACADEMIC or any(kw in msg for kw in academic_kws):
+            targets.append(AgentType.ACADEMIC)
+        if req.intent == IntentCategory.CAMPUS_LIFE or any(kw in msg for kw in campus_kws):
+            targets.append(AgentType.CAMPUS_LIFE)
+        if req.intent == IntentCategory.AFFAIRS or any(kw in msg for kw in affairs_kws):
+            targets.append(AgentType.AFFAIRS)
+        if req.intent == IntentCategory.IT_HELP or any(kw in msg for kw in it_kws):
+            targets.append(AgentType.IT_HELP)
 
         # 保持顺序去重，并只返回当前有实例的 Agent 类型。
         deduped = list(dict.fromkeys(targets))
@@ -345,23 +392,23 @@ class AgentOrchestrator:
         return max(agents, key=lambda a: a.stats.routing_score())
 
     async def _execute(self, req: Request, agent_type: AgentType) -> AgentResponse:
-        """执行 Agent，失败时降级到 GeneralAgent。"""
+        """执行 Agent，失败时降级到 AcademicAgent（校园通用接待）。"""
         agent = self._best_agent(agent_type)
         if agent is None:
-            agent = self._best_agent(AgentType.GENERAL)
+            agent = self._best_agent(AgentType.ACADEMIC)
         if agent is None:
             return AgentResponse(
-                agent_type=AgentType.GENERAL,
-                content="服务暂时不可用，请稍后重试。",
+                agent_type=AgentType.ACADEMIC,
+                content="助手暂时不可用，请稍后重试，或直接联系辅导员/教务老师。",
                 success=False,
             )
 
         response = await agent.handle(req)
 
-        # 专属 Agent 失败时降级到 GeneralAgent
-        if not response.success and agent_type != AgentType.GENERAL:
-            logger.warning(f"{agent_type.value} 失败，降级到 GeneralAgent")
-            fallback = self._best_agent(AgentType.GENERAL)
+        # 专属 Agent 失败时降级到 AcademicAgent
+        if not response.success and agent_type != AgentType.ACADEMIC:
+            logger.warning(f"{agent_type.value} 失败，降级到 AcademicAgent")
+            fallback = self._best_agent(AgentType.ACADEMIC)
             if fallback:
                 response = await fallback.handle(req)
 
