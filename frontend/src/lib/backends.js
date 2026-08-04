@@ -66,6 +66,57 @@ export async function requestChat(type, settings, message) {
   return normalizeChatResponse(type, raw)
 }
 
+/**
+ * 流式对话（SSE）：POST /chat/stream，逐事件回调。
+ *
+ * handlers.onEvent(ev) 接收事件对象：
+ *   {type:'hello'} {type:'meta',domain,agent} {type:'tool',name,status}
+ *   {type:'delta',text} {type:'done',response,...} {type:'error',message}
+ */
+export async function requestChatStream(type, settings, message, handlers = {}) {
+  const meta = backendMeta(type, settings)
+  const payload = buildChatPayload(type, settings, message)
+  const response = await fetch(`${meta.baseUrl}/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  if (!response.ok || !response.body) {
+    throw new Error(`${response.status} ${response.statusText}`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  let doneEvent = null
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    // SSE 帧以空行分隔；兼容拆包/粘包
+    let idx
+    while ((idx = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + 2)
+      const dataLine = frame.split('\n').find((line) => line.startsWith('data:'))
+      if (!dataLine) continue
+      const raw = dataLine.slice(5).trim()
+      if (!raw) continue
+      let ev
+      try {
+        ev = JSON.parse(raw)
+      } catch {
+        continue
+      }
+      if (ev.type === 'done') doneEvent = ev
+      if (handlers.onEvent) handlers.onEvent(ev)
+    }
+  }
+  if (!doneEvent) throw new Error('连接中断，未收到完成事件')
+  return doneEvent
+}
+
 export async function addKnowledge(type, settings, documents) {
   return requestJson(backendMeta(type, settings).baseUrl, '/knowledge/add', {
     method: 'POST',

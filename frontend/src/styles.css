@@ -315,6 +315,32 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
+.message-text {
+  word-break: break-word;
+}
+
+/* 流式光标 */
+.stream-cursor {
+  color: var(--xdu-red);
+  animation: cursor-blink 1s step-end infinite;
+}
+
+@keyframes cursor-blink {
+  50% { opacity: 0; }
+}
+
+/* 工具调用过程徽标（Agentic RAG 可视化） */
+.tool-badge {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  background: rgba(66, 133, 244, 0.08);
+  border: 1px dashed rgba(66, 133, 244, 0.45);
+  color: #2f6fce;
+}
+
 .message-meta {
   display: flex;
   justify-content: space-between;

@@ -1,0 +1,176 @@
+"""
+EchoGuide 领域词表 —— 全系统唯一的领域定义与关键词来源。
+
+设计动机（面试点）：
+  早期版本中领域关键词在 intent_recognizer / orchestrator._collaboration_targets /
+  api._should_use_knowledge 三处重复维护，必然漂移。
+  本模块将「领域定义 + 关键词」收敛为单一事实来源，所有匹配逻辑统一引用。
+
+同时修正两类匹配缺陷：
+  1. 子串误命中：英文关键词必须整词匹配（\b 词边界），避免 "api" 命中 "capital"；
+     中文关键词禁止单字（如旧版 "餐" 会命中 "餐补" 等无关场景），统一使用 ≥2 字词组。
+  2. 单次命中评分：不再用 hits/len(keywords)（关键词多的领域永远低分），
+     改为「首命中 0.55、每多命中 +0.2、上限 0.95」的边际衰减评分。
+"""
+from __future__ import annotations
+
+import re
+from enum import Enum
+from typing import Dict, List
+
+logger = None  # 保持轻量，不强制 logging 依赖
+
+
+class IntentDomain(Enum):
+    """领域维度 —— 路由的唯一依据。"""
+    ACADEMIC    = "academic"      # 学业支持
+    CAMPUS_LIFE = "campus_life"   # 校园生活
+    AFFAIRS     = "affairs"       # 校务咨询
+    IT_HELP     = "it_help"       # IT 支持
+    OTHER       = "other"
+
+
+class IntentAction(Enum):
+    """动作维度 —— 决定行为（是否升级、是否转人工等）。"""
+    QUERY     = "query"       # 信息查询
+    REQUEST   = "request"     # 请求操作
+    GREETING  = "greeting"    # 问候
+    COMPLAINT = "complaint"   # 投诉不满
+    FEEDBACK  = "feedback"    # 正面反馈
+    ESCALATION = "escalation" # 转人工/升级
+    OTHER     = "other"
+
+
+# ── 领域关键词（单一事实来源）──────────────────────────────────────────────
+# 注意：中文关键词全部 ≥2 字；英文关键词匹配时按整词（词边界）处理。
+DOMAIN_KEYWORDS: Dict[IntentDomain, List[str]] = {
+    IntentDomain.ACADEMIC: [
+        "选课", "课表", "考试", "成绩", "绩点", "学分", "重修", "保研", "转专业",
+        "挂科", "补考", "培养方案", "先修课", "培养计划", "退改选", "期末考试",
+    ],
+    IntentDomain.CAMPUS_LIFE: [
+        "食堂", "餐厅", "早餐", "午餐", "晚餐", "宿舍", "校车", "班车", "校园卡",
+        "快递", "水电", "超市", "运动场", "体育馆", "社团", "充值", "挂失", "补办",
+        "门禁", "报修", "南校区", "北校区", "通勤", "图书馆", "自习",
+    ],
+    IntentDomain.AFFAIRS: [
+        "校历", "请假", "奖学金", "助学金", "证明", "在读证明", "缴费", "学费",
+        "注册", "学籍", "学生处", "教务处", "办事", "流程", "盖章", "假期",
+    ],
+    IntentDomain.IT_HELP: [
+        "教务系统", "校园网", "vpn", "邮箱", "统一身份认证", "登录不上", "报错",
+        "密码重置", "验证码", "网络连不上", "无法访问", "账号", "激活", "配置",
+        "证书", "重置密码",
+    ],
+}
+
+# 领域关键词对应的 Agent 类型（供路由 / 协作检测共用）
+DOMAIN_AGENT_MAP: Dict[IntentDomain, str] = {
+    IntentDomain.ACADEMIC:    "academic",
+    IntentDomain.CAMPUS_LIFE: "campus_life",
+    IntentDomain.AFFAIRS:     "affairs",
+    IntentDomain.IT_HELP:     "it_help",
+}
+
+# 动作关键词（领域无关的通用模式，只用于 action 维度兜底）
+ACTION_KEYWORDS: Dict[IntentAction, List[str]] = {
+    IntentAction.COMPLAINT:  ["太差", "糟糕", "等了很久", "一直没人", "投诉", "不满"],
+    IntentAction.QUERY:      ["?", "？", "怎么", "什么", "几点", "在哪", "什么时候", "如何"],
+    IntentAction.REQUEST:    ["帮我", "需要", "我要", "申请", "办理", "怎么办"],
+    IntentAction.GREETING:   ["你好", "您好", "嗨", "hello", "hi", "在吗", "早上好", "晚上好"],
+    IntentAction.ESCALATION: ["转人工", "找辅导员", "教务处", "找老师", "escalate"],
+}
+
+# 动作关键词权重：显式意图词 > 通用疑问词（疑问词默认 0.3，避免平局抢占语义）
+ACTION_KEYWORD_WEIGHTS: Dict[str, float] = {
+    "?": 0.2, "？": 0.2, "怎么": 0.3, "什么": 0.3, "几点": 0.35, "在哪": 0.35,
+    "什么时候": 0.35, "如何": 0.3,
+    "帮我": 0.65, "需要": 0.6, "我要": 0.65, "申请": 0.6, "办理": 0.6, "怎么办": 0.6,
+    "你好": 0.7, "您好": 0.7, "嗨": 0.7, "hello": 0.7, "hi": 0.7, "在吗": 0.65,
+    "早上好": 0.7, "晚上好": 0.7,
+    "转人工": 0.75, "找辅导员": 0.75, "教务处": 0.6, "找老师": 0.7, "escalate": 0.75,
+    "太差": 0.6, "糟糕": 0.6, "等了很久": 0.6, "一直没人": 0.6, "投诉": 0.7, "不满": 0.6,
+}
+
+# 紧急关键词
+URGENCY_KEYWORDS = {
+    "critical": ["紧急", "emergency", "urgent", "asap", "立刻", "马上要交"],
+    "high":     ["今天", "马上", "尽快", "hurry", "now", "截止前"],
+    "medium":   ["这周", "soon", "快点", "这学期"],
+}
+
+# 与 SkillManager 保持一致：内部注入逻辑只依赖这里的数据，不再各自维护关键词。
+# 例如 skill 的 keywords 中单字 "餐" 已被替换为多字词组（见 skills/campus_life/SKILL.md）。
+
+
+def domain_hit_score(message: str) -> tuple[IntentDomain | None, float]:
+    """
+    计算消息对每个领域的命中情况，返回 (最佳领域, 评分)。
+
+    评分规则（修正旧版 hits/len(kws) 缺陷）：
+      首个命中 0.55，每多命中一个关键词 +0.2，上限 0.95。
+    """
+    msg = (message or "").lower()
+    best_domain: IntentDomain | None = None
+    best_score = 0.0
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        hits = sum(1 for kw in keywords if keyword_hit(kw, msg))
+        if hits:
+            score = min(0.95, 0.55 + 0.2 * (hits - 1))
+            if score > best_score:
+                best_domain, best_score = domain, score
+    return best_domain, best_score
+
+
+def action_hit_score(message: str) -> tuple[IntentAction | None, float]:
+    """
+    计算动作维度命中。领域词优先于通用疑问词，避免动作吞掉领域信息。
+
+    动作关键词带权重（ACTION_KEYWORD_WEIGHTS）：
+      显式意图词（帮我/我要/转人工/投诉）权重高；
+      通用疑问词（怎么/什么/几点）权重低，避免平局时疑问词抢占请求/升级语义。
+    """
+    msg = (message or "").lower()
+    best_action: IntentAction | None = None
+    best_score = 0.0
+    for action, keywords in ACTION_KEYWORDS.items():
+        score = sum(
+            ACTION_KEYWORD_WEIGHTS.get(kw, 0.5) * (1 if keyword_hit(kw, msg) else 0)
+            for kw in keywords
+        )
+        score = min(score, 0.95)
+        if score > 0.0 and score > best_score:
+            best_action, best_score = action, score
+    return best_action, best_score
+
+
+# ── 关键词匹配 ────────────────────────────────────────────────────────────────
+
+_ASCII_RE_CACHE: Dict[str, re.Pattern] = {}
+
+
+def keyword_hit(keyword: str, text: str) -> bool:
+    """
+    关键词命中检测（修正子串误命中）：
+
+    - ASCII 关键词（如 api / vpn / it）必须整词出现。
+      用 ASCII 字符类前后向断言（而非 \b —— \b 会把中文也当作词字符，
+      导致 "vpn配置" 这类中英混合文本匹配失败）。这样 "capital" 不再命中 "api"。
+    - 中文关键词（≥2 字）按子串匹配。
+    - 中文单字关键词视为非法配置，直接不匹配（在日志中提示维护者）。
+    """
+    keyword = (keyword or "").strip().lower()
+    if not keyword:
+        return False
+    if keyword.isascii():
+        pattern = _ASCII_RE_CACHE.get(keyword)
+        if pattern is None:
+            # (?<![a-zA-Z0-9_]) 等价于"ASCII 词边界"：仅对 ASCII 字母数字下划线生效
+            pattern = re.compile(
+                rf"(?<![a-zA-Z0-9_]){re.escape(keyword)}(?![a-zA-Z0-9_])"
+            )
+            _ASCII_RE_CACHE[keyword] = pattern
+        return bool(pattern.search(text))
+    if len(keyword) < 2:
+        return False  # 中文单字关键词过拟合，禁止使用
+    return keyword in text

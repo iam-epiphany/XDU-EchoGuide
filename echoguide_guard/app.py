@@ -1,4 +1,4 @@
-"""EchoGuard ASGI sidecar.
+"""EchoGuide Guard ASGI sidecar.
 
 The service proxies four observable surfaces from AgentRange:
 
@@ -30,13 +30,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
-from echoguard.config import Settings
-from echoguard.models import Actor, PolicyDecision
-from echoguard.policy import PolicyEngine
-from echoguard.redaction import redact_data
-from echoguard.runtime import TraceRegistry
-from echoguard.static_scan import StaticScanner
-from echoguard.store import AuditStore
+from echoguide_guard.config import Settings
+from echoguide_guard.models import Actor, PolicyDecision
+from echoguide_guard.policy import PolicyEngine
+from echoguide_guard.redaction import redact_data
+from echoguide_guard.runtime import TraceRegistry
+from echoguide_guard.static_scan import StaticScanner
+from echoguide_guard.store import AuditStore
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +56,17 @@ HOP_BY_HOP_HEADERS = {
 }
 
 DECISIONS = Counter(
-    "echoguard_policy_decisions_total",
+    "echoguide_guard_policy_decisions_total",
     "Runtime policy decisions",
     ("surface", "decision"),
 )
 PROXY_REQUESTS = Counter(
-    "echoguard_proxy_requests_total",
-    "Requests observed by EchoGuard",
+    "echoguide_guard_proxy_requests_total",
+    "Requests observed by EchoGuide Guard",
     ("surface", "status"),
 )
 DECISION_LATENCY = Histogram(
-    "echoguard_policy_decision_seconds",
+    "echoguide_guard_policy_decision_seconds",
     "Synchronous policy decision latency",
     ("surface",),
 )
@@ -95,7 +95,7 @@ async def lifespan(app: FastAPI):
         try:
             report = StaticScanner(str(target)).scan()
             app.state.guard.store.save_scan(report)
-            logger.info("EchoGuard initial asset scan completed: %s", report.get("summary", {}))
+            logger.info("EchoGuide Guard initial asset scan completed: %s", report.get("summary", {}))
         except Exception as exc:  # startup must not break runtime protection
             logger.warning("initial asset scan failed: %s", exc)
     yield
@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="EchoGuard Agent Runtime Security",
+    title="EchoGuide Guard Agent Runtime Security",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -524,7 +524,7 @@ async def mcp_proxy(server: str, request: Request):
                     "id": payload.get("id"),
                     "error": {
                         "code": code,
-                        "message": f"EchoGuard decision: {decision}",
+                        "message": f"EchoGuide Guard decision: {decision}",
                         "data": {
                             "reason_codes": data.get("reason_codes") or [],
                             "risk_score": data.get("risk_score") or 0.0,
@@ -623,7 +623,7 @@ async def langflow_proxy(path: str, request: Request):
             details={"body_sha256": hashlib.sha256(body).hexdigest()},
         )
         return JSONResponse(
-            {"detail": "blocked by EchoGuard", "reason_codes": rules},
+            {"detail": "blocked by EchoGuide Guard", "reason_codes": rules},
             status_code=403,
         )
 
@@ -642,4 +642,4 @@ if __name__ == "__main__":
     import uvicorn
 
     cfg = Settings.from_env()
-    uvicorn.run("echoguard.app:app", host=cfg.host, port=cfg.port, reload=False)
+    uvicorn.run("echoguide_guard.app:app", host=cfg.host, port=cfg.port, reload=False)

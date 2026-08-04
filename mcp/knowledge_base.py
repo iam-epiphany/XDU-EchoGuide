@@ -2,14 +2,19 @@
 RAG 知识库 —— 基于 ChromaDB 的真实检索实现。
 
 功能：
-  1. 文档导入：将文本切片后存入 ChromaDB（自动生成 Embedding）
-  2. 语义检索：根据 query 从知识库中检索最相关的文档片段
+  1. 文档导入：语义分块（带 overlap）后存入 ChromaDB（自动生成 Embedding）
+  2. 语义检索：根据 query 检索最相关的文档片段，支持相关性阈值与领域过滤
   3. 与 MCP 工具框架集成：作为 knowledge_search 工具的真实 handler
 
 ChromaDB 在这里的角色：
   - memory/ 中用于存储对话记忆（情景记忆 + 用户画像）
   - 这里用于存储知识库文档（RAG 检索）
   两者是不同的 collection，互不干扰。
+
+检索质量设计（面试点）：
+  - 分块带 overlap（60 字），避免句子被拦腰截断导致召回不全
+  - min_score 相关性阈值：低分噪音不进 prompt，避免误导 LLM
+  - domain 元数据过滤：领域问题只检索对应领域的文档片段
 """
 import hashlib
 import logging
@@ -30,6 +35,14 @@ class KnowledgeBase:
     """
 
     COLLECTION_NAME = "knowledge_base"
+
+    # 标题 → 领域 的粗粒度映射（导入时写入 metadata，供检索按领域过滤）
+    TITLE_DOMAIN_MAP = {
+        "校历": "affairs", "选课": "academic", "奖学金": "affairs", "请假": "affairs",
+        "穿梭车": "campus_life", "校车": "campus_life", "食堂": "campus_life",
+        "餐饮": "campus_life", "宿舍": "campus_life", "图书馆": "campus_life",
+        "教务系统": "it_help", "校园网": "it_help", "vpn": "it_help", "邮箱": "it_help",
+    }
 
     def __init__(
         self,
@@ -73,21 +86,27 @@ class KnowledgeBase:
         """
         批量导入文档到知识库。
 
-        documents 格式: [{"title": "...", "content": "..."}, ...]
-        长文档会自动切片（每片 500 字）。
+        documents 格式: [{"title": "...", "content": "...", "domain": "..."}, ...]
+        长文档自动语义分块（每片约 500 字，带 60 字 overlap）。
         """
         ids, docs, metas = [], [], []
 
         for doc in documents:
             title   = doc.get("title", "")
             content = doc.get("content", "")
-            chunks  = self._chunk_text(content, chunk_size=500)
+            domain  = doc.get("domain") or self._infer_domain(title)
+            chunks  = self._chunk_text(content, chunk_size=500, overlap=60)
 
             for i, chunk in enumerate(chunks):
                 doc_id = hashlib.md5(f"{title}_{i}_{chunk[:50]}".encode()).hexdigest()
                 ids.append(doc_id)
                 docs.append(chunk)
-                metas.append({"title": title, "chunk_index": i, "total_chunks": len(chunks)})
+                metas.append({
+                    "title": title,
+                    "chunk_index": i,
+                    "total_chunks": len(chunks),
+                    "domain": domain,
+                })
 
         if ids:
             # ChromaDB 会自动生成 Embedding
@@ -96,16 +115,35 @@ class KnowledgeBase:
 
         return len(ids)
 
-    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _infer_domain(title: str) -> str:
+        for key, domain in KnowledgeBase.TITLE_DOMAIN_MAP.items():
+            if key in title:
+                return domain
+        return "general"
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        min_score: float = 0.25,
+        domain: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         语义检索：根据 query 返回最相关的文档片段。
 
-        ChromaDB 内部自动将 query 转为向量，与存储的文档向量做余弦相似度匹配。
+        - min_score：相关性阈值，低于阈值的片段直接丢弃（避免噪音误导 LLM）
+        - domain：领域过滤（ChromaDB where 条件），如 "it_help" 只检索 IT 领域片段
         """
-        results = self._collection.query(
-            query_texts=[query],
-            n_results=top_k,
-        )
+        where = {"domain": domain} if domain else None
+        from core.tracing import sync_span
+
+        with sync_span("kb_search", query=query[:80], top_k=top_k, domain=domain or ""):
+            results = self._collection.query(
+                query_texts=[query],
+                n_results=top_k,
+                where=where,
+            )
 
         items = []
         if results["documents"] and results["documents"][0]:
@@ -114,11 +152,15 @@ class KnowledgeBase:
                 results["metadatas"][0],
                 results["distances"][0],
             ):
+                score = round(1.0 - dist, 4)  # ChromaDB 返回距离，转为相似度
+                if score < min_score:
+                    continue  # 相关性阈值过滤
                 items.append({
                     "title":    meta.get("title", ""),
                     "content":  doc,
-                    "score":    round(1.0 - dist, 4),  # ChromaDB 返回距离，转为相似度
+                    "score":    score,
                     "chunk":    meta.get("chunk_index", 0),
+                    "domain":   meta.get("domain", "general"),
                 })
 
         return items
@@ -141,33 +183,38 @@ class KnowledgeBase:
         """
         query = params.get("query", "")
         top_k = params.get("top_k", 5)
-        return self.search(query, top_k=top_k)
+        min_score = params.get("min_score", 0.25)
+        domain = params.get("domain")  # Agent 可传当前领域做过滤
+        return self.search(query, top_k=top_k, min_score=min_score, domain=domain)
 
     # ── 内部方法 ──────────────────────────────────────────────────────────────
 
-    def _chunk_text(self, text: str, chunk_size: int = 500) -> List[str]:
-        """将长文本按 chunk_size 切片，保留语义完整性（按句号/换行切分）。"""
+    def _chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 60) -> List[str]:
+        """
+        语义分块（带 overlap）：
+
+        - 按句号/换行切分为句子，贪心拼块
+        - 每块末尾补上前一块末尾 overlap 字，避免跨块句子被拦腰截断
+        """
         if len(text) <= chunk_size:
             return [text] if text.strip() else []
 
-        chunks = []
+        sentences = [s.strip() for s in text.replace("\n", "。").split("。") if s.strip()]
+        chunks: List[str] = []
         current = ""
-        # 按句子切分
-        sentences = text.replace("\n", "。").split("。")
+
         for sent in sentences:
-            sent = sent.strip()
-            if not sent:
-                continue
             if len(current) + len(sent) + 1 > chunk_size:
                 if current:
                     chunks.append(current)
-                current = sent
+                # 携带前一块尾部 overlap 字，保持语义连续性
+                tail = current[-overlap:] if current else ""
+                current = tail + sent
             else:
                 current = f"{current}。{sent}" if current else sent
 
         if current:
             chunks.append(current)
-
         return chunks
 
     def _load_default_docs(self) -> None:

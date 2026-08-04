@@ -1,6 +1,6 @@
-# EchoGuard
+# EchoGuide Guard
 
-EchoGuard 是 EchoGuide（西电校园智慧助手）仓库中的独立 Agent 运行时安全 Sidecar，为校园助手的多 Agent 调用链提供「最小权限」安全治理，验证以下闭环：
+EchoGuide Guard 是 EchoGuide（西电校园智慧助手）仓库中的独立 Agent 运行时安全 Sidecar，为校园助手的多 Agent 调用链提供「最小权限」安全治理，验证以下闭环：
 
 ```text
 资产扫描 -> 请求来源绑定 -> 模型计划观测 -> MCP 执行前策略
@@ -22,6 +22,6 @@ EchoGuard 是 EchoGuide（西电校园智慧助手）仓库中的独立 Agent �
 本地回归：
 
 ```powershell
-python -m pip install -r .\echoguard\requirements.txt -r .\requirements-dev.txt
+python -m pip install -r .\echoguide_guard\requirements.txt -r .\requirements-dev.txt
 python -m pytest -q
 ```

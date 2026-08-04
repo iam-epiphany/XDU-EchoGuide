@@ -3,12 +3,21 @@ EchoGuide（西电校园助手）Skill 加载器。
 
 Skill 是一段可热加载的业务能力说明，用来补充 Agent 的 system prompt。
 它适合放置企业话术、处理流程、合规边界、排障 SOP 等需要运营侧快速调整的规则。
+
+匹配机制（修正旧版两类缺陷）：
+  1. 子串误命中：关键词命中统一走 core.domains.keyword_hit ——
+     ASCII 关键词整词匹配（\b 词边界，避免 "api" 命中 "capital"），
+     中文关键词要求 ≥2 字（禁止单字过拟合）。
+  2. 追问感知：当前消息未命中时，会继续匹配最近 2 轮用户消息，
+     保证"南校区食堂几点关门？→ 那几点开门呢？"这类追问仍能注入对应 SOP。
 """
 import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+
+from core.domains import keyword_hit
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +33,18 @@ class Skill:
     agents: List[str] = field(default_factory=list)
     enabled: bool = True
 
-    def matches(self, message: str, agent_type: Optional[str] = None) -> bool:
+    def matches(
+        self,
+        message: str,
+        agent_type: Optional[str] = None,
+        history: Optional[Iterable[Dict[str, str]]] = None,
+    ) -> bool:
         """
         判断当前请求是否应该注入这个 Skill。
 
         - agents 为空：适用于所有 Agent；否则只匹配指定 Agent。
         - keywords 为空：作为全局 Skill 注入；否则只有命中关键词才注入。
+        - history 非空：当前消息未命中时，回溯最近几轮用户消息（追问继承）。
         """
         if not self.enabled:
             return False
@@ -40,8 +55,21 @@ class Skill:
         if not self.keywords:
             return True
 
-        lowered = (message or "").lower()
-        return any(keyword.lower() in lowered for keyword in self.keywords)
+        if self._hit_any_keyword(message):
+            return True
+
+        # 追问继承：当前消息没有关键词时，看最近几轮用户消息
+        if history:
+            for m in history:
+                if m.get("role") != "user":
+                    continue
+                if self._hit_any_keyword(str(m.get("content", ""))):
+                    return True
+        return False
+
+    def _hit_any_keyword(self, text: str) -> bool:
+        lowered = (text or "").lower()
+        return any(keyword_hit(keyword, lowered) for keyword in self.keywords)
 
     def to_prompt_block(self, max_chars: int = 3200) -> str:
         """格式化为可直接拼入 system prompt 的文本块，并限制单个 Skill 长度。"""
@@ -119,23 +147,34 @@ class SkillManager:
         """运行时热加载入口，供 API 调用。"""
         return self.load()
 
-    def prompt_for(self, message: str, agent_type: Optional[str] = None) -> str:
+    def prompt_for(
+        self,
+        message: str,
+        agent_type: Optional[str] = None,
+        history: Optional[List[Dict[str, str]]] = None,
+    ) -> str:
         """
         为当前用户请求构建 Skill prompt。
 
         只注入匹配的 Skill，并按总长度截断，避免挤占主对话上下文。
+        history 用于追问继承：当前消息无关键词时，回溯最近用户消息命中 Skill。
         """
         blocks: List[str] = []
         matched: List[tuple[Skill, List[str]]] = []
         remaining = self.max_prompt_chars
         lowered_message = (message or "").lower()
 
+        # 追问回溯范围：最近 2 轮用户消息
+        follow_up_history = None
+        if history:
+            follow_up_history = [m for m in history if m.get("role") == "user"][-2:]
+
         for skill in self._skills:
-            if not skill.matches(message, agent_type):
+            if not skill.matches(message, agent_type, follow_up_history):
                 continue
             matched_keywords = [
                 keyword for keyword in skill.keywords
-                if keyword.lower() in lowered_message
+                if keyword_hit(keyword, lowered_message)
             ]
             block = skill.to_prompt_block()
             if len(block) > remaining:

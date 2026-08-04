@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from anthropic import AsyncAnthropic
 
-from core.intent_recognizer import IntentCategory, IntentRecognizer
+from core.intent_recognizer import IntentAction, IntentDomain, IntentRecognizer
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,17 @@ Agent 响应: {response}
 # ── 意图识别评测 ──────────────────────────────────────────────────────────────
 
 class IntentEvaluator:
-    """评测意图识别的准确率和 F1。"""
+    """
+    评测意图识别的准确率和 F1（领域 × 动作双维度）。
+
+    expected_intent 取值约定：
+      - 领域值（academic/campus_life/affairs/it_help/other）→ 比较预测的 domain
+      - 动作值（query/request/greeting/complaint/feedback/escalation）→ 比较预测的 action
+    用例可通过 context.history 提供多轮对话，评测追问继承能力。
+    """
+
+    DOMAIN_VALUES = {d.value for d in IntentDomain}
+    ACTION_VALUES = {a.value for a in IntentAction}
 
     def __init__(self, recognizer: IntentRecognizer):
         self._recognizer = recognizer
@@ -166,14 +176,25 @@ class IntentEvaluator:
         case_details: List[Dict[str, Any]] = []
 
         for case in cases:
-            result = await self._recognizer.recognize(case.message)
-            predicted = result.intent.value
+            expected = case.expected_intent
+            history = (case.context or {}).get("history") if case.context else None
+            result = await self._recognizer.recognize(case.message, history=history)
+
+            if expected in self.DOMAIN_VALUES:
+                predicted = result.domain.value
+            elif expected in self.ACTION_VALUES:
+                predicted = result.action.value
+            else:
+                predicted = result.intent.value
+
             predictions.append(predicted)
-            ground_truth.append(case.expected_intent)
+            ground_truth.append(expected)
             case_details.append({
                 "message": case.message,
-                "expected": case.expected_intent,
+                "expected": expected,
                 "predicted": predicted,
+                "domain": result.domain.value,
+                "action": result.action.value,
                 "confidence": result.confidence,
                 "reasoning": result.reasoning,
             })
@@ -229,15 +250,30 @@ class EndToEndEvaluator:
         api_key:  str,
         base_url: Optional[str] = None,
         model:    str = "claude-3-5-sonnet-20241022",
+        judge_api_key:  Optional[str] = None,
+        judge_base_url: Optional[str] = None,
+        judge_model:    Optional[str] = None,
         baseline_path: Optional[str] = None,
     ):
+        """
+        双模型 LLM-as-Judge：
+
+        生成模型（api_key/base_url/model）与评判模型（judge_*）可分离，
+        消除"自己给自己打分"的自评偏差。judge_* 缺省时退化为同模型（向后兼容）。
+        """
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
         client = AsyncAnthropic(**kwargs)
 
+        judge_kwargs: Dict[str, Any] = {"api_key": judge_api_key or api_key}
+        if judge_base_url:
+            judge_kwargs["base_url"] = judge_base_url
+        judge_client = AsyncAnthropic(**judge_kwargs)
+
         self._orchestrator     = orchestrator
-        self._judge            = LLMJudge(client, model)
+        self._judge            = LLMJudge(judge_client, judge_model or model)
+        self._judge_model      = judge_model or model
         self._intent_evaluator = IntentEvaluator(recognizer)
         self._history:         List[EvalReport] = []
         self._baseline_path = pathlib.Path(baseline_path) if baseline_path else None
@@ -247,14 +283,16 @@ class EndToEndEvaluator:
         self,
         intent_cases:    Optional[List[IntentTestCase]] = None,
         dialog_cases:    Optional[List[Dict[str, Any]]] = None,
+        routing_cases:   Optional[List[Dict[str, Any]]] = None,
     ) -> EvalReport:
         """
         运行完整评测。
 
-        intent_cases: 意图识别测试用例
+        intent_cases: 意图识别测试用例（含追问继承用例）
         dialog_cases:
           - 单轮: [{"question": "..."}]
           - 多轮: [{"turns": ["第一轮", "第二轮", ...]}]
+        routing_cases: 路由评测用例 [{"turns": [...], "expected_agent": "campus_life"}]
         """
         results: List[EvalResult] = []
         all_scores: Dict[str, List[float]] = {
@@ -278,7 +316,7 @@ class EndToEndEvaluator:
                 },
             ))
 
-        # 2. 对话质量评测（调用 orchestrator 产出回复，再用 LLM Judge 评分）
+        # 2. 对话质量评测（调用 orchestrator 产出回复，再用独立 Judge 模型评分）
         if dialog_cases:
             for i, case in enumerate(dialog_cases):
                 case_results = await self._evaluate_dialog_case(case, i)
@@ -288,7 +326,15 @@ class EndToEndEvaluator:
                         if k in r.scores:
                             all_scores[k].append(r.scores[k])
 
-        # 3. 汇总
+        # 3. 路由评测（追问继承 / 请求句式是否路由到正确 Agent）
+        if routing_cases:
+            routing_results = await self._evaluate_routing_cases(routing_cases)
+            results.extend(routing_results)
+            all_scores["routing_accuracy"] = [
+                r.scores.get("accuracy", 0.0) for r in routing_results
+            ]
+
+        # 4. 汇总
         avg_scores = {
             k: round(statistics.mean(v), 4) for k, v in all_scores.items() if v
         }
@@ -298,10 +344,10 @@ class EndToEndEvaluator:
         passed_count = sum(1 for r in results if r.passed)
         pass_rate    = passed_count / len(results) if results else 0.0
 
-        # 4. 回归检测
+        # 5. 回归检测
         regressions = self._detect_regressions(avg_scores)
 
-        # 5. 优化建议
+        # 6. 优化建议
         recommendations = self._recommendations(avg_scores, intent_metrics)
 
         report = EvalReport(
@@ -373,6 +419,66 @@ class EndToEndEvaluator:
                 },
             ))
 
+        return results
+
+    async def _evaluate_routing_cases(self, cases: List[Dict[str, Any]]) -> List[EvalResult]:
+        """
+        路由评测：多轮对话跑完编排器，比较实际 Agent 与期望 Agent。
+
+        重点覆盖两类历史缺陷：
+          1. 请求句式（"我要请假怎么走流程"）必须路由到领域 Agent
+          2. 追问（"那几点开门呢？"）必须继承上一轮领域，不落到默认 Agent
+        """
+        from agents.agent_orchestrator import Request as OrcReq
+
+        results: List[EvalResult] = []
+        for idx, case in enumerate(cases):
+            turns = self._dialog_turns(case)
+            expected_agent = str(case.get("expected_agent", ""))
+            if not turns or not expected_agent:
+                continue
+
+            conv_id = f"eval_routing_{idx}"
+            user_id = str(case.get("user_id") or "eval_user")
+            history: List[Dict[str, str]] = []
+            passed = True
+            details = []
+
+            for turn_idx, question in enumerate(turns):
+                orch_req = OrcReq(
+                    message=question,
+                    user_id=user_id,
+                    conv_id=conv_id,
+                    context=self._history_context(history),
+                    history=history[-6:] if history else None,
+                )
+                orch_result = await self._orchestrator.run(orch_req)
+                actual_agent = orch_result.agent_type.value
+                history.append({"role": "user", "content": question})
+                history.append({"role": "assistant", "content": orch_result.response})
+
+                turn_ok = actual_agent == expected_agent
+                passed = passed and turn_ok
+                details.append({
+                    "turn": turn_idx,
+                    "question": question,
+                    "expected_agent": expected_agent,
+                    "actual_agent": actual_agent,
+                    "domain": orch_result.domain.value if orch_result.domain else None,
+                    "ok": turn_ok,
+                })
+
+            results.append(EvalResult(
+                test_id=f"routing_{idx}",
+                passed=passed,
+                scores={"accuracy": 1.0 if passed else 0.0},
+                detail=f"期望 {expected_agent} → {'全部命中' if passed else '存在偏离'}: " +
+                       "; ".join(
+                           f"turn{d['turn']}: {d['actual_agent']}{'(✓)' if d['ok'] else '(✗)'}"
+                           for d in details
+                       ),
+                metadata={"case": details},
+            ))
         return results
 
     @staticmethod
@@ -477,18 +583,38 @@ class EndToEndEvaluator:
 # ── 内置测试用例（开箱即用）──────────────────────────────────────────────────
 
 DEFAULT_INTENT_CASES: List[IntentTestCase] = [
+    # 领域维度（路由依据）—— 覆盖"请求句式"不再丢领域
     IntentTestCase("这学期选课什么时候开始？",   "academic"),
-    IntentTestCase("帮我查一下课表",              "request"),
+    IntentTestCase("帮我查一下课表",              "academic"),
     IntentTestCase("南校区食堂几点关门？",        "campus_life"),
     IntentTestCase("校园卡丢了怎么补办？",        "campus_life"),
+    IntentTestCase("帮我查一下校园卡余额",        "campus_life"),
+    IntentTestCase("奖学金什么时候评定？",        "affairs"),
+    IntentTestCase("我要请假怎么走流程",          "affairs"),
     IntentTestCase("教务系统登录不上怎么办？",    "it_help"),
     IntentTestCase("校园网连不上",                "it_help"),
-    IntentTestCase("奖学金什么时候评定？",        "affairs"),
-    IntentTestCase("请假流程怎么走？",            "affairs"),
+    # 动作维度（行为依据）
     IntentTestCase("我要找辅导员",                "escalation"),
     IntentTestCase("你好",                        "greeting"),
     IntentTestCase("这个助手很实用！",            "feedback"),
     IntentTestCase("宿舍热水一直不来！",          "complaint"),
+    # 追问继承（对话感知）：短句无领域关键词，应从历史继承领域
+    IntentTestCase(
+        "那几点开门呢？",
+        "campus_life",
+        context={"history": [
+            {"role": "user", "content": "南校区食堂几点关门？"},
+            {"role": "assistant", "content": "南校区食堂一般晚上七点关门。"},
+        ]},
+    ),
+    IntentTestCase(
+        "怎么重置？",
+        "it_help",
+        context={"history": [
+            {"role": "user", "content": "教务系统密码忘了怎么办？"},
+            {"role": "assistant", "content": "可以通过统一身份认证自助重置密码。"},
+        ]},
+    ),
 ]
 
 DEFAULT_DIALOG_CASES: List[Dict[str, Any]] = [
@@ -497,4 +623,14 @@ DEFAULT_DIALOG_CASES: List[Dict[str, Any]] = [
     {"question": "南校区食堂晚上几点关门？"},
     {"question": "我要办在读证明，需要带什么材料？"},
     {"turns": ["你好，我想问下校车时刻", "南校区到北校区的", "末班车是几点？"]},
+    {"turns": ["南校区食堂几点关门？", "那几点开门呢？"]},
+]
+
+# 路由评测用例：验证请求句式与追问继承的路由正确性
+DEFAULT_ROUTING_CASES: List[Dict[str, Any]] = [
+    {"turns": ["我要请假怎么走流程"], "expected_agent": "affairs"},
+    {"turns": ["校园卡丢了怎么补办"], "expected_agent": "campus_life"},
+    {"turns": ["帮我查一下校园卡余额"], "expected_agent": "campus_life"},
+    {"turns": ["南校区食堂几点关门？", "那几点开门呢？"], "expected_agent": "campus_life"},
+    {"turns": ["教务系统登录不上怎么办？", "怎么重置密码？"], "expected_agent": "it_help"},
 ]

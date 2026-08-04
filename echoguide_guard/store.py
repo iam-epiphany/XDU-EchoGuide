@@ -82,7 +82,7 @@ class AuditStore:
                     trace_id,
                     float(data.get("timestamp", data.get("created_at", data.get("ts", time.time())))),
                     str(data.get("phase", "runtime")),
-                    str(data.get("source", "echoguard")),
+                    str(data.get("source", "echoguide_guard")),
                     str(data.get("action", "observe")),
                     str(getattr(data.get("decision"), "value", data.get("decision", "allow"))),
                     float(data.get("risk_score", 0.0)),

@@ -1,4 +1,4 @@
-"""Content-driven static asset and risk discovery for EchoGuard.
+"""Content-driven static asset and risk discovery for EchoGuide Guard.
 
 This module deliberately uses only the standard library.  It recognizes common
 Agent deployment artifacts without relying on a demo/scenario name, directory
@@ -1085,11 +1085,11 @@ def scan_source(source_path: Union[str, ScanSource], **source_limits: int) -> Di
 
 # Short aliases keep integration code readable and support older prototypes.
 scan = scan_source
-EchoGuardStaticScanner = StaticScanner
+EchoGuideGuardStaticScanner = StaticScanner
 
 
 __all__ = [
-    "EchoGuardStaticScanner",
+    "EchoGuideGuardStaticScanner",
     "RULES",
     "StaticScanner",
     "scan",

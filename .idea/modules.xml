@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/EchoMind.iml" filepath="$PROJECT_DIR$/.idea/EchoMind.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/EchoGuide.iml" filepath="$PROJECT_DIR$/.idea/EchoGuide.iml" />
     </modules>
   </component>
 </project>

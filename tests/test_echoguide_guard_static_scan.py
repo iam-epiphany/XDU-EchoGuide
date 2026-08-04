@@ -4,8 +4,8 @@ import tempfile
 import unittest
 import zipfile
 
-from echoguard.source import DirectorySource, ZipSource, open_source
-from echoguard.static_scan import StaticScanner, scan_source
+from echoguide_guard.source import DirectorySource, ZipSource, open_source
+from echoguide_guard.static_scan import StaticScanner, scan_source
 
 
 COMPOSE = """
@@ -71,7 +71,7 @@ def _write_project(root: Path) -> None:
     (mcp_dir / "mcp_server.py").write_text(MCP_SERVER, encoding="utf-8")
 
 
-class EchoGuardStaticScanTests(unittest.TestCase):
+class EchoGuideGuardStaticScanTests(unittest.TestCase):
     def test_directory_scan_builds_assets_edges_and_all_required_findings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

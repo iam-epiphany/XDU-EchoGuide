@@ -45,9 +45,14 @@
             <span class="message-role">{{ item.role === 'user' ? '你' : '西电校园助手' }}</span>
             <small v-if="item.meta">{{ item.meta }}</small>
           </div>
-          <p>{{ item.content }}</p>
+          <!-- 工具调用过程徽标（Agentic RAG 可视化） -->
+          <div v-if="item.toolStatus" class="tool-badge">{{ item.toolStatus }}</div>
+          <p class="message-text">
+            {{ item.content }}
+            <span v-if="item.streaming" class="stream-cursor">▍</span>
+          </p>
         </article>
-        <div v-if="busy" class="message assistant typing">
+        <div v-if="busy && !streamingMessage" class="message assistant typing">
           <div class="typing-dots"><i></i><i></i><i></i></div>
         </div>
       </div>
@@ -127,7 +132,7 @@ import {
   addKnowledge,
   backendMeta,
   createInitialSettings,
-  requestChat,
+  requestChatStream,
   requestKnowledgeStats,
   requestSearch,
   saveSettings,
@@ -147,6 +152,7 @@ const docTitle = ref('校车时刻说明')
 const docContent = ref('校园穿梭车连接南校区与北校区，工作日班次较多，周末和节假日班次减少，具体时刻以校车管理最新通知为准。')
 const showKb = ref(false)
 const messageList = ref(null)
+const streamingMessage = ref(null)
 
 // 校园话题推荐（欢迎页卡片）
 const topics = [
@@ -191,33 +197,55 @@ async function sendMessage() {
   messages.value.push({ id: createId(), role: 'user', content })
   draft.value = ''
   busy.value = true
+
+  // 流式消息占位（SSE 逐 token 渲染）
+  const assistantMsg = {
+    id: createId(),
+    role: 'assistant',
+    content: '',
+    meta: '',
+    toolStatus: '',
+    streaming: true
+  }
+  messages.value.push(assistantMsg)
+  streamingMessage.value = assistantMsg
+
   try {
-    const response = await requestChat('python', settings, content)
-    if (response.conversationId && !settings.conversationId) {
-      settings.conversationId = response.conversationId
+    const done = await requestChatStream('python', settings, content, {
+      onEvent: (ev) => {
+        if (ev.type === 'delta') {
+          assistantMsg.content += ev.text
+        } else if (ev.type === 'tool') {
+          if (ev.status === 'start') {
+            assistantMsg.toolStatus = `🔍 ${ev.name} · ${ev.input?.query || '检索中…'}`
+          } else {
+            const titles = (ev.titles || []).slice(0, 3).join(' / ')
+            assistantMsg.toolStatus = `✅ 检索完成${titles ? '：' + titles : ''}`
+          }
+        } else if (ev.type === 'meta') {
+          assistantMsg.meta = [ev.domain, ev.action, ev.agent].filter(Boolean).join(' · ')
+        }
+      }
+    })
+    if (done.conv_id && !settings.conversationId) {
+      settings.conversationId = done.conv_id
       persist()
     }
-    const meta = [
-      response.intent,
-      response.agentType,
-      response.knowledgeUsed ? 'RAG' : '',
-      response.escalated ? '转人工' : ''
+    assistantMsg.content = done.response
+    assistantMsg.streaming = false
+    assistantMsg.meta = [
+      done.intent,
+      done.agent_type,
+      done.knowledge_used ? 'RAG' : '',
+      done.escalated ? '转人工' : ''
     ].filter(Boolean).join(' · ')
-    messages.value.push({
-      id: createId(),
-      role: 'assistant',
-      content: response.response,
-      meta
-    })
   } catch (error) {
-    messages.value.push({
-      id: createId(),
-      role: 'assistant',
-      content: error.message,
-      meta: '请求失败'
-    })
+    assistantMsg.content = error.message
+    assistantMsg.meta = '请求失败'
+    assistantMsg.streaming = false
   } finally {
     busy.value = false
+    streamingMessage.value = null
     await nextTick()
     messageList.value?.scrollTo({ top: messageList.value.scrollHeight, behavior: 'smooth' })
   }

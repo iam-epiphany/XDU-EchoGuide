@@ -6,13 +6,13 @@ import httpx
 import jwt
 from fastapi.testclient import TestClient
 
-from echoguard.app import app
+from echoguide_guard.app import app
 
 
 def test_agent_identity_reaches_mcp_policy_and_audit(monkeypatch, tmp_path):
-    monkeypatch.setenv("ECHOGUARD_TARGET", str(tmp_path))
-    monkeypatch.setenv("ECHOGUARD_AUDIT_DB", str(tmp_path / "audit.sqlite3"))
-    monkeypatch.setenv("ECHOGUARD_JWT_SECRET", "test-secret")
+    monkeypatch.setenv("ECHOGUIDE_TARGET", str(tmp_path))
+    monkeypatch.setenv("ECHOGUIDE_AUDIT_DB", str(tmp_path / "audit.sqlite3"))
+    monkeypatch.setenv("ECHOGUIDE_JWT_SECRET", "test-secret")
 
     upstream_calls: list[str] = []
 
@@ -76,8 +76,8 @@ def test_agent_identity_reaches_mcp_policy_and_audit(monkeypatch, tmp_path):
 
 
 def test_direct_mcp_call_without_identity_is_fail_closed(monkeypatch, tmp_path):
-    monkeypatch.setenv("ECHOGUARD_TARGET", str(tmp_path))
-    monkeypatch.setenv("ECHOGUARD_AUDIT_DB", str(tmp_path / "audit.sqlite3"))
+    monkeypatch.setenv("ECHOGUIDE_TARGET", str(tmp_path))
+    monkeypatch.setenv("ECHOGUIDE_AUDIT_DB", str(tmp_path / "audit.sqlite3"))
 
     with TestClient(app) as client:
         response = client.post(

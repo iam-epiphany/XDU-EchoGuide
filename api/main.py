@@ -5,6 +5,7 @@
 所有核心组件在 lifespan 中初始化，通过环境变量配置。
 """
 import asyncio
+import json
 import logging
 import os
 import pathlib
@@ -21,7 +22,7 @@ if _ROOT not in sys.path:
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Response, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
@@ -50,6 +51,7 @@ _tool_manager = None
 _monitor      = None
 _evaluator    = None
 _skill_manager = None
+_semantic_cache = None
 
 
 def _anthropic_cfg() -> Dict[str, Any]:
@@ -73,9 +75,9 @@ async def lifespan(app: FastAPI):
     print(BANNER, flush=True)
 
     from agents.agent_orchestrator import AgentOrchestrator, Request
-    from core.intent_recognizer import IntentRecognizer
     from evaluation.evaluator import EndToEndEvaluator
     from mcp.knowledge_base import KnowledgeBase
+    from mcp.semantic_cache import SemanticCache
     from mcp.tool_manager import MCPToolManager, Tool
     from memory.conversation_memory import MemoryManager
     from monitor.performance_monitor import PerformanceMonitor
@@ -83,13 +85,6 @@ async def lifespan(app: FastAPI):
 
     cfg = _anthropic_cfg()
     logger.info(f"模型: {cfg['model']}  base_url: {cfg.get('base_url', '(官方)')}")
-
-    # 意图识别器（Orchestrator 内部也会创建，这里单独暴露给 Evaluator）
-    recognizer = IntentRecognizer(
-        api_key=cfg["api_key"],
-        base_url=cfg.get("base_url"),
-        model=cfg["model"],
-    )
 
     # Skills：启动时从目录加载业务能力说明，并在 Agent 调用 LLM 时动态注入。
     skills_dir = os.getenv("ECHOGUIDE_SKILLS_DIR", str(pathlib.Path(_ROOT) / "skills"))
@@ -99,7 +94,7 @@ async def lifespan(app: FastAPI):
     )
     _skill_manager.load()
 
-    # Agent 编排器
+    # Agent 编排器（内部持有意图识别器，供评测器复用，避免双实例缓存分家）
     _orchestrator = AgentOrchestrator(
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url"),
@@ -143,13 +138,15 @@ async def lifespan(app: FastAPI):
 
     _tool_manager.register(Tool(
         name="knowledge_search",
-        description="搜索知识库（基于 ChromaDB 向量检索）",
+        description="搜索西电校园知识库（基于 ChromaDB 向量检索），返回相关文档片段",
         handler=kb.search_handler,
         schema={
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
-                "top_k": {"type": "integer"},
+                "query": {"type": "string", "description": "检索查询（可带领域词）"},
+                "top_k": {"type": "integer", "description": "返回条数，默认 5"},
+                "min_score": {"type": "number", "description": "相关性阈值，默认 0.25"},
+                "domain": {"type": "string", "description": "领域过滤：academic/campus_life/affairs/it_help"},
             },
             "required": ["query"],
         },
@@ -157,6 +154,25 @@ async def lifespan(app: FastAPI):
         supports_rerank=True,
         fallback=knowledge_fallback,
     ))
+
+    # Agentic RAG：把工具管理器注入 Agent 池，让 Agent 自主决定何时检索知识库
+    _orchestrator.set_tool_manager(_tool_manager)
+
+    # 语义缓存（GPTCache 思路）：相似问题直接复用答案，成本/延迟趋近于 0
+    _semantic_cache = SemanticCache(
+        chroma_host=os.getenv("CHROMA_HOST", "chromadb"),
+        chroma_port=int(os.getenv("CHROMA_PORT", "8000")),
+        chroma_path=os.getenv("CHROMA_PERSIST_DIRECTORY", "/app/data/chroma"),
+        threshold=float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.90")),
+        enabled=os.getenv("SEMANTIC_CACHE_ENABLED", "1") == "1",
+    )
+
+    # EchoGuard 真实接入：中间件形式保护 /chat 等敏感端点（默认关闭）
+    if os.getenv("ECHOGUIDE_GUARD_ENABLED", "0") == "1":
+        from echoguide_guard.integration import EchoGuardMiddleware, GuardSettings
+
+        app.add_middleware(EchoGuardMiddleware, settings=GuardSettings())
+        logger.warning("[EchoGuard] 中间件已接入真实请求链（认证/注入检测/限流/脱敏审计）")
 
     # 性能监控（可选启动 Prometheus）
     prom_port = int(os.getenv("PROMETHEUS_PORT", "0")) or None
@@ -169,13 +185,17 @@ async def lifespan(app: FastAPI):
     )
     await _monitor.start()
 
-    # 评测器
+    # 评测器（复用编排器内部的意图识别器，避免双实例缓存/统计分家）
+    # 双模型 LLM-as-Judge：评判模型可与生成模型分离，消除自评偏差
     _evaluator = EndToEndEvaluator(
         orchestrator=_orchestrator,
-        recognizer=recognizer,
+        recognizer=_orchestrator.intent_recognizer,
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url"),
         model=cfg["model"],
+        judge_api_key=os.getenv("EVAL_JUDGE_API_KEY") or cfg["api_key"],
+        judge_base_url=os.getenv("EVAL_JUDGE_BASE_URL") or cfg.get("base_url"),
+        judge_model=os.getenv("EVAL_JUDGE_MODEL") or cfg["model"],
         baseline_path=os.getenv("EVAL_BASELINE_PATH", "/app/data/eval/baseline.json"),
     )
 
@@ -213,6 +233,8 @@ class ChatResponse(BaseModel):
     conv_id:     str
     response:    str
     intent:      str
+    domain:      str = "other"
+    action:      str = "other"
     agent_type:  str
     escalated:   bool
     latency_ms:  float
@@ -247,115 +269,264 @@ async def reload_skills():
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, response: Response):
     """
     主对话接口。完整流程：
-      记忆读取 → 意图识别 → Agent 路由 → 执行 → 记忆写入
+      语义缓存 → 记忆读取 → 意图识别（领域×动作）→ Agent 路由 →
+      Agentic RAG 执行 → 记忆写入 → 语义缓存写入
     """
     if _orchestrator is None or _memory is None:
         raise HTTPException(503, "服务未就绪")
 
     from agents.agent_orchestrator import Request as OrcReq
+    from core.tracing import begin_trace, end_trace, span
     from memory.conversation_memory import MsgRole
 
     conv_id = req.conv_id or str(uuid.uuid4())
 
-    # 1. 读取记忆上下文
-    mem_ctx = await _memory.get_context(req.user_id, conv_id, query=req.message)
+    # 全链路 trace（X-Trace-Id 响应头，/traces/{id} 可查）
+    trace = begin_trace("chat")
+    trace.tags.update({"user_id": req.user_id, "conv_id": conv_id})
+    response.headers["X-Trace-Id"] = trace.trace_id
 
-    # 2. 构建编排请求（含对话历史，用于意图识别上下文）
-    history = [
-        {"role": m.role.value, "content": m.content}
-        for m in mem_ctx.recent_messages[-5:]
-    ] if mem_ctx.recent_messages else None
+    try:
+        # 0. 语义缓存：相似问题直接复用答案（GPTCache 思路）
+        cached = _semantic_cache.get(req.message) if _semantic_cache else None
+        if cached:
+            logger.info(f"语义缓存命中 {req.message[:30]!r}")
+            await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
+            await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, cached["response"])
+            return ChatResponse(
+                conv_id=conv_id,
+                response=cached["response"],
+                intent=cached["domain"],
+                domain=cached["domain"],
+                action="query",
+                agent_type=cached["agent_type"],
+                escalated=False,
+                latency_ms=0.0,
+                knowledge_used=True,
+            )
 
-    knowledge_text, knowledge_used = await _build_knowledge_context(req.message)
-    context_parts = [mem_ctx.to_prompt_text()]
-    if knowledge_text:
-        context_parts.append(knowledge_text)
-    full_context = "\n\n".join(part for part in context_parts if part)
+        # 1. 读取记忆上下文
+        async with span("memory_read"):
+            mem_ctx = await _memory.get_context(req.user_id, conv_id, query=req.message)
 
-    orch_req = OrcReq(
-        message=req.message,
-        user_id=req.user_id,
-        conv_id=conv_id,
-        context=full_context,
-        history=history,
-    )
+        # 2. 构建编排请求（含对话历史，用于意图识别上下文与追问继承）
+        history = [
+            {"role": m.role.value, "content": m.content}
+            for m in mem_ctx.recent_messages[-5:]
+        ] if mem_ctx.recent_messages else None
 
-    # 3. 执行
-    result = await _orchestrator.run(orch_req)
+        orch_req = OrcReq(
+            message=req.message,
+            user_id=req.user_id,
+            conv_id=conv_id,
+            context=mem_ctx.to_prompt_text(),
+            history=history,
+        )
 
-    # 4. 写入记忆
-    await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
-    await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, result.response)
+        # 3. 执行（RAG 检索由 Agent 通过工具调用自主完成 —— Agentic RAG）
+        async with span("orchestrator_run"):
+            result = await _orchestrator.run(orch_req)
 
-    # 5. 异步更新用户画像（不阻塞响应）
-    asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
+        # 4. 写入记忆
+        async with span("memory_write"):
+            await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
+            await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, result.response)
 
-    return ChatResponse(
-        conv_id=conv_id,
-        response=result.response,
-        intent=result.intent.value if result.intent else "other",
-        agent_type=result.agent_type.value,
-        escalated=result.escalated,
-        latency_ms=round(result.latency_ms, 1),
-        knowledge_used=knowledge_used,
-    )
+        # 5. 异步更新用户画像 + 语义缓存（不阻塞响应）
+        asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
+        if _semantic_cache and result.domain and result.domain.value != "other":
+            _semantic_cache.put(
+                req.message, result.response,
+                domain=result.domain.value,
+                agent_type=result.agent_type.value,
+            )
+
+        return ChatResponse(
+            conv_id=conv_id,
+            response=result.response,
+            intent=result.domain.value if result.domain else "other",
+            domain=result.domain.value if result.domain else "other",
+            action=result.action.value if result.action else "other",
+            agent_type=result.agent_type.value,
+            escalated=result.escalated,
+            latency_ms=round(result.latency_ms, 1),
+            knowledge_used="knowledge_search" in result.tools_used,
+        )
+    finally:
+        end_trace()
 
 
-async def _build_knowledge_context(message: str, top_k: int = 3) -> tuple[str, bool]:
+# （已移除）RAG 上下文改由 Agent 通过工具调用自主获取 —— Agentic RAG。
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
     """
-    为 /chat 主链路构建 RAG 知识上下文。
+    流式对话接口（SSE / Server-Sent Events）。
 
-    这里复用 MCPToolManager 的查询改写、并行召回、重排、fallback 能力。
+    事件序列：
+      event: meta   意图/Agent 识别结果（含置信度）
+      event: tool   Agent 工具调用过程（如 RAG 检索中/完成）
+      event: delta  生成内容的增量文本（逐 token）
+      event: done   最终汇总（完整回答、耗时、是否用 RAG）
+      event: error  出错信息
+    """
+    if _orchestrator is None or _memory is None:
+        raise HTTPException(503, "服务未就绪")
+
+    from agents.agent_orchestrator import Request as OrcReq
+    from core.tracing import begin_trace, end_trace, span
+    from memory.conversation_memory import MsgRole
+    from fastapi.responses import StreamingResponse
+
+    conv_id = req.conv_id or str(uuid.uuid4())
+
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_event(ev: dict) -> None:
+            await queue.put(ev)
+
+        # 语义缓存命中：直接输出完整答案，跳过 LLM 链路
+        cached = _semantic_cache.get(req.message) if _semantic_cache else None
+        if cached:
+            await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
+            await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, cached["response"])
+            yield "data: " + json.dumps({"type": "hello", "conv_id": conv_id}, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({
+                "type": "meta", "domain": cached["domain"], "action": "query",
+                "agent": cached["agent_type"], "cached": True,
+            }, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({"type": "delta", "text": cached["response"]}, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({
+                "type": "done", "conv_id": conv_id, "response": cached["response"],
+                "intent": cached["domain"], "agent_type": cached["agent_type"],
+                "escalated": False, "latency_ms": 0.0, "knowledge_used": True, "cached": True,
+            }, ensure_ascii=False) + "\n\n"
+            return
+
+        async def run_and_finish() -> None:
+            trace = begin_trace("chat_stream")
+            try:
+                async with span("memory_read"):
+                    mem_ctx = await _memory.get_context(req.user_id, conv_id, query=req.message)
+                history = [
+                    {"role": m.role.value, "content": m.content}
+                    for m in mem_ctx.recent_messages[-5:]
+                ] if mem_ctx.recent_messages else None
+
+                orch_req = OrcReq(
+                    message=req.message,
+                    user_id=req.user_id,
+                    conv_id=conv_id,
+                    context=mem_ctx.to_prompt_text(),
+                    history=history,
+                )
+                async with span("orchestrator_run"):
+                    result = await _orchestrator.run(orch_req, on_event=on_event)
+
+                async with span("memory_write"):
+                    await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
+                    await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, result.response)
+                asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
+
+                if _semantic_cache and result.domain and result.domain.value != "other":
+                    _semantic_cache.put(
+                        req.message, result.response,
+                        domain=result.domain.value,
+                        agent_type=result.agent_type.value,
+                    )
+
+                await queue.put({
+                    "type": "done",
+                    "conv_id": conv_id,
+                    "response": result.response,
+                    "intent": result.domain.value if result.domain else "other",
+                    "agent_type": result.agent_type.value,
+                    "escalated": result.escalated,
+                    "latency_ms": round(result.latency_ms, 1),
+                    "knowledge_used": "knowledge_search" in result.tools_used,
+                })
+            except Exception as ex:
+                logger.exception("流式对话失败")
+                await queue.put({"type": "error", "message": str(ex)})
+            finally:
+                end_trace()
+
+        task = asyncio.create_task(run_and_finish())
+
+        yield "data: " + json.dumps({"type": "hello", "conv_id": conv_id}, ensure_ascii=False) + "\n\n"
+        while True:
+            ev = await queue.get()
+            yield "data: " + json.dumps(ev, ensure_ascii=False) + "\n\n"
+            if ev.get("type") in ("done", "error"):
+                break
+        await task
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲，保证逐 token 透传
+        },
+    )
+
+
+@app.post("/mcp", tags=["MCP"])
+async def mcp_endpoint(request: Request):
+    """
+    标准 MCP 协议端点（JSON-RPC 2.0 / Streamable HTTP transport）。
+
+    支持 initialize / tools/list / tools/call / ping，任何 MCP 客户端可即插即用。
     """
     if _tool_manager is None:
-        return "", False
-    if not _should_use_knowledge(message):
-        return "", False
-    try:
-        result = await _tool_manager.search_with_rewrite("knowledge_search", message, top_k=top_k)
-        if not result.success or not isinstance(result.data, list) or not result.data:
-            return "", False
+        raise HTTPException(503, "工具管理器未初始化")
+    from mcp.protocol import MCPServer
 
-        parts = ["[知识库检索结果]"]
-        used = False
-        for i, item in enumerate(result.data[:top_k], start=1):
-            if not isinstance(item, dict):
-                continue
-            title = str(item.get("title", "未命名文档"))
-            content = str(item.get("content", "")).strip()
-            score = item.get("score", "")
-            if not content:
-                continue
-            used = True
-            parts.append(f"{i}. 标题: {title}\n   相关度: {score}\n   内容: {content[:600]}")
-
-        if not used:
-            return "", False
-        parts.append("请优先依据以上知识库内容回答；如果知识库内容不足，再结合西电校园常识说明，并提示以学校官方通知为准。")
-        return "\n".join(parts), True
-    except Exception as ex:
-        logger.warning(f"构建知识库上下文失败: {ex}")
-        return "", False
+    server = MCPServer(_tool_manager)
+    raw = (await request.body()).decode("utf-8", errors="ignore")
+    return await server.handle(raw)
 
 
-def _should_use_knowledge(message: str) -> bool:
-    """跳过纯寒暄，校园业务类问题才检索知识库，避免无关 RAG 干扰回复。"""
-    msg = (message or "").strip().lower()
-    if not msg:
-        return False
-    greetings = {"你好", "您好", "嗨", "hi", "hello", "hey", "早上好", "晚上好"}
-    if msg in greetings:
-        return False
-    campus_keywords = [
-        "选课", "课表", "考试", "成绩", "绩点", "学分", "重修", "保研", "转专业",
-        "食堂", "宿舍", "校车", "校园卡", "快递", "水电", "图书馆", "自习",
-        "校历", "请假", "奖学金", "助学金", "证明", "缴费", "学费", "注册",
-        "教务系统", "校园网", "vpn", "邮箱", "统一身份", "报错", "登录不上",
+@app.get("/mcp", tags=["MCP"])
+async def mcp_info():
+    """MCP 服务信息。"""
+    if _tool_manager is None:
+        raise HTTPException(503, "工具管理器未初始化")
+    tools = [
+        {"name": name, "description": t.description, "inputSchema": t.schema}
+        for name, t in _tool_manager._tools.items()
     ]
-    return len(msg) >= 4 or any(kw in msg for kw in campus_keywords)
+    return {
+        "server": "echoguide-mcp",
+        "protocolVersion": "2025-03-26",
+        "tools": tools,
+        "note": "POST /mcp 为 JSON-RPC 2.0 端点（initialize/tools/list/tools/call）",
+    }
+
+
+@app.get("/traces", tags=["观测"])
+async def traces_list(limit: int = 20):
+    """最近的全链路 trace（排障/演示用）。"""
+    from core.tracing import list_traces
+
+    return {"traces": list_traces(limit=limit)}
+
+
+@app.get("/traces/{trace_id}", tags=["观测"])
+async def trace_detail(trace_id: str):
+    """单条 trace 详情：request → intent → agent → tool → LLM 逐跳耗时。"""
+    from core.tracing import get_trace
+
+    record = get_trace(trace_id)
+    if record is None:
+        raise HTTPException(404, f"trace 不存在: {trace_id}")
+    return record
 
 
 @app.get("/monitor")
@@ -414,6 +585,7 @@ class EvalRunInput(BaseModel):
     """评测请求。为空时使用内置默认用例。"""
     intent_cases: Optional[List[EvalIntentInput]] = None
     dialog_cases: Optional[List[EvalDialogInput]] = None
+    routing_cases: Optional[List[Dict[str, Any]]] = None
 
 
 @app.post("/knowledge/add", tags=["知识库"])
@@ -500,7 +672,12 @@ async def run_eval(body: Optional[EvalRunInput] = None):
     """运行内置评测用例，返回评测报告。"""
     if _evaluator is None:
         raise HTTPException(503, "服务未就绪")
-    from evaluation.evaluator import DEFAULT_DIALOG_CASES, DEFAULT_INTENT_CASES, IntentTestCase
+    from evaluation.evaluator import (
+        DEFAULT_DIALOG_CASES,
+        DEFAULT_INTENT_CASES,
+        DEFAULT_ROUTING_CASES,
+        IntentTestCase,
+    )
 
     if body and body.intent_cases is not None:
         intent_cases = [
@@ -522,9 +699,12 @@ async def run_eval(body: Optional[EvalRunInput] = None):
     else:
         dialog_cases = DEFAULT_DIALOG_CASES
 
+    routing_cases = body.routing_cases if body and body.routing_cases is not None else DEFAULT_ROUTING_CASES
+
     report = await _evaluator.run(
         intent_cases=intent_cases,
         dialog_cases=dialog_cases,
+        routing_cases=routing_cases,
     )
     return {
         "pass_rate":       report.pass_rate,

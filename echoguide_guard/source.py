@@ -1,4 +1,4 @@
-"""Read-only source adapters used by the EchoGuard static scanner.
+"""Read-only source adapters used by the EchoGuide Guard static scanner.
 
 The scanner accepts either a directory or a ZIP archive.  ZIP members are read
 in-place: the archive is never extracted, which keeps a scan from writing

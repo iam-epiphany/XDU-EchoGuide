@@ -1,4 +1,4 @@
-"""Core value objects shared by the EchoGuard policy boundary.
+"""Core value objects shared by the EchoGuide Guard policy boundary.
 
 The models deliberately contain no AgentRange challenge identifiers.  A policy
 decision must be explainable from the authenticated actor, selected skill and

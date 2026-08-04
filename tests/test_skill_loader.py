@@ -78,6 +78,51 @@ def test_keyword_matching_routes_to_correct_agent():
         tmp.cleanup()
 
 
+def test_followup_question_inherits_skill_via_history():
+    """追问感知回归：'那几点开门呢？' 自身无关键词，但结合历史仍注入 campus skill。"""
+    tmp, mgr = _make_manager()
+    try:
+        history = [
+            {"role": "user", "content": "南校区食堂几点关门？"},
+            {"role": "assistant", "content": "南校区食堂一般晚上七点关门。"},
+        ]
+        # 不带历史：不注入（旧版缺陷）
+        assert not mgr.prompt_for("那几点开门呢？", "campus_life")
+        # 带历史：注入 campus_life skill（追问继承）
+        assert mgr.prompt_for("那几点开门呢？", "campus_life", history=history)
+    finally:
+        tmp.cleanup()
+
+
+def test_ascii_keyword_word_boundary_matching():
+    """子串误命中回归：'api' 不命中 'capital'。"""
+    tmp = tempfile.TemporaryDirectory()
+    root = Path(tmp.name)
+    _write_skill(
+        root,
+        "it_help",
+        """---
+name: 校园IT支持规范
+description: IT 排障规范
+keywords: api,校园网
+agents: it_help
+enabled: true
+---
+
+# 校园IT支持规范
+调用 api 时注意鉴权。
+""",
+    )
+    mgr = SkillManager(root_dir=str(root))
+    mgr.load()
+    try:
+        assert not mgr.prompt_for("capital 是什么意思", "it_help")
+        assert not mgr.prompt_for("capital", "it_help")
+        assert mgr.prompt_for("调用 api 报错", "it_help")
+    finally:
+        tmp.cleanup()
+
+
 def test_prompt_injection_mentions_echoguide_and_rules():
     tmp, mgr = _make_manager()
     try:

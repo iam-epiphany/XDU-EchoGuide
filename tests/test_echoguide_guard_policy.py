@@ -4,10 +4,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from echoguard.models import Actor, AuditEvent, PolicyDecision, TraceContext
-from echoguard.policy import PolicyEngine
-from echoguard.redaction import REDACTED, find_sensitive_labels, redact_data
-from echoguard.runtime import TraceRegistry
+from echoguide_guard.models import Actor, AuditEvent, PolicyDecision, TraceContext
+from echoguide_guard.policy import PolicyEngine
+from echoguide_guard.redaction import REDACTED, find_sensitive_labels, redact_data
+from echoguide_guard.runtime import TraceRegistry
 
 
 def context(role: str, *, tenant: str | None = None, **kwargs) -> TraceContext:

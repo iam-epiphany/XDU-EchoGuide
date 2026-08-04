@@ -1,16 +1,16 @@
-# AgentRange 接入 EchoGuard
+# AgentRange 接入 EchoGuide Guard
 
-该集成使用 Compose overlay 将 OpsPilot 的 OpenAI 兼容请求和全部 MCP JSON-RPC 请求路由到 EchoGuard。靶场源码以只读卷挂载，供静态资产扫描使用。
+该集成使用 Compose overlay 将 OpsPilot 的 OpenAI 兼容请求和全部 MCP JSON-RPC 请求路由到 EchoGuide Guard。靶场源码以只读卷挂载，供静态资产扫描使用。
 
 ## 启动
 
-先将赛题 ZIP 解压到独立目录，并进入包含 AgentRange `docker-compose.yml` 的目录。不要把靶场源码复制进 EchoMind Git 仓库。
+先将赛题 ZIP 解压到独立目录，并进入包含 AgentRange `docker-compose.yml` 的目录。不要把靶场源码复制进 XDU-EchoGuide Git 仓库。
 
 在 PowerShell 中执行：
 
 ```powershell
-$env:ECHOGUARD_ROOT = (Resolve-Path 'D:\Agent-Project\EchoMind\EchoMind').Path
-$overlay = Join-Path $env:ECHOGUARD_ROOT 'integrations\agentrange\docker-compose.echoguard.yml'
+$env:ECHOGUIDE_GUARD_ROOT = (Resolve-Path 'D:\Agent-Project\XDU-EchoGuide').Path
+$overlay = Join-Path $env:ECHOGUIDE_GUARD_ROOT 'docs\archive\agentrange\docker-compose.echoguide-guard.yml'
 docker compose -f .\docker-compose.yml -f $overlay up -d --build
 ```
 
@@ -24,7 +24,7 @@ Invoke-RestMethod http://localhost:8200/api/v1/assets/latest
 
 ## 通过代理回放
 
-回放控制面仍直接访问 `llm-stub`，EchoGuard 不读取也不代理 `/admin/trajectories`。业务流量通过 Agent/Langflow 入口代理：
+回放控制面仍直接访问 `llm-stub`，EchoGuide Guard 不读取也不代理 `/admin/trajectories`。业务流量通过 Agent/Langflow 入口代理：
 
 ```powershell
 $env:OPSPILOT_BASE = 'http://localhost:8200/agent'
