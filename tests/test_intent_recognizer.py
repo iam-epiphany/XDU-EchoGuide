@@ -60,6 +60,21 @@ def test_pattern_recognizes_campus_domains():
         assert result["domain"] == expected, f"{msg} → {result['domain']}"
 
 
+def test_pattern_recognizes_personal_domain():
+    """个人助理领域：我的日程/待办/考试安排类问题。"""
+    rec = _recognizer()
+    cases = {
+        "今天有什么课": IntentDomain.PERSONAL,
+        "我的课表在哪看": IntentDomain.PERSONAL,
+        "帮我记个待办": IntentDomain.PERSONAL,
+        "我最近的考试安排": IntentDomain.PERSONAL,
+        "明天几点上课": IntentDomain.PERSONAL,
+    }
+    for msg, expected in cases.items():
+        result = rec._pattern_recognize(msg)
+        assert result["domain"] == expected, f"{msg} → {result['domain']}"
+
+
 def test_pattern_request_form_keeps_domain():
     """P0 回归：请求句式不再吞掉领域信息。"""
     rec = _recognizer()

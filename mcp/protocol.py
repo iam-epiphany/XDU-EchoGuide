@@ -33,8 +33,9 @@ INTERNAL_ERROR     = -32603
 class MCPServer:
     """基于内部 MCPToolManager 的标准 MCP Server 实现。"""
 
-    def __init__(self, tool_manager):
+    def __init__(self, tool_manager, user_id: str = "anonymous"):
         self._tool_manager = tool_manager
+        self._user_id = user_id   # 调用方（HTTP 层）注入的用户身份，供个人工具使用
         self._initialized = False
         self._client_info: Dict[str, Any] = {}
 
@@ -56,18 +57,31 @@ class MCPServer:
         return await self._dispatch(payload)
 
     async def _dispatch(self, req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if not isinstance(req, dict) or req.get("jsonrpc") != JSONRPC_VERSION:
-            return self._error(req.get("id"), INVALID_REQUEST, "Invalid Request: 缺少 jsonrpc=2.0")
+        if not isinstance(req, dict):
+            return self._error(None, INVALID_REQUEST, "Invalid Request: 请求必须是 JSON 对象")
+
+        request_id = req.get("id")
+        if req.get("jsonrpc") != JSONRPC_VERSION:
+            return self._error(request_id, INVALID_REQUEST, "Invalid Request: 缺少 jsonrpc=2.0")
 
         method = req.get("method", "")
-        params = req.get("params", {}) or {}
-        request_id = req.get("id")
 
-        # 通知类消息（无 id）不返回响应
+        # 通知类消息（无 id 是合法的）不返回响应
         if method.startswith("notifications/"):
             if method == "notifications/initialized":
                 self._initialized = True
             return None
+
+        # 非通知类请求必须带 id；缺 id 视为 Invalid Request
+        if request_id is None and method:
+            return self._error(None, INVALID_REQUEST, "Invalid Request: 请求缺少 id")
+
+        params = req.get("params", {}) or {}
+        if params is None:
+            params = {}
+        # params 非对象（数组/字符串）→ Invalid Params（-32602）
+        if not isinstance(params, dict):
+            return self._error(request_id, INVALID_PARAMS, "Invalid Params: params 必须是对象")
 
         handlers = {
             "initialize": self._initialize,
@@ -120,7 +134,12 @@ class MCPServer:
         if not name:
             raise MCPError(INVALID_PARAMS, "tools/call 缺少 name")
 
-        result = await self._tool_manager.call(name, arguments, context={"mcp": True})
+        # 透传调用方注入的 user_id：个人工具（课表/待办/DDL）在 MCP 路径下按身份生效。
+        # 信任模型与前端一致（HTTP 层通过 X-User-Id 请求头传入，同 user_id 软身份）。
+        result = await self._tool_manager.call(
+            name, arguments,
+            context={"mcp": True, "user_id": self._user_id},
+        )
         if not result.success:
             raise MCPError(INTERNAL_ERROR, f"工具执行失败: {result.error}")
 

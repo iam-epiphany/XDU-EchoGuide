@@ -98,6 +98,54 @@ def test_notification_returns_none():
     assert resp is None
 
 
+def test_non_notification_missing_id_returns_invalid_request():
+    """回归：非通知类请求缺 id → -32600（之前会返回 id=null 的成功结果）。"""
+    server = _make_server()
+    resp = _run(server.handle(json.dumps({
+        "jsonrpc": "2.0", "method": "tools/list", "params": {},
+    })))
+    assert resp["error"]["code"] == -32600
+
+
+def test_params_not_object_returns_invalid_params():
+    """回归：params 为数组/字符串时返回 -32602（之前是 -32603 INTERNAL_ERROR）。"""
+    server = _make_server()
+    resp = _run(server.handle(json.dumps({
+        "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": ["echo", {}],
+    })))
+    assert resp["error"]["code"] == -32602
+
+
+def test_param_type_coercion_tolerates_llm_quirks():
+    """回归：LLM 脏参数（数字字符串/布尔字符串/单值数组）被宽容转换，不打断工具调用。"""
+    tm = MCPToolManager(api_key=FAKE_KEY)
+
+    async def echo_handler(params, context):
+        return params
+
+    tm.register(Tool(
+        name="echo2",
+        description="回显工具",
+        handler=echo_handler,
+        schema={
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer"},
+                "done": {"type": "boolean"},
+                "kinds": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    ))
+    result = _run(tm.call("echo2", {"days": "3", "done": "false", "kinds": "ddl"}, {}))
+    assert result.success is True
+    assert result.data == {"days": 3, "done": False, "kinds": ["ddl"]}
+
+    # 无法转换的类型 → 工具失败但不崩溃
+    bad = _run(tm.call("echo2", {"days": "abc"}, {}))
+    assert bad.success is False
+    assert "integer" in bad.error
+
+
 def test_batch_requests_supported():
     server = _make_server()
     batch = json.dumps([

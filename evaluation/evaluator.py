@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import pathlib
+import re
 import statistics
 import time
 from dataclasses import asdict, dataclass, field
@@ -121,27 +122,62 @@ Agent 响应: {response}
             context_section=ctx_section,
         )
         prompt = self._clean_text(prompt)
+        # 最多重试 2 次：LLM 偶尔返回纯文本/格式漂移，重试能显著降低误判
+        for attempt in range(2):
+            try:
+                resp = await self._client.messages.create(
+                    model=self._model, max_tokens=256, temperature=0.0,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                raw = resp.content[0].text
+                data = self._parse_scores(raw)
+                if data is None:
+                    raise ValueError("Judge 输出缺少 JSON")
+                return QualityScores(**data)
+            except Exception as ex:
+                logger.warning(f"LLM Judge 第 {attempt + 1} 次失败: {ex}")
+                if attempt == 0:
+                    # 重试时提示必须输出严格 JSON，减少格式漂移
+                    prompt = (
+                        prompt
+                        + "\n\n注意：上次输出无法解析。请只输出一个 JSON 对象，"
+                        "不要包含任何其他文字、注释或 Markdown 代码块。"
+                    )
+        return QualityScores(
+            0.5, 0.5, 0.5, 0.5,
+            judge_failed=True,
+            error="Judge 连续 2 次输出无法解析",
+        )
+
+    @staticmethod
+    def _parse_scores(raw: str) -> Optional[Dict[str, float]]:
+        """
+        从 Judge 输出中提取分数 JSON。
+
+        兼容三种形态：
+          - 纯 JSON 对象：{"relevance": 0.9, ...}
+          - Markdown 代码块包裹：```json {...} ```
+          - JSON 前后有少量说明文字
+        """
+        text = (raw or "").strip()
+        # 去掉 ```json ... ``` 代码块
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
+        s, e = text.find("{"), text.rfind("}")
+        if s == -1 or e <= s:
+            return None
         try:
-            resp = await self._client.messages.create(
-                model=self._model, max_tokens=256, temperature=0.0,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = resp.content[0].text
-            s, e = raw.find("{"), raw.rfind("}") + 1
-            data = json.loads(raw[s:e])
-            return QualityScores(
-                relevance=float(data.get("relevance", 0.5)),
-                accuracy=float(data.get("accuracy", 0.5)),
-                completeness=float(data.get("completeness", 0.5)),
-                helpfulness=float(data.get("helpfulness", 0.5)),
-            )
-        except Exception as ex:
-            logger.warning(f"LLM Judge 失败: {ex}")
-            return QualityScores(
-                0.5, 0.5, 0.5, 0.5,
-                judge_failed=True,
-                error=str(ex),
-            )
+            data = json.loads(text[s:e + 1])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        return {
+            "relevance": float(data.get("relevance", 0.5)),
+            "accuracy": float(data.get("accuracy", 0.5)),
+            "completeness": float(data.get("completeness", 0.5)),
+            "helpfulness": float(data.get("helpfulness", 0.5)),
+        }
 
     @staticmethod
     def _clean_text(value: Any) -> str:
@@ -585,7 +621,9 @@ class EndToEndEvaluator:
 DEFAULT_INTENT_CASES: List[IntentTestCase] = [
     # 领域维度（路由依据）—— 覆盖"请求句式"不再丢领域
     IntentTestCase("这学期选课什么时候开始？",   "academic"),
-    IntentTestCase("帮我查一下课表",              "academic"),
+    IntentTestCase("帮我查一下我的课表",          "personal"),
+    IntentTestCase("今天有什么课？",              "personal"),
+    IntentTestCase("我最近的考试安排？",          "personal"),
     IntentTestCase("南校区食堂几点关门？",        "campus_life"),
     IntentTestCase("校园卡丢了怎么补办？",        "campus_life"),
     IntentTestCase("帮我查一下校园卡余额",        "campus_life"),

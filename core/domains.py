@@ -27,6 +27,7 @@ class IntentDomain(Enum):
     CAMPUS_LIFE = "campus_life"   # 校园生活
     AFFAIRS     = "affairs"       # 校务咨询
     IT_HELP     = "it_help"       # IT 支持
+    PERSONAL    = "personal"      # 个人助理（课表/待办/日程提醒）
     OTHER       = "other"
 
 
@@ -45,7 +46,7 @@ class IntentAction(Enum):
 # 注意：中文关键词全部 ≥2 字；英文关键词匹配时按整词（词边界）处理。
 DOMAIN_KEYWORDS: Dict[IntentDomain, List[str]] = {
     IntentDomain.ACADEMIC: [
-        "选课", "课表", "考试", "成绩", "绩点", "学分", "重修", "保研", "转专业",
+        "选课", "考试", "成绩", "绩点", "学分", "重修", "保研", "转专业",
         "挂科", "补考", "培养方案", "先修课", "培养计划", "退改选", "期末考试",
     ],
     IntentDomain.CAMPUS_LIFE: [
@@ -62,6 +63,15 @@ DOMAIN_KEYWORDS: Dict[IntentDomain, List[str]] = {
         "密码重置", "验证码", "网络连不上", "无法访问", "账号", "激活", "配置",
         "证书", "重置密码",
     ],
+    # 个人助理：课表类词归个人领域（"我的课表/今天有什么课"），
+    # academic 只保留教务规则类词（选课流程/绩点算法）。
+    # "考试" 两域共有：个人化表述（考试安排/倒计时）由个人化词组加权胜出，
+    # 教务规则类（期末考试时间）仍由 academic 的多词命中胜出。
+    IntentDomain.PERSONAL: [
+        "课表", "课程表", "我的课表", "日程", "待办", "提醒", "作业", "考试",
+        "考试安排", "ddl", "上课", "下课", "什么课", "第几节", "几点上课",
+        "几点下课", "安排",
+    ],
 }
 
 # 领域关键词对应的 Agent 类型（供路由 / 协作检测共用）
@@ -70,6 +80,7 @@ DOMAIN_AGENT_MAP: Dict[IntentDomain, str] = {
     IntentDomain.CAMPUS_LIFE: "campus_life",
     IntentDomain.AFFAIRS:     "affairs",
     IntentDomain.IT_HELP:     "it_help",
+    IntentDomain.PERSONAL:    "personal",
 }
 
 # 动作关键词（领域无关的通用模式，只用于 action 维度兜底）

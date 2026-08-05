@@ -59,6 +59,7 @@ class Trace:
         self.trace_id = uuid.uuid4().hex[:12]
         self.name = name
         self.started = time.monotonic()
+        self.created = time.time()
         self.spans: List[Span] = []
         self.tags: Dict[str, Any] = {}
 
@@ -70,6 +71,7 @@ class Trace:
         return {
             "trace_id": self.trace_id,
             "name": self.name,
+            "ts": self.created,
             "duration_ms": round(self.duration_ms, 2),
             "tags": {k: str(v)[:200] for k, v in self.tags.items()},
             "spans": [span.to_dict() for span in self.spans],
@@ -92,12 +94,13 @@ def end_trace() -> Optional[Trace]:
     record = trace.to_dict()
     logger.info(f"[trace] {json.dumps(record, ensure_ascii=False)}")
     _traces[trace.trace_id] = record
-    # 环形缓冲：超容量清最旧，超 TTL 清理
+    # 环形缓冲：超容量清最旧；超 TTL 的旧 trace 一并清理
+    while len(_traces) > MAX_TRACES:
+        _traces.pop(next(iter(_traces)))
     now = time.time()
-    for tid in [k for k, v in _traces.items()][: max(0, len(_traces) - MAX_TRACES)]:
-        _traces.pop(tid, None)
-    stale = [k for k in _traces if k != trace.trace_id]
-    _ = stale  # 简化：TTL 由外部 /traces 清理策略处理
+    for tid, rec in list(_traces.items()):
+        if now - float(rec.get("ts", now)) > TRACE_TTL_S:
+            _traces.pop(tid, None)
     return trace
 
 

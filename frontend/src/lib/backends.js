@@ -134,6 +134,69 @@ export async function uploadKnowledge(type, settings, file) {
   })
 }
 
+// ── 个人数据中心（课表 / 待办 / DDL）────────────────────────────────────────
+
+/** 上传 .ics / .json 课表文件导入（按当前 userId）。 */
+export async function importScheduleFile(type, settings, file) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('user_id', settings.userId || 'anonymous')
+  return requestJson(backendMeta(type, settings).baseUrl, '/personal/schedule/import/file', {
+    method: 'POST',
+    body: form
+  })
+}
+
+/** 当前用户课表（本周周视图）。 */
+export async function getSchedule(type, settings) {
+  const userId = settings.userId || 'anonymous'
+  return requestJson(backendMeta(type, settings).baseUrl, `/personal/schedule?user_id=${encodeURIComponent(userId)}`)
+}
+
+/** 清空当前用户课表。 */
+export async function clearSchedule(type, settings) {
+  const userId = settings.userId || 'anonymous'
+  return requestJson(backendMeta(type, settings).baseUrl, `/personal/schedule?user_id=${encodeURIComponent(userId)}`, {
+    method: 'DELETE'
+  })
+}
+
+/** 待办列表（status: open/done/all）。 */
+export async function getTodos(type, settings, status = 'open') {
+  const userId = settings.userId || 'anonymous'
+  return requestJson(backendMeta(type, settings).baseUrl, `/personal/todo?user_id=${encodeURIComponent(userId)}&status=${status}`)
+}
+
+/** 新增待办 / DDL / 考试（kind: todo/ddl/exam，dueAt 可选）。 */
+export async function addTodo(type, settings, content, kind = 'todo', dueAt = '') {
+  return requestJson(backendMeta(type, settings).baseUrl, '/personal/todo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: settings.userId || 'anonymous',
+      content,
+      kind,
+      due_at: dueAt || null
+    })
+  })
+}
+
+/** 标记完成 / 恢复待办。 */
+export async function completeTodo(type, settings, id, done = true) {
+  const userId = settings.userId || 'anonymous'
+  return requestJson(backendMeta(type, settings).baseUrl, `/personal/todo/${id}/complete?user_id=${encodeURIComponent(userId)}&done=${done}`, {
+    method: 'POST'
+  })
+}
+
+/** 删除待办。 */
+export async function deleteTodo(type, settings, id) {
+  const userId = settings.userId || 'anonymous'
+  return requestJson(backendMeta(type, settings).baseUrl, `/personal/todo/${id}?user_id=${encodeURIComponent(userId)}`, {
+    method: 'DELETE'
+  })
+}
+
 function buildChatPayload(type, settings, message) {
   if (type === 'python') {
     return {

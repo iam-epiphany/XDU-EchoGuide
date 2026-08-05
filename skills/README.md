@@ -2,13 +2,14 @@
 
 EchoGuide 启动时会从 `ECHOGUIDE_SKILLS_DIR` 读取 Skills，并在匹配用户请求时注入到对应 Agent 的 system prompt。Skills 适合维护校园各业务领域的答复规范、办事流程 SOP、排障指引、升级（转人工/转部门）规则和禁止事项。
 
-当前内置四类 Skills，对应四个领域 Agent：
+当前内置五类 Skills，对应五个领域 Agent：
 
 ```text
-skills/academic/SKILL.md     # 学业支持：选课、课表、考试、成绩、绩点、重修、保研、转专业
+skills/academic/SKILL.md     # 学业支持：选课、考试、成绩、绩点、重修、保研、转专业
 skills/campus_life/SKILL.md  # 校园生活：宿舍、食堂、校车、校园卡、快递、水电、社团
 skills/affairs/SKILL.md      # 校务咨询：校历、请假、奖学金、助学金、证明开具、缴费、注册
 skills/it_help/SKILL.md      # IT 助手：教务系统、校园网、VPN、邮箱、统一身份认证排障
+skills/personal/SKILL.md     # 个人助理：我的课表、待办、考试/DDL、日程提醒（个人数据中心）
 ```
 
 ## Skill 文件格式
@@ -36,7 +37,7 @@ enabled: true
 - `name`：Skill 展示名称，会出现在注入给模型的 prompt 中。
 - `description`：简短说明，方便 `/skills` 接口排查。
 - `keywords`：触发关键词，用户消息命中后才注入；多个关键词用英文逗号或中文逗号分隔均可。
-- `agents`：适用 Agent，可填 `academic`、`campus_life`、`affairs`、`it_help`，多个值用逗号分隔。
+- `agents`：适用 Agent，可填 `academic`、`campus_life`、`affairs`、`it_help`、`personal`，多个值用逗号分隔。
 - `enabled`：是否启用，支持 `true/false`。
 
 ## 编写要求

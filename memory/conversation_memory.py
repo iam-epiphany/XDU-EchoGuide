@@ -14,6 +14,7 @@
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -31,6 +32,28 @@ class MsgRole(Enum):
     USER      = "user"
     ASSISTANT = "assistant"
     SYSTEM    = "system"
+
+
+# ── 画像信号检测 ──────────────────────────────────────────────────────────────
+# 用户消息含"偏好/背景声明"时才值得用 LLM 提炼画像；普通提问（"食堂几点关门"）
+# 不触发，避免每轮对话都调用 LLM 提炼造成成本浪费与画像污染。
+# 模式用 {0,N} 宽容中间词（如"我最近在准备考研"），避免只匹配紧邻表述。
+_PROFILE_SIGNAL_PATTERNS = (
+    r"我.{0,6}(喜欢|不喜欢|讨厌|最爱|爱)",
+    r"我是.{0,12}(学院|专业|年级|校区)",
+    r"我在.{0,8}(校区|宿舍|公寓|学院|部门)",
+    r"我(大|研)[一二三四五]",
+    r"我.{0,6}(经常|平时|每天|周末|习惯|打算|准备|计划|希望)",
+    r"我的.{0,8}(专业|学院|宿舍|校区|爱好|课表)",
+    r"我(想|要|决定|报名|参加).{0,6}(学|考|去|选)",
+)
+_PROFILE_SIGNAL_RE = re.compile("|".join(_PROFILE_SIGNAL_PATTERNS))
+
+
+def _has_profile_signal(messages: List["Message"]) -> bool:
+    """最近 2 条用户消息是否包含画像信号（偏好/背景声明）。"""
+    user_texts = [m.content for m in messages if m.role == MsgRole.USER][-2:]
+    return any(_PROFILE_SIGNAL_RE.search(t or "") for t in user_texts)
 
 
 @dataclass
@@ -156,21 +179,36 @@ class MemoryManager:
 
     async def update_profile(self, user_id: str, conv_id: str) -> None:
         """
-        从当前工作记忆中提炼用户偏好，更新用户画像。
-        用 LLM 提炼偏好，然后存入 ChromaDB（ChromaDB 内置 embedding，不依赖外部 API）。
+        从当前对话中提炼用户偏好，更新用户画像（按用户单条聚合）。
+
+        两个设计点（修复旧版缺陷）：
+        1. 成本控制 —— 只有最近用户消息包含"画像信号"（偏好/背景声明）才调用 LLM
+           提炼，普通提问（"食堂几点关门"）不重复提炼；
+        2. 按用户聚合 —— doc_id = {user_id}_profile 单条，新提炼结果与既有画像
+           合并去重（preferences 上限 20 条），消除旧版"每会话一条 + limit=1
+           无排序"导致的取不到最新画像问题。
         """
         user_id = self._safe_text(user_id)
         conv_id = self._safe_text(conv_id)
         messages = await self._get_working_memory(user_id, conv_id)
         if not messages:
             return
+        if not _has_profile_signal(messages):
+            logger.debug(f"无画像信号，跳过提炼: {user_id}")
+            return
 
         text = self._safe_text("\n".join(f"{m.role.value}: {m.content}" for m in messages[-10:]))
+        existing = await self._get_profile(user_id)
+        existing_text = self._safe_text(json.dumps(existing, ensure_ascii=False)) if existing else "（无既有画像）"
         prompt = f"""从以下西电校园用户对话中提炼用户偏好和关键实体，返回 JSON。
 对话:
 {text}
 
-返回格式: {{"preferences": ["..."], "entities": {{"院系专业": [], "年级": [], "校区": [], "诉求类型": []}}}}"""
+既有画像（合并时保留仍有效的信息，去除过时条目）:
+{existing_text}
+
+返回格式: {{"preferences": ["..."], "entities": {{"院系专业": [], "年级": [], "校区": [], "诉求类型": []}}}}
+要求：preferences 去重合并，最多 20 条；entities 每个字段最多 10 条。"""
         prompt = self._safe_text(prompt)
 
         try:
@@ -182,22 +220,25 @@ class MemoryManager:
             s, e = raw.find("{"), raw.rfind("}") + 1
             profile_data = json.loads(raw[s:e])
 
-            doc_id = f"{user_id}_profile_{conv_id}"
+            # 结构兜底 + 上限截断（LLM 输出不可信）
+            prefs = profile_data.get("preferences") if isinstance(profile_data.get("preferences"), list) else []
+            profile_data["preferences"] = prefs[:20]
+            entities = profile_data.get("entities") if isinstance(profile_data.get("entities"), dict) else {}
+            profile_data["entities"] = {
+                k: (v[:10] if isinstance(v, list) else v) for k, v in entities.items()
+            }
+
+            doc_id = f"{user_id}_profile"   # 用户级单条（聚合）
             doc_text = self._safe_text(json.dumps(profile_data, ensure_ascii=False))
 
-            try:
-                self._profile.delete(ids=[doc_id])
-            except Exception:
-                pass
-
-            # 直接传 documents，让 ChromaDB 内置模型生成 embedding（不依赖 Voyage API）
-            self._profile.add(
+            # 直接传 documents，让 ChromaDB 内置模型生成 embedding（不依赖外部 API）
+            self._profile.upsert(
                 ids=[doc_id],
                 documents=[doc_text],
                 metadatas=[{"user_id": user_id, "conv_id": conv_id,
                             "ts": datetime.now().isoformat()}],
             )
-            logger.info(f"用户画像已更新: {user_id}")
+            logger.info(f"用户画像已更新: {user_id}（{len(prefs)} 条偏好）")
         except Exception as ex:
             logger.warning(f"更新用户画像失败: {ex}")
 

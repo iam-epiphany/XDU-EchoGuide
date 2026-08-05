@@ -18,6 +18,7 @@
   - 动作维度为转人工 / 置信度低于阈值 / 紧急度 CRITICAL → 自动升级
 """
 import asyncio
+import inspect
 import logging
 import time
 import uuid
@@ -40,6 +41,7 @@ class AgentType(Enum):
     CAMPUS_LIFE = "campus_life"  # 校园生活：宿舍/食堂/校车/校园卡/快递
     AFFAIRS    = "affairs"    # 校务咨询：校历/请假/奖学金/办事流程/注册
     IT_HELP    = "it_help"    # IT 助手：教务系统/校园网/VPN/邮箱/统一身份认证
+    PERSONAL   = "personal"   # 个人助理：我的课表/待办/考试安排/日程提醒
     ESCALATION = "escalation"  # 转人工（辅导员/教务老师）
 
 
@@ -249,6 +251,9 @@ class BaseAgent:
                     break
                 # 把 assistant 的 tool_use 消息回填，供下一轮携带
                 messages.append({"role": "assistant", "content": resp.content})
+                # 协议约束：一条 assistant 消息里的所有 tool_use，必须在同一条
+                # 下一条 user 消息中全部回填 tool_result（逐条分开会 400）
+                tool_results = []
                 for block in tool_calls:
                     name = getattr(block, "name", "")
                     tool_input = getattr(block, "input", {}) or {}
@@ -261,14 +266,12 @@ class BaseAgent:
                             "type": "tool", "name": name, "status": "done",
                             "titles": self._tool_result_titles(data),
                         })
-                    messages.append({
-                        "role": "user",
-                        "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": getattr(block, "id", ""),
-                            "content": self._clean_text(data) if data is not None else f"工具执行失败: {error}",
-                        }],
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": getattr(block, "id", ""),
+                        "content": self._clean_text(data) if data is not None else f"工具执行失败: {error}",
                     })
+                messages.append({"role": "user", "content": tool_results})
                 hit_tool_use_at_limit = _round == self.MAX_TOOL_ROUNDS - 1
                 continue
 
@@ -281,11 +284,31 @@ class BaseAgent:
         # 达到工具轮次上限仍有工具请求：用普通调用收尾，保证一定有最终答复
         if hit_tool_use_at_limit:
             logger.warning(f"{self.agent_type.value} 工具调用达到轮次上限，普通调用收尾")
-            resp = await self._client.messages.create(
-                model=self._model, max_tokens=1024,
-                system=self._build_system_prompt(req),
-                messages=messages,
-            )
+            # 最后一条 assistant 消息可能带未回填的 tool_use：按协议补占位
+            # tool_result（同一条 user 消息），否则 Anthropic 兼容端点会 400
+            if messages and messages[-1].get("role") == "assistant":
+                last_content = messages[-1].get("content")
+                if isinstance(last_content, list):
+                    pending = [b for b in last_content if getattr(b, "type", "") == "tool_use"]
+                    if pending:
+                        messages.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "tool_result",
+                                 "tool_use_id": getattr(b, "id", ""),
+                                 "content": "工具调用轮次已达上限，未执行。"}
+                                for b in pending
+                            ],
+                        })
+            system = self._build_system_prompt(req)
+            if on_event is not None:
+                # 收尾调用同样逐 token 推送，避免"先蹦一句、再整段出现"的割裂体验
+                resp = await self._stream_llm(system, messages, [], on_event)
+            else:
+                resp = await self._client.messages.create(
+                    model=self._model, max_tokens=1024,
+                    system=system, messages=messages,
+                )
             text = "".join(
                 b.text for b in resp.content if getattr(b, "type", "") == "text"
             ).strip()
@@ -298,17 +321,29 @@ class BaseAgent:
         """
         流式调用：逐 token 通过 on_event({"type": "delta", "text": ...}) 推送，
         同时返回最终 Message 供工具循环判断 stop_reason。
+
+        SDK 兼容说明：anthropic 的流式 API 在不同版本有差异，统一按两种形态适配：
+          - 0.40（项目锁定版）：messages.stream() 同步返回 manager，__aenter__ 产出
+            AsyncMessageStream，迭代得到 RawMessageStreamEvent（文本在
+            content_block_delta.delta.text）。
+          - 0.5x+：messages.stream() 为 async 方法（需 await），事件结构相同。
         """
-        stream = self._client.messages.stream(
+        stream_cm = self._client.messages.stream(
             model=self._model,
             max_tokens=1024,
             system=system,
             messages=messages,
             tools=tools or None,
         )
-        async with stream:
-            async for text in stream.text_stream:
-                await on_event({"type": "delta", "text": text})
+        if inspect.isawaitable(stream_cm):
+            stream_cm = await stream_cm  # 新版 SDK：stream() 是 async 方法
+        async with stream_cm as stream:
+            async for chunk in stream:
+                if getattr(chunk, "type", "") == "content_block_delta":
+                    delta = getattr(chunk, "delta", None)
+                    text = getattr(delta, "text", None)
+                    if text:
+                        await on_event({"type": "delta", "text": text})
             final = await stream.get_final_message()
         return final
 
@@ -349,13 +384,22 @@ class BaseAgent:
         return value.encode("utf-8", errors="ignore").decode("utf-8")
 
     def _build_system_prompt(self, req: Request) -> str:
-        """把动态加载的 Skills 拼入 system prompt，让业务规则随请求生效。"""
-        if self._skill_manager is None:
-            return self.system_prompt
-        skill_prompt = self._skill_manager.prompt_for(req.message, self.agent_type.value, req.history)
-        if not skill_prompt:
-            return self.system_prompt
-        return f"{self.system_prompt}\n\n[动态 Skills]\n{skill_prompt}"
+        """
+        组装 system prompt：
+          1. Agent 静态角色定义
+          2. 动态 Skills（业务 SOP，随请求热加载）
+          3. 时间上下文（当前日期/星期/第几节/第几周）—— 所有 Agent 统一注入，
+             是"今天有什么课""现在第几节"类问答的前提。
+        """
+        prompt = self.system_prompt
+        if self._skill_manager is not None:
+            skill_prompt = self._skill_manager.prompt_for(req.message, self.agent_type.value, req.history)
+            if skill_prompt:
+                prompt = f"{prompt}\n\n[动态 Skills]\n{skill_prompt}"
+
+        from personal.time_context import build_time_context
+        prompt = f"{prompt}\n\n{build_time_context()}"
+        return prompt
 
     def _needs_escalation(self, content: str) -> bool:
         """检测 Agent 是否建议升级（简单关键词检测）。"""
@@ -406,6 +450,18 @@ class ITHelpAgent(BaseAgent):
     )
 
 
+class PersonalAgent(BaseAgent):
+    """个人助理：我的课表、待办、考试/DDL、日程提醒（数据来自用户导入的个人数据中心）。"""
+    agent_type    = AgentType.PERSONAL
+    system_prompt = (
+        "你是西电校园智慧助手（EchoGuide）的个人助理，帮助用户管理自己的课表、待办、考试与 DDL 安排。"
+        "查询前先调用工具获取用户个人数据（query_schedule / query_todo / query_ddl / add_todo 等），"
+        "不要凭记忆编造课程或待办。"
+        "用户未导入课表时，引导其通过「我的课表」上传 .ics 文件或 JSON 课表。"
+        "回答按时间组织，带上课时间与地点；涉及考试/DDL 时给出剩余天数。"
+    )
+
+
 # ── 编排器 ────────────────────────────────────────────────────────────────────
 
 class AgentOrchestrator:
@@ -424,6 +480,7 @@ class AgentOrchestrator:
         IntentDomain.CAMPUS_LIFE: AgentType.CAMPUS_LIFE,
         IntentDomain.AFFAIRS:     AgentType.AFFAIRS,
         IntentDomain.IT_HELP:     AgentType.IT_HELP,
+        IntentDomain.PERSONAL:    AgentType.PERSONAL,
         # 领域 OTHER（问候/闲聊/无法判断）→ ACADEMIC（兜底接待）
     }
 
@@ -444,12 +501,20 @@ class AgentOrchestrator:
         self._skill_manager = skill_manager
         self._tool_manager  = tool_manager
 
-        # Agent 池：每种类型可有多个实例（水平扩展）
+        # Agent 池：每种类型保持多个实例（水平扩展）。
+        # 每类型 2 个实例让"性能路由 + 监控惩罚"闭环真实生效：
+        # 实例 A 失败率高 → Monitor 施加惩罚 → _best_agent 切换到实例 B 接管。
         self._pool: Dict[AgentType, List[BaseAgent]] = {
-            AgentType.ACADEMIC:    [AcademicAgent(client, model, skill_manager, tool_manager)],
-            AgentType.CAMPUS_LIFE: [CampusLifeAgent(client, model, skill_manager, tool_manager)],
-            AgentType.AFFAIRS:     [AffairsAgent(client, model, skill_manager, tool_manager)],
-            AgentType.IT_HELP:     [ITHelpAgent(client, model, skill_manager, tool_manager)],
+            AgentType.ACADEMIC:    [AcademicAgent(client, model, skill_manager, tool_manager)
+                                    for _ in range(2)],
+            AgentType.CAMPUS_LIFE: [CampusLifeAgent(client, model, skill_manager, tool_manager)
+                                    for _ in range(2)],
+            AgentType.AFFAIRS:     [AffairsAgent(client, model, skill_manager, tool_manager)
+                                    for _ in range(2)],
+            AgentType.IT_HELP:     [ITHelpAgent(client, model, skill_manager, tool_manager)
+                                    for _ in range(2)],
+            AgentType.PERSONAL:    [PersonalAgent(client, model, skill_manager, tool_manager)
+                                    for _ in range(2)],
         }
 
     @property
@@ -479,6 +544,7 @@ class AgentOrchestrator:
         IntentCategory.CAMPUS_LIFE: IntentDomain.CAMPUS_LIFE,
         IntentCategory.AFFAIRS:     IntentDomain.AFFAIRS,
         IntentCategory.IT_HELP:     IntentDomain.IT_HELP,
+        IntentCategory.PERSONAL:    IntentDomain.PERSONAL,
     }
     _CATEGORY_TO_ACTION = {
         IntentCategory.QUERY:      IntentAction.QUERY,
@@ -632,6 +698,14 @@ class AgentOrchestrator:
             targets.append(AgentType.AFFAIRS)
         if req.domain == IntentDomain.IT_HELP or hit(IntentDomain.IT_HELP):
             targets.append(AgentType.IT_HELP)
+        if req.domain == IntentDomain.PERSONAL or hit(IntentDomain.PERSONAL):
+            targets.append(AgentType.PERSONAL)
+
+        # personal（"我的"日程）语义比 academic（教务规则）更具体：
+        # "考试安排/课表"类词会同时命中两个领域，此时只保留 personal，
+        # 避免"查我的考试"被并行拆给两个 Agent 造成回答分裂。
+        if AgentType.ACADEMIC in targets and AgentType.PERSONAL in targets:
+            targets.remove(AgentType.ACADEMIC)
 
         # 保持顺序去重，并只返回当前有实例的 Agent 类型。
         deduped = list(dict.fromkeys(targets))

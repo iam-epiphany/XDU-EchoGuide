@@ -118,3 +118,28 @@ def test_replay_body_preserves_request():
         resp = client.post("/chat", json={"message": "你好食堂几点开门", "user_id": "u1"})
         assert resp.status_code == 200
         assert resp.json()["echo"] == "你好食堂几点开门"
+
+
+def test_middleware_internal_error_passes_through():
+    """容错原则：中间件自身异常时放行并告警，不能成为可用性故障源。"""
+    from starlette.middleware import Middleware
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    class FailingMiddleware(EchoGuardMiddleware):
+        async def _guard(self, scope, receive, send):
+            raise RuntimeError("guard 内部故障")
+
+    async def ok_route(request):
+        return JSONResponse({"ok": True})
+
+    app = Starlette(
+        routes=[Route("/chat", ok_route, methods=["POST"])],
+        middleware=[Middleware(FailingMiddleware, settings=GuardSettings(enabled=True))],
+    )
+    with TestClient(app) as client:
+        resp = client.post("/chat", json={"message": "你好", "user_id": "u1"})
+        # 中间件异常 → 放行，下游正常处理
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}

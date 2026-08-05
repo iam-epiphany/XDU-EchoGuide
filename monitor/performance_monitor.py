@@ -256,19 +256,28 @@ class PerformanceMonitor:
         threshold, severity, operator = self.THRESHOLDS[metric]
         triggered = (operator == "less_than" and value < threshold) or \
                     (operator == "greater_than" and value > threshold)
-        if triggered:
-            alert = Alert(
-                severity=severity,
-                metric=f"{metric}:{label}",
-                message=f"{label} 的 {metric} = {value:.3f}，阈值 {threshold}",
-                value=value,
-                threshold=threshold,
-            )
-            self._alerts.append(alert)
-            logger.warning(f"[{severity.value.upper()}] {alert.message}")
-            # 异步发送 Webhook（不阻塞采集循环）
-            if self._webhook:
-                asyncio.create_task(self._send_webhook(alert))
+        key = f"{metric}:{label}"
+        # 已存在未解决的同指标告警：异常持续中不重复告警（去重），恢复时标记 resolved
+        active = next((a for a in self._alerts if a.metric == key and not a.resolved), None)
+        if not triggered:
+            if active is not None:
+                active.resolved = True
+                logger.info(f"告警恢复: {key} = {value:.3f}")
+            return
+        if active is not None:
+            return
+        alert = Alert(
+            severity=severity,
+            metric=key,
+            message=f"{label} 的 {metric} = {value:.3f}，阈值 {threshold}",
+            value=value,
+            threshold=threshold,
+        )
+        self._alerts.append(alert)
+        logger.warning(f"[{severity.value.upper()}] {alert.message}")
+        # 异步发送 Webhook（不阻塞采集循环）
+        if self._webhook:
+            asyncio.create_task(self._send_webhook(alert))
 
     def _generate_routing_suggestions(self, agent_stats: Dict[str, Any]) -> None:
         """

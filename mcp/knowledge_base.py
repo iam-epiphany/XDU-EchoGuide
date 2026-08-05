@@ -78,7 +78,12 @@ class KnowledgeBase:
 
         # 如果知识库为空，导入默认文档
         if self._collection.count() == 0:
-            self._load_default_docs()
+            try:
+                self._load_default_docs()
+            except Exception as ex:
+                # 本地模式首次写入需下载内置 embedding 模型（~79MB）；
+                # 下载失败不应拖垮整个服务启动，知识库后续仍可导入文档使用。
+                logger.warning(f"默认知识库导入失败（首次启动可稍后重试）: {ex}")
 
     # ── 文档管理 ──────────────────────────────────────────────────────────────
 
@@ -194,7 +199,7 @@ class KnowledgeBase:
         语义分块（带 overlap）：
 
         - 按句号/换行切分为句子，贪心拼块
-        - 每块末尾补上前一块末尾 overlap 字，避免跨块句子被拦腰截断
+        - 每块开头带上上一块末尾 overlap 字（首尾重叠），避免跨块句子被拦腰截断
         """
         if len(text) <= chunk_size:
             return [text] if text.strip() else []

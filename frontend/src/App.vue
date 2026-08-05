@@ -10,6 +10,12 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <button class="kb-button" @click="openSchedule">
+          <span class="kb-icon">📅</span> 我的课表
+        </button>
+        <button class="kb-button" @click="openTodos">
+          <span class="kb-icon">✅</span> 待办
+        </button>
         <button class="kb-button" @click="openKb">
           <span class="kb-icon">📚</span> 知识库
         </button>
@@ -47,10 +53,7 @@
           </div>
           <!-- 工具调用过程徽标（Agentic RAG 可视化） -->
           <div v-if="item.toolStatus" class="tool-badge">{{ item.toolStatus }}</div>
-          <p class="message-text">
-            {{ item.content }}
-            <span v-if="item.streaming" class="stream-cursor">▍</span>
-          </p>
+          <span class="message-text" v-html="renderMarkdown(item.content)"></span><span v-if="item.streaming" class="stream-cursor">▍</span>
         </article>
         <div v-if="busy && !streamingMessage" class="message assistant typing">
           <div class="typing-dots"><i></i><i></i><i></i></div>
@@ -123,15 +126,122 @@
         <p v-if="statusText" class="kb-status">{{ statusText }}</p>
       </div>
     </div>
+
+    <!-- ── 我的课表弹窗 ─────────────────────────────────────────────────────── -->
+    <div v-if="showSchedule" class="modal-mask" @click.self="closeSchedule">
+      <div class="modal modal-wide">
+        <div class="modal-head">
+          <h2>我的课表</h2>
+          <button class="modal-close" @click="closeSchedule">✕</button>
+        </div>
+
+        <section class="kb-section">
+          <div class="panel-heading">
+            <h3>导入课表</h3>
+            <span class="pill soft">用户 {{ settings.userId }}</span>
+          </div>
+          <p class="schedule-tip">
+            教务系统导出 <code>.ics</code> 日历文件（选课 → 导出课表）或 <code>.json</code> 课表上传，
+            导入后即可问「今天有什么课？」
+          </p>
+          <div class="actions">
+            <label class="file-button">
+              上传 .ics / .json
+              <input type="file" accept=".ics,.json" @change="handleScheduleUpload" />
+            </label>
+            <button class="danger-button" v-if="scheduleCourses.length" @click="doClearSchedule" :disabled="busy">清空课表</button>
+          </div>
+          <p v-if="scheduleMsg" class="kb-status">{{ scheduleMsg }}</p>
+        </section>
+
+        <section class="kb-section" v-if="scheduleCourses.length">
+          <div class="panel-heading">
+            <h3>本周课程（{{ scheduleInSemester ? '第 ' + scheduleWeekNum + ' 周' : '假期（未开学）' }}）</h3>
+            <span class="pill soft">{{ scheduleCourses.length }} 门</span>
+          </div>
+          <div class="schedule-grid">
+            <div v-for="(courses, day) in scheduleByDay" :key="day" class="schedule-day">
+              <h4>{{ day }}</h4>
+              <template v-if="courses.length">
+                <p v-for="c in courses" :key="c.course + c.start_time" class="schedule-item">
+                  <strong>{{ c.start_time }}-{{ c.end_time }}</strong>
+                  <span>{{ c.course }}</span>
+                  <small>{{ c.location || '地点未填' }}</small>
+                </p>
+              </template>
+              <p v-else class="schedule-empty">—</p>
+            </div>
+          </div>
+        </section>
+
+        <p v-if="!scheduleCourses.length && scheduleLoaded" class="kb-status">
+          还没有课程。上传教务系统导出的 .ics 文件即可导入课表。
+        </p>
+      </div>
+    </div>
+
+    <!-- ── 待办弹窗 ─────────────────────────────────────────────────────────── -->
+    <div v-if="showTodos" class="modal-mask" @click.self="closeTodos">
+      <div class="modal">
+        <div class="modal-head">
+          <h2>待办 / DDL / 考试</h2>
+          <button class="modal-close" @click="closeTodos">✕</button>
+        </div>
+
+        <section class="kb-section">
+          <div class="panel-heading"><h3>新增</h3></div>
+          <div class="todo-form">
+            <input v-model="newTodoContent" placeholder="事项内容，如：交实验报告" @keydown.enter.prevent="doAddTodo" />
+            <select v-model="newTodoKind">
+              <option value="todo">待办</option>
+              <option value="ddl">截止任务</option>
+              <option value="exam">考试</option>
+            </select>
+            <input v-model="newTodoDue" type="date" title="截止日期（可选）" />
+            <button @click="doAddTodo" :disabled="busy || !newTodoContent.trim()">添加</button>
+          </div>
+          <p v-if="todoMsg" class="kb-status">{{ todoMsg }}</p>
+        </section>
+
+        <section class="kb-section">
+          <div class="panel-heading">
+            <h3>列表</h3>
+            <span class="pill soft">{{ todos.length }} 条</span>
+          </div>
+          <div class="result-list">
+            <article v-for="t in todos" :key="t.id" :class="['todo-item', { done: t.done }]">
+              <div class="todo-main">
+                <strong>{{ t.content }}</strong>
+                <span class="pill">{{ kindLabel(t.kind) }}</span>
+                <small v-if="t.due_at">截止 {{ t.due_at }}</small>
+              </div>
+              <div class="todo-actions">
+                <button class="mini" @click="doCompleteTodo(t)">{{ t.done ? '恢复' : '完成' }}</button>
+                <button class="mini danger-button" @click="doDeleteTodo(t)">删除</button>
+              </div>
+            </article>
+            <p v-if="todos.length === 0" class="no-result">暂无待办，从聊天里说「帮我记个待办」也可以添加</p>
+          </div>
+        </section>
+      </div>
+    </div>
   </main>
 </template>
 
 <script setup>
-import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { renderMarkdown } from './lib/markdown'
 import {
   addKnowledge,
+  addTodo,
   backendMeta,
+  clearSchedule,
+  completeTodo,
   createInitialSettings,
+  deleteTodo,
+  getSchedule,
+  getTodos,
+  importScheduleFile,
   requestChatStream,
   requestKnowledgeStats,
   requestSearch,
@@ -154,17 +264,46 @@ const showKb = ref(false)
 const messageList = ref(null)
 const streamingMessage = ref(null)
 
+// 个人数据中心：课表
+const showSchedule = ref(false)
+const scheduleMsg = ref('')
+const scheduleCourses = ref([])
+const scheduleWeekNum = ref('-')
+const scheduleInSemester = ref(true)
+const scheduleLoaded = ref(false)
+
+// 个人数据中心：待办 / DDL / 考试
+const showTodos = ref(false)
+const todos = ref([])
+const todoMsg = ref('')
+const newTodoContent = ref('')
+const newTodoKind = ref('todo')
+const newTodoDue = ref('')
+
 // 校园话题推荐（欢迎页卡片）
 const topics = [
+  { icon: '📅', title: '我的课表', desc: '今天有什么课？', question: '今天有什么课？' },
+  { icon: '☀️', title: '天气', desc: '明天要带伞吗？', question: '明天南校区天气怎么样？' },
   { icon: '📖', title: '选课指南', desc: '什么时候选课？怎么选？', question: '这学期选课什么时候开始？' },
-  { icon: '🚌', title: '校车时刻', desc: '南北校区几点发车？', question: '校车几点发车？' },
+  { icon: '🚌', title: '校车时刻', desc: '下一班校车几点？', question: '下一班从南校区到北校区的校车几点？' },
   { icon: '🍜', title: '食堂信息', desc: '几点开门、几点关门？', question: '南校区食堂几点关门？' },
+  { icon: '🎓', title: '考试安排', desc: '最近有什么考试？', question: '我最近的考试安排是什么？' },
   { icon: '🏠', title: '宿舍生活', desc: '报修、水电、门禁？', question: '宿舍设施坏了怎么报修？' },
-  { icon: '🎓', title: '奖学金', desc: '什么时候评、怎么申请？', question: '奖学金什么时候评定？' },
   { icon: '🖥️', title: '教务系统', desc: '登录不上怎么办？', question: '教务系统登录不上怎么办？' },
 ]
 
 const currentBackend = backendMeta('python', settings)
+
+// 课表按星期分组（周一到周日），供周视图渲染
+const scheduleByDay = computed(() => {
+  const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+  const groups = Object.fromEntries(days.map((d) => [d, []]))
+  for (const c of scheduleCourses.value) {
+    const name = days[c.day_of_week] || '周一'
+    if (groups[name]) groups[name].push(c)
+  }
+  return groups
+})
 
 watch(
   () => settings.conversationId,
@@ -314,6 +453,123 @@ async function handleUpload(event) {
     statusText.value = error.message
   } finally {
     busy.value = false
+  }
+}
+
+// ── 我的课表 ─────────────────────────────────────────────────────────────────
+
+async function openSchedule() {
+  showSchedule.value = true
+  scheduleMsg.value = ''
+  scheduleLoaded.value = false
+  await loadSchedule()
+}
+
+function closeSchedule() {
+  showSchedule.value = false
+}
+
+async function loadSchedule() {
+  try {
+    const data = await getSchedule('python', settings)
+    scheduleCourses.value = data.courses || []
+    scheduleWeekNum.value = data.week_num ?? '-'
+    scheduleInSemester.value = data.in_semester !== false
+    scheduleLoaded.value = true
+  } catch (error) {
+    scheduleMsg.value = error.message
+    scheduleLoaded.value = true
+  }
+}
+
+async function handleScheduleUpload(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  busy.value = true
+  scheduleMsg.value = '导入中…'
+  try {
+    const data = await importScheduleFile('python', settings, file)
+    scheduleMsg.value = data.message || JSON.stringify(data)
+    await loadSchedule()
+  } catch (error) {
+    scheduleMsg.value = error.message
+  } finally {
+    busy.value = false
+  }
+}
+
+async function doClearSchedule() {
+  if (!confirm('确定清空课表吗？清空后需要重新导入。')) return
+  busy.value = true
+  try {
+    const data = await clearSchedule('python', settings)
+    scheduleMsg.value = data.message || '已清空'
+    scheduleCourses.value = []
+  } catch (error) {
+    scheduleMsg.value = error.message
+  } finally {
+    busy.value = false
+  }
+}
+
+// ── 待办 / DDL / 考试 ────────────────────────────────────────────────────────
+
+async function openTodos() {
+  showTodos.value = true
+  todoMsg.value = ''
+  await loadTodos()
+}
+
+function closeTodos() {
+  showTodos.value = false
+}
+
+async function loadTodos() {
+  try {
+    const data = await getTodos('python', settings, 'all')
+    todos.value = data.todos || []
+  } catch (error) {
+    todoMsg.value = error.message
+  }
+}
+
+function kindLabel(kind) {
+  return { todo: '待办', ddl: 'DDL', exam: '考试' }[kind] || kind
+}
+
+async function doAddTodo() {
+  const content = newTodoContent.value.trim()
+  if (!content) return
+  busy.value = true
+  try {
+    await addTodo('python', settings, content, newTodoKind.value, newTodoDue.value)
+    newTodoContent.value = ''
+    newTodoDue.value = ''
+    todoMsg.value = '已添加'
+    await loadTodos()
+  } catch (error) {
+    todoMsg.value = error.message
+  } finally {
+    busy.value = false
+  }
+}
+
+async function doCompleteTodo(t) {
+  try {
+    await completeTodo('python', settings, t.id, !t.done)
+    await loadTodos()
+  } catch (error) {
+    todoMsg.value = error.message
+  }
+}
+
+async function doDeleteTodo(t) {
+  try {
+    await deleteTodo('python', settings, t.id)
+    await loadTodos()
+  } catch (error) {
+    todoMsg.value = error.message
   }
 }
 </script>

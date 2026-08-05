@@ -81,13 +81,17 @@ services:
       - .env
     environment:
       # 容器内固定值，覆盖 .env 中的本地路径
+      - TZ=Asia/Shanghai
       - REDIS_URL=redis://:${REDIS_PASSWORD:-echoguide123}@redis:6379/0
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma
       - EVAL_BASELINE_PATH=/app/data/eval/baseline.json
       - ECHOGUIDE_SKILLS_DIR=/app/skills
+      - ECHOGUIDE_DB_PATH=/app/data/echoguide.db
+      - ECHOGUIDE_PUBLIC_DATA_DIR=/app/data/public
     volumes:
-      - ./data/chroma:/app/data/chroma
-      - ./data/eval:/app/data/eval
+      # 挂载整个 data 目录：SQLite 个人数据（echoguide.db）与公开信息
+      # 在容器内自动创建，避免 bind mount 不存在的文件被 Docker 建为目录
+      - ./data:/app/data
       - ./skills:/app/skills
       - ./logs:/app/logs
     depends_on:

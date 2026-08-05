@@ -26,7 +26,7 @@ class SemanticCache:
     """基于 ChromaDB 的语义缓存。"""
 
     COLLECTION_NAME = "semantic_cache"
-    DEFAULT_THRESHOLD = 0.90   # 相似度阈值：>= 命中即复用
+    DEFAULT_THRESHOLD = 0.85   # 相似度阈值：>= 命中即复用（0.9 命中率过低，实际形同虚设）
     DEFAULT_TTL_S = 86400      # 缓存条目有效期 24h
 
     def __init__(

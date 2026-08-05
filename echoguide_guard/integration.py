@@ -1,19 +1,18 @@
 """
 EchoGuard 真实接入 —— FastAPI HTTP 中间件
 
-把安全 Sidecar（echoguide_guard）的能力以中间件形式接入 EchoGuide 真实请求链
-（/chat、/chat/stream、/eval/run、/knowledge/*、/skills/reload），修复
-"Sidecar 与真实系统零引用"的架构缺口。
+把安全能力以中间件形式接入 EchoGuide 真实请求链（/chat、/chat/stream、
+/eval/run、/knowledge/*、/skills/reload、/personal/*、/mcp），默认启用。
 
-防护能力（按层）：
-  1. 身份认证  —— ECHOGUIDE_GUARD_TOKEN 配置后，受保护端点要求 Bearer Token
-  2. Prompt 注入检测 —— 复用 Sidecar 的注入标记正则（规则层第一道防线；
-     RAG 间接注入由 prompt 中的安全边界 + 输出审计兜底）
-  3. 敏感数据脱敏 —— 审计日志中的 API Key / 身份证 / 手机号等自动打码
-  4. 限流 —— 用户维度滑动窗口（默认 30 次/分钟/用户）
-  5. 输入约束 —— 消息长度上限（默认 2000 字），防止 token 爆炸
+场景定位（面向开放的校园助手）：
+  - Prompt 注入检测 —— LLM 系统真实威胁：防"忽略之前指令"类注入
+  - 限流 —— LLM 调用有真实成本，防单用户刷接口
+  - 脱敏审计 —— 个人数据（课表/待办）操作留痕（只记哈希与脱敏摘要）
+  - 身份认证（可选）—— 配置 ECHOGUIDE_GUARD_TOKEN 后要求 Bearer Token
 
-启用：环境变量 ECHOGUIDE_GUARD_ENABLED=1（默认关闭，便于本地开发）。
+容错原则：中间件自身异常时放行并告警 —— 安全组件不能成为可用性故障源。
+
+启用：ECHOGUIDE_GUARD_ENABLED 默认 1（注入检测/限流/审计开箱即用）。
 """
 import asyncio
 import hashlib
@@ -46,14 +45,14 @@ class GuardSettings:
     """中间件配置（环境变量驱动）。"""
 
     def __init__(self, **kwargs):
-        self.enabled            = kwargs.get("enabled", os.getenv("ECHOGUIDE_GUARD_ENABLED", "0") == "1")
+        self.enabled            = kwargs.get("enabled", os.getenv("ECHOGUIDE_GUARD_ENABLED", "1") == "1")
         self.token              = kwargs.get("token", os.getenv("ECHOGUIDE_GUARD_TOKEN", "") or None)
         self.max_message_chars  = int(kwargs.get("max_message_chars", os.getenv("ECHOGUIDE_GUARD_MAX_MESSAGE_CHARS", "2000")))
         self.user_rate_per_min  = int(kwargs.get("user_rate_per_min", os.getenv("ECHOGUIDE_GUARD_USER_RATE", "30")))
         self.ip_rate_per_min    = int(kwargs.get("ip_rate_per_min", os.getenv("ECHOGUIDE_GUARD_IP_RATE", "120")))
 
     # 需要保护的端点前缀
-    PROTECTED_PREFIXES = ("/chat", "/eval/run", "/knowledge/", "/skills/reload")
+    PROTECTED_PREFIXES = ("/chat", "/eval/run", "/knowledge/", "/skills/reload", "/personal/", "/mcp")
 
 
 class _RateLimiter:
@@ -91,6 +90,19 @@ class EchoGuardMiddleware:
             await self.app(scope, receive, send)
             return
 
+        body: Optional[bytes] = None
+        try:
+            await self._guard(scope, receive, send)
+        except Exception as ex:
+            # 容错原则：安全组件自身异常时放行并告警，不能成为可用性故障源。
+            # 请求体若已读取则重放，否则透传原始 receive。
+            logger.exception(f"[EchoGuard] 中间件异常，本次放行: {ex}")
+            if body is not None:
+                await self.app(scope, self._replay_body(body, receive), send)
+            else:
+                await self.app(scope, receive, send)
+
+    async def _guard(self, scope: Dict[str, Any], receive: Any, send: Any) -> None:
         path = scope.get("path", "")
         method = scope.get("method", "GET")
 
@@ -136,7 +148,7 @@ class EchoGuardMiddleware:
 
         # 5. 放行：重放请求体给下游，并输出脱敏审计日志
         await self._audit(path, user_id, message)
-        buffered = self._replay_body(body)
+        buffered = self._replay_body(body, receive)
         await self.app(scope, buffered, send)
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
@@ -156,10 +168,23 @@ class EchoGuardMiddleware:
         return b"".join(chunks)
 
     @staticmethod
-    def _replay_body(body: bytes) -> Any:
-        """构造可重放请求体的 receive。"""
+    def _replay_body(body: bytes, original_receive: Any) -> Any:
+        """
+        构造可重放请求体的 receive。
+
+        第一次调用返回缓存的请求体，之后委托给原始 receive —— 而不是伪造
+        http.disconnect。原因：Starlette 的 StreamingResponse 会并行监听
+        disconnect（listen_for_disconnect），伪造的 disconnect 会被误判为
+        "客户端断开"而取消整个流式响应（SSE 只出 hello 即被终止的真实事故）。
+        """
+        state = {"sent": False}
+
         async def receive() -> Dict[str, Any]:
-            return {"type": "http.request", "body": body, "more_body": False}
+            if not state["sent"]:
+                state["sent"] = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await original_receive()
+
         return receive
 
     @staticmethod

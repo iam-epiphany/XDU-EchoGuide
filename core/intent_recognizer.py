@@ -57,6 +57,7 @@ class IntentCategory(Enum):
     CAMPUS_LIFE = "campus_life" # 校园生活
     AFFAIRS    = "affairs"      # 校务咨询
     IT_HELP    = "it_help"      # IT 助手
+    PERSONAL   = "personal"     # 个人助理（课表/待办/日程）
     OTHER      = "other"
 
 
@@ -73,6 +74,7 @@ _DOMAIN_TO_CATEGORY = {
     IntentDomain.CAMPUS_LIFE: IntentCategory.CAMPUS_LIFE,
     IntentDomain.AFFAIRS:     IntentCategory.AFFAIRS,
     IntentDomain.IT_HELP:     IntentCategory.IT_HELP,
+    IntentDomain.PERSONAL:    IntentCategory.PERSONAL,
 }
 
 _ACTION_TO_CATEGORY = {
@@ -100,10 +102,11 @@ class IntentResult:
 # ── Few-shot 模板 ─────────────────────────────────────────────────────────────
 # 领域模板：用于 LLM 示例与 Embedding 匹配；动作模板：用于 LLM 示例。
 _DOMAIN_TEMPLATES: Dict[IntentDomain, List[str]] = {
-    IntentDomain.ACADEMIC:    ["这学期选课什么时候开始？", "绩点怎么算的？", "重修怎么报名？", "保研有什么条件？", "帮我查一下课表"],
+    IntentDomain.ACADEMIC:    ["这学期选课什么时候开始？", "绩点怎么算的？", "重修怎么报名？", "保研有什么条件？", "培养方案学分要求是什么？"],
     IntentDomain.CAMPUS_LIFE: ["南校区食堂几点关门？", "校车最后一班几点？", "宿舍怎么报修？", "校园卡在哪充值？", "校园卡丢了怎么补办？"],
     IntentDomain.AFFAIRS:     ["奖学金什么时候评？", "请假流程怎么走？", "在读证明在哪开？", "学费缴费方式有哪些？", "我要请假怎么走流程"],
     IntentDomain.IT_HELP:     ["教务系统登录不上", "校园网连不上", "VPN怎么配置？", "学校邮箱收不到邮件"],
+    IntentDomain.PERSONAL:    ["今天有什么课？", "帮我查一下我的课表", "明天第几节在哪上课？", "这周周几没课？", "帮我记个待办，周三前交实验报告", "我最近的考试安排？", "还有什么没做完？"],
 }
 
 _ACTION_TEMPLATES: Dict[IntentAction, List[str]] = {
@@ -145,10 +148,11 @@ class IntentRecognizer:
         self.client    = AsyncAnthropic(**kwargs)
         self.model     = model
         self.threshold = confidence_threshold
-        # 第三方兼容 API（如 DeepSeek）通常不支持 Embedding，禁用该策略。
-        # 官方 Anthropic SDK 当前没有 embeddings 资源，因此使用稳定的
-        # 本地字符 n-gram 向量作为轻量兜底，保证三路融合链路真实可跑。
-        self._embedding_enabled = not bool(base_url)
+        # 真实 Embedding：本地 all-MiniLM-L6-v2（与知识库同源，384 维）。
+        # 与 base_url 无关 —— DeepSeek 等兼容端点同样使用真向量。
+        # 模型不可用（如离线环境）时自动回退字符 n-gram 哈希向量，保证链路可用。
+        self._embedding_enabled = True
+        self._embedder = None   # 惰性初始化（DefaultEmbeddingFunction）
 
         self._tpl_embeddings: Dict[IntentDomain, List[List[float]]] = {}
         self._cache: Dict[str, IntentResult] = {}
@@ -265,7 +269,9 @@ class IntentRecognizer:
 {{"domain": "<领域值>", "action": "<动作值>", "confidence": <0-1>, "reasoning": "<一句话说明>"}}
 
 要求：
-- domain 表示用户问题属于哪个校园领域（学业/生活/校务/IT）；无法判断时用 other。
+- domain 表示用户问题属于哪个校园领域（学业/生活/校务/IT/个人助理）；无法判断时用 other。
+- personal（个人助理）指与"我的"日程相关：我的课表、待办、考试安排、DDL 倒计时；
+  而 academic 指教务规则类问题（选课流程、绩点算法、培养方案等）。
 - action 表示用户希望系统做什么（查询/操作/问候/投诉/反馈/转人工等）。
 - 追问（如"那几点开门？"）应结合最近对话推断 domain。"""
         prompt = self._clean_text(prompt)
@@ -459,19 +465,31 @@ class IntentRecognizer:
 
     async def _embed_text(self, text: str) -> List[float]:
         """
-        生成文本向量。
+        生成文本向量：真实 Embedding 优先，n-gram 哈希兜底。
 
-        如果未来接入的官方/兼容客户端提供 embeddings.create，会优先使用远端向量；
-        当前 Anthropic SDK 没有该资源时，退化为字符 n-gram 哈希向量。这样不会因为
-        Embedding 服务缺失导致三路融合中断。
+        优先使用 chromadb 的 DefaultEmbeddingFunction（all-MiniLM-L6-v2，
+        384 维）——与知识库 RAG 同源模型，容器镜像已预下载、本机已缓存，
+        零额外下载。模型加载失败时永久回退本地 n-gram 哈希向量，
+        保证三路融合链路在任何环境都不中断。
         """
-        embeddings = getattr(self.client, "embeddings", None)
-        if embeddings is not None:
-            try:
-                resp = await embeddings.create(model="voyage-3-lite", input=[text])
-                return list(resp.data[0].embedding)
-            except Exception as ex:
-                logger.warning(f"远端 Embedding 失败，使用本地向量兜底: {ex}")
+        if self._embedding_enabled:
+            if self._embedder is None:
+                try:
+                    from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+
+                    self._embedder = DefaultEmbeddingFunction()
+                except Exception as ex:
+                    logger.warning(f"本地 Embedding 模型不可用，回退 n-gram 向量: {ex}")
+                    self._embedding_enabled = False
+            if self._embedder is not None:
+                try:
+                    vec = await asyncio.to_thread(self._embedder, [text])
+                    # DefaultEmbeddingFunction 返回 np.float32 向量：
+                    # 转纯 float，避免 float32 混入置信度导致 JSON 序列化失败
+                    return [float(x) for x in vec[0]]
+                except Exception as ex:
+                    logger.warning(f"Embedding 计算失败，回退 n-gram 向量: {ex}")
+                    self._embedding_enabled = False
 
         return self._local_embedding(text)
 

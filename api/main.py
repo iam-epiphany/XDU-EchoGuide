@@ -22,7 +22,7 @@ if _ROOT not in sys.path:
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
@@ -52,6 +52,8 @@ _monitor      = None
 _evaluator    = None
 _skill_manager = None
 _semantic_cache = None
+_personal_service = None
+_campus_store = None
 
 
 def _anthropic_cfg() -> Dict[str, Any]:
@@ -71,10 +73,12 @@ def _anthropic_cfg() -> Dict[str, Any]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _skill_manager
+    global _personal_service, _campus_store
 
     print(BANNER, flush=True)
 
     from agents.agent_orchestrator import AgentOrchestrator, Request
+    from campus.store import CampusInfoStore
     from evaluation.evaluator import EndToEndEvaluator
     from mcp.knowledge_base import KnowledgeBase
     from mcp.semantic_cache import SemanticCache
@@ -82,6 +86,14 @@ async def lifespan(app: FastAPI):
     from memory.conversation_memory import MemoryManager
     from monitor.performance_monitor import PerformanceMonitor
     from core.skill_loader import SkillManager
+    from personal.service import PersonalService
+    from personal.store import PersonalStore
+    from tools import with_service
+    from tools.campus_tool import campus_info_handler
+    from tools.ddl_tool import query_ddl_handler
+    from tools.schedule_tool import query_schedule_handler
+    from tools.todo_tool import add_todo_handler, complete_todo_handler, query_todo_handler
+    from tools.weather import weather_handler
 
     cfg = _anthropic_cfg()
     logger.info(f"模型: {cfg['model']}  base_url: {cfg.get('base_url', '(官方)')}")
@@ -155,6 +167,113 @@ async def lifespan(app: FastAPI):
         fallback=knowledge_fallback,
     ))
 
+    # ── 个人数据中心（课表 / 待办 / DDL，按 user_id 隔离，SQLite 持久化）──
+    _personal_service = PersonalService(PersonalStore())
+    logger.info(f"个人数据中心已就绪: {_personal_service.store.db_path}")
+
+    _tool_manager.register(Tool(
+        name="query_schedule",
+        description="查询用户个人课程表（按 user_id 隔离）。date 支持：今天/明天/后天/周X/星期X/YYYY-MM-DD，返回当天课程列表（含时间与地点）",
+        handler=with_service(query_schedule_handler, personal_service=_personal_service),
+        schema={
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "日期表达式，默认今天，如：今天/明天/周三/2026-09-14"},
+            },
+        },
+        cache_ttl=0.0,  # 个人数据实时查询，不缓存（缓存 key 不含 user_id）
+    ))
+    _tool_manager.register(Tool(
+        name="query_todo",
+        description="查询用户的待办清单（按 user_id 隔离）。status 支持 open/done/all",
+        handler=with_service(query_todo_handler, personal_service=_personal_service),
+        schema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "open（未完成，默认）/ done / all"},
+                "kinds": {"type": "array", "items": {"type": "string"}, "description": "过滤类型：todo/ddl/exam"},
+            },
+        },
+        cache_ttl=0.0,
+    ))
+    _tool_manager.register(Tool(
+        name="add_todo",
+        description="新增待办/DDL/考试安排。kind: todo（待办，默认）/ ddl（截止任务）/ exam（考试）；due_at 为 YYYY-MM-DD 或 YYYY-MM-DD HH:MM",
+        handler=with_service(add_todo_handler, personal_service=_personal_service),
+        schema={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "事项内容（必填）"},
+                "kind": {"type": "string", "description": "todo/ddl/exam，默认 todo"},
+                "due_at": {"type": "string", "description": "截止/考试时间，如 2026-09-14 或 2026-09-14 09:00"},
+            },
+            "required": ["content"],
+        },
+        cache_ttl=0.0,
+    ))
+    _tool_manager.register(Tool(
+        name="complete_todo",
+        description="把待办标记为完成（done=true）或恢复未完成（done=false），id 为待办编号",
+        handler=with_service(complete_todo_handler, personal_service=_personal_service),
+        schema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "待办 id（必填）"},
+                "done": {"type": "boolean", "description": "true=完成（默认）/ false=恢复"},
+            },
+            "required": ["id"],
+        },
+        cache_ttl=0.0,
+    ))
+    _tool_manager.register(Tool(
+        name="query_ddl",
+        description="查询用户的考试与 DDL 安排（按 user_id 隔离），返回未来 horizon_days 天内的倒计时列表（含今天到期与已过期未完成）",
+        handler=with_service(query_ddl_handler, personal_service=_personal_service),
+        schema={
+            "type": "object",
+            "properties": {
+                "horizon_days": {"type": "integer", "description": "查询范围天数，默认 30"},
+            },
+        },
+        cache_ttl=0.0,
+    ))
+
+    # ── 结构化公开信息（校车/楼宇/场馆/图书馆，data/public/*.json）──
+    _campus_store = CampusInfoStore()
+    logger.info(f"校园公开信息已就绪: {_campus_store.load_status}")
+    _tool_manager.register(Tool(
+        name="query_campus_info",
+        description=(
+            "查询西电校园公开信息（结构化数据）。category: shuttle（校车，返回下一班及剩余分钟，"
+            "keyword 可传方向如'南→北'）/ buildings（楼宇，keyword 传楼名如'信远楼'）/ "
+            "venues（运动场馆，keyword 可传场馆名）/ library（图书馆开放时间）。数据暂未录入时返回提示"
+        ),
+        handler=with_service(campus_info_handler, campus_store=_campus_store),
+        schema={
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "shuttle/buildings/venues/library"},
+                "keyword": {"type": "string", "description": "校车方向或楼名/场馆名"},
+            },
+            "required": ["category"],
+        },
+        cache_ttl=0.0,  # 校车查询依赖当前时间，不缓存
+    ))
+    _tool_manager.register(Tool(
+        name="get_weather",
+        description="查询天气（Open-Meteo 免费数据源）。place: 南校区/北校区/西安，默认南校区；days: 预报天数 1-7，默认 3",
+        handler=weather_handler,
+        schema={
+            "type": "object",
+            "properties": {
+                "place": {"type": "string", "description": "南校区（默认）/北校区/西安"},
+                "days": {"type": "integer", "description": "预报天数 1-7，默认 3"},
+            },
+        },
+        cache_ttl=300.0,
+        timeout_s=15.0,
+    ))
+
     # Agentic RAG：把工具管理器注入 Agent 池，让 Agent 自主决定何时检索知识库
     _orchestrator.set_tool_manager(_tool_manager)
 
@@ -163,16 +282,9 @@ async def lifespan(app: FastAPI):
         chroma_host=os.getenv("CHROMA_HOST", "chromadb"),
         chroma_port=int(os.getenv("CHROMA_PORT", "8000")),
         chroma_path=os.getenv("CHROMA_PERSIST_DIRECTORY", "/app/data/chroma"),
-        threshold=float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.90")),
+        threshold=float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.85")),
         enabled=os.getenv("SEMANTIC_CACHE_ENABLED", "1") == "1",
     )
-
-    # EchoGuard 真实接入：中间件形式保护 /chat 等敏感端点（默认关闭）
-    if os.getenv("ECHOGUIDE_GUARD_ENABLED", "0") == "1":
-        from echoguide_guard.integration import EchoGuardMiddleware, GuardSettings
-
-        app.add_middleware(EchoGuardMiddleware, settings=GuardSettings())
-        logger.warning("[EchoGuard] 中间件已接入真实请求链（认证/注入检测/限流/脱敏审计）")
 
     # 性能监控（可选启动 Prometheus）
     prom_port = int(os.getenv("PROMETHEUS_PORT", "0")) or None
@@ -220,6 +332,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# EchoGuard 真实接入：中间件必须在应用启动前挂载（lifespan 中挂载会报错）。
+# 默认启用，保护 /chat、/personal、/mcp 等 POST 端点：
+# 注入检测 / 限流 / 脱敏审计开箱即用；配置 ECHOGUIDE_GUARD_TOKEN 后开启认证。
+if os.getenv("ECHOGUIDE_GUARD_ENABLED", "1") == "1":
+    from echoguide_guard.integration import EchoGuardMiddleware, GuardSettings
+
+    app.add_middleware(EchoGuardMiddleware, settings=GuardSettings())
+    logger.warning("[EchoGuard] 中间件已接入真实请求链（注入检测/限流/脱敏审计，认证按需启用）")
 
 
 # ── 请求/响应模型 ─────────────────────────────────────────────────────────────
@@ -291,7 +412,12 @@ async def chat(req: ChatRequest, response: Response):
 
     try:
         # 0. 语义缓存：相似问题直接复用答案（GPTCache 思路）
+        #    注意：缓存 key 不区分 user_id，personal 领域（课表/待办等个人数据）
+        #    的回答绝不缓存也不复用，否则会造成用户间数据串扰。
         cached = _semantic_cache.get(req.message) if _semantic_cache else None
+        if cached and cached.get("domain") == "personal":
+            logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
+            cached = None
         if cached:
             logger.info(f"语义缓存命中 {req.message[:30]!r}")
             await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
@@ -337,7 +463,8 @@ async def chat(req: ChatRequest, response: Response):
 
         # 5. 异步更新用户画像 + 语义缓存（不阻塞响应）
         asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
-        if _semantic_cache and result.domain and result.domain.value != "other":
+        if _semantic_cache and result.domain and result.domain.value not in ("other", "personal"):
+            # personal 领域含个人数据，禁止进共享缓存（防跨用户串扰）
             _semantic_cache.put(
                 req.message, result.response,
                 domain=result.domain.value,
@@ -390,8 +517,12 @@ async def chat_stream(req: ChatRequest):
         async def on_event(ev: dict) -> None:
             await queue.put(ev)
 
-        # 语义缓存命中：直接输出完整答案，跳过 LLM 链路
+        # 语义缓存命中：直接输出完整答案，跳过 LLM 链路。
+        # personal 领域条目丢弃（缓存 key 不区分 user_id，防跨用户串扰）
         cached = _semantic_cache.get(req.message) if _semantic_cache else None
+        if cached and cached.get("domain") == "personal":
+            logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
+            cached = None
         if cached:
             await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
             await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, cached["response"])
@@ -433,7 +564,8 @@ async def chat_stream(req: ChatRequest):
                     await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, result.response)
                 asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
 
-                if _semantic_cache and result.domain and result.domain.value != "other":
+                if _semantic_cache and result.domain and result.domain.value not in ("other", "personal"):
+                    # personal 领域含个人数据，禁止进共享缓存（防跨用户串扰）
                     _semantic_cache.put(
                         req.message, result.response,
                         domain=result.domain.value,
@@ -483,12 +615,15 @@ async def mcp_endpoint(request: Request):
     标准 MCP 协议端点（JSON-RPC 2.0 / Streamable HTTP transport）。
 
     支持 initialize / tools/list / tools/call / ping，任何 MCP 客户端可即插即用。
+    用户身份：通过 X-User-Id 请求头传入（与前端 user_id 相同的软身份信任模型），
+    个人工具（课表/待办/DDL）按该身份生效；不传则按 anonymous。
     """
     if _tool_manager is None:
         raise HTTPException(503, "工具管理器未初始化")
     from mcp.protocol import MCPServer
 
-    server = MCPServer(_tool_manager)
+    user_id = (request.headers.get("X-User-Id") or "anonymous").strip()[:64]
+    server = MCPServer(_tool_manager, user_id=user_id)
     raw = (await request.body()).decode("utf-8", errors="ignore")
     return await server.handle(raw)
 
@@ -665,6 +800,182 @@ async def knowledge_stats():
         raise HTTPException(503, "知识库未初始化")
     kb = tool.handler.__self__
     return {"total_chunks": kb.doc_count}
+
+
+# ── 个人数据中心 ──────────────────────────────────────────────────────────────
+
+class ScheduleImportBody(BaseModel):
+    """课表导入请求体：courses（JSON 课表）与 ics_text（ICS 文本）二选一。"""
+    user_id:  str = "anonymous"
+    courses:  Optional[List[Dict[str, Any]]] = None
+    ics_text: Optional[str] = None
+
+
+def _require_personal_service():
+    if _personal_service is None:
+        raise HTTPException(503, "个人数据中心未初始化")
+    return _personal_service
+
+
+@app.post("/personal/schedule/import", tags=["个人数据"])
+async def import_schedule(body: ScheduleImportBody):
+    """
+    导入课程表（整表替换）。支持两种格式：
+      1. JSON 课表：{"user_id": "...", "courses": [{"course", "day_of_week", "start_time", "end_time", "location", "weeks"}]}
+      2. ICS 文本：{"user_id": "...", "ics_text": "BEGIN:VCALENDAR..."}（教务系统导出）
+    返回导入的课程数量。
+    """
+    personal = _require_personal_service()
+    if body.courses is not None:
+        count = await personal.import_courses(body.user_id, body.courses)
+    elif body.ics_text:
+        from personal.ics_parser import parse_ics
+        from personal.time_context import SEMESTER_START, SEMESTER_WEEKS
+
+        courses = parse_ics(body.ics_text, SEMESTER_START, SEMESTER_WEEKS)
+        count = await personal.import_courses(
+            body.user_id, [c.to_dict() for c in courses]
+        )
+    else:
+        raise HTTPException(400, "请提供 courses（JSON 课表）或 ics_text（ICS 文本）")
+    return {"message": f"课表导入成功，共 {count} 门课程", "courses": count}
+
+
+@app.post("/personal/schedule/import/file", tags=["个人数据"])
+async def import_schedule_file(
+    file: UploadFile = File(...),
+    user_id: str = Form("anonymous"),
+):
+    """
+    上传 .ics（教务系统导出）或 .json 课表文件导入。
+    文件大小限制 5MB。
+    """
+    personal = _require_personal_service()
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(413, "文件大小超过 5MB 限制")
+    text = content.decode("utf-8", errors="ignore")
+    filename = (file.filename or "").lower()
+
+    from personal.ics_parser import parse_ics
+    from personal.time_context import SEMESTER_START, SEMESTER_WEEKS
+
+    if filename.endswith(".json"):
+        import json as _json
+        try:
+            docs = _json.loads(text)
+        except _json.JSONDecodeError as e:
+            raise HTTPException(400, f"JSON 解析失败: {e}")
+        if isinstance(docs, dict):
+            docs = docs.get("courses", [])
+        if not isinstance(docs, list):
+            raise HTTPException(400, "JSON 课表应为数组: [{course, day_of_week, start_time, end_time, location, weeks}]")
+        count = await personal.import_courses(user_id, docs)
+    elif filename.endswith(".ics"):
+        courses = parse_ics(text, SEMESTER_START, SEMESTER_WEEKS)
+        count = await personal.import_courses(user_id, [c.to_dict() for c in courses])
+    else:
+        raise HTTPException(400, "仅支持 .ics 或 .json 文件")
+    return {"message": f"文件 {file.filename} 导入成功，共 {count} 门课程", "courses": count}
+
+
+@app.get("/personal/schedule", tags=["个人数据"])
+async def get_schedule(user_id: str = "anonymous"):
+    """查看用户课表（本周周视图 + 全部课程）。"""
+    personal = _require_personal_service()
+    weekly = await personal.weekly_overview(user_id)
+    return {
+        "user_id": user_id,
+        "week_num": weekly["week_num"],
+        "monday": weekly["monday"],
+        "courses": weekly["courses"],
+        "total": len(weekly["courses"]),
+    }
+
+
+@app.delete("/personal/schedule", tags=["个人数据"])
+async def clear_schedule(user_id: str = "anonymous"):
+    """清空用户课表（重新导入前使用）。"""
+    personal = _require_personal_service()
+    await personal.store.clear_schedule(user_id)
+    return {"message": "课表已清空"}
+
+
+class TodoBody(BaseModel):
+    user_id: str = "anonymous"
+    content: str
+    kind:    str = "todo"   # todo / ddl / exam
+    due_at:  Optional[str] = None
+
+
+@app.post("/personal/todo", tags=["个人数据"])
+async def add_todo(body: TodoBody):
+    """新增待办 / DDL / 考试安排。"""
+    personal = _require_personal_service()
+    if not body.content.strip():
+        raise HTTPException(400, "content 不能为空")
+    todo = await personal.add_todo(
+        body.user_id, body.content.strip(),
+        kind=body.kind if body.kind in ("todo", "ddl", "exam") else "todo",
+        due_at=body.due_at,
+    )
+    return {"message": "已记录", "todo": todo}
+
+
+@app.get("/personal/todo", tags=["个人数据"])
+async def list_todos(user_id: str = "anonymous", status: str = "open"):
+    """查看待办清单（open/done/all）。"""
+    personal = _require_personal_service()
+    todos = await personal.list_todos(user_id, status=status)
+    return {"user_id": user_id, "status": status, "todos": todos, "total": len(todos)}
+
+
+@app.post("/personal/todo/{todo_id}/complete", tags=["个人数据"])
+async def complete_todo(todo_id: int, user_id: str = "anonymous", done: bool = True):
+    """标记完成 / 恢复待办。"""
+    personal = _require_personal_service()
+    todo = await personal.complete_todo(user_id, todo_id, done=done)
+    if todo is None:
+        raise HTTPException(404, f"待办 {todo_id} 不存在或不属于该用户")
+    return {"message": "已标记完成" if done else "已恢复未完成", "todo": todo}
+
+
+@app.delete("/personal/todo/{todo_id}", tags=["个人数据"])
+async def delete_todo(todo_id: int, user_id: str = "anonymous"):
+    """删除待办。"""
+    personal = _require_personal_service()
+    ok = await personal.delete_todo(user_id, todo_id)
+    if not ok:
+        raise HTTPException(404, f"待办 {todo_id} 不存在或不属于该用户")
+    return {"message": "已删除"}
+
+
+@app.get("/personal/overview", tags=["个人数据"])
+async def personal_overview(user_id: str = "anonymous"):
+    """当日汇总：课程 + 待办 + 未来 7 天 DDL/考试倒计时（对话工具与前端共用）。"""
+    personal = _require_personal_service()
+    return await personal.overview(user_id)
+
+
+# ── 结构化公开信息 ────────────────────────────────────────────────────────────
+
+@app.get("/campus/info", tags=["公开信息"])
+async def campus_info(category: str = "shuttle", keyword: str = ""):
+    """
+    查询校园公开信息（结构化数据）。
+    category: shuttle（校车下一班，keyword 传方向）/ buildings（楼宇）/ venues（场馆）/ library（图书馆）。
+    """
+    if _campus_store is None:
+        raise HTTPException(503, "公开信息数据源未初始化")
+    return _campus_store.search(category, keyword)
+
+
+@app.post("/campus/reload", tags=["公开信息"])
+async def campus_reload():
+    """热加载 data/public/*.json（填充真实数据后无需重启）。"""
+    if _campus_store is None:
+        raise HTTPException(503, "公开信息数据源未初始化")
+    return {"status": _campus_store.reload()}
 
 
 @app.post("/eval/run")

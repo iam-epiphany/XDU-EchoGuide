@@ -379,12 +379,65 @@ class MCPToolManager:
                 del self._cache[k]
         self._cache[self._cache_key(name, params)] = (data, time.monotonic() + ttl)
 
-    # ── 参数校验 ──────────────────────────────────────────────────────────────
+    # ── 参数校验（宽容模式）─────────────────────────────────────────────────
+    #
+    # LLM 生成的工具参数偶尔会带错误类型（如把 3 传成 "3"、把 true 传成 "false" 字符串）。
+    # 这里做宽容类型转换而不是直接拒绝：能转就转，转不了才报错。
+    # 这样工具的语义（JSON Schema）仍然生效，同时避免一次手滑的参数类型把整轮对话打断。
 
     _TYPE_MAP = {"string": str, "number": (int, float), "integer": int, "boolean": bool, "array": list, "object": dict}
 
+    @staticmethod
+    def _coerce(value: Any, expected: str, key: str) -> Any:
+        """把 value 转成 JSON Schema 期望的类型；无法转换时抛 ValueError。"""
+        if expected == "string":
+            if isinstance(value, str):
+                return value
+            return str(value)  # 数字/布尔 → 字符串（如 id 5 → "5"）
+        if expected == "integer":
+            if isinstance(value, bool):
+                raise ValueError(f"参数 {key} 类型错误: 期望 integer")
+            if isinstance(value, int):
+                return value
+            try:
+                return int(str(value).strip())
+            except (TypeError, ValueError):
+                raise ValueError(f"参数 {key} 无法转换为 integer: {value!r}")
+        if expected == "number":
+            if isinstance(value, bool):
+                raise ValueError(f"参数 {key} 类型错误: 期望 number")
+            if isinstance(value, (int, float)):
+                return value
+            try:
+                return float(str(value).strip())
+            except (TypeError, ValueError):
+                raise ValueError(f"参数 {key} 无法转换为 number: {value!r}")
+        if expected == "boolean":
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)) and value in (0, 1):
+                return bool(value)
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in ("true", "1", "yes", "是", "完成", "done"):
+                    return True
+                if lowered in ("false", "0", "no", "否", "未完成"):
+                    return False
+            raise ValueError(f"参数 {key} 无法转换为 boolean: {value!r}")
+        if expected == "array":
+            if isinstance(value, list):
+                return value
+            if isinstance(value, str) and value.strip():
+                return [value]  # 单值 → 单元素数组（如 kinds: "ddl" → ["ddl"]）
+            raise ValueError(f"参数 {key} 类型错误: 期望 array")
+        if expected == "object":
+            if isinstance(value, dict):
+                return value
+            raise ValueError(f"参数 {key} 类型错误: 期望 object")
+        return value
+
     def _validate_params(self, tool: Tool, params: Dict[str, Any]) -> None:
-        """根据工具的 JSON Schema 校验参数，不合法时抛出 ValueError。"""
+        """根据工具的 JSON Schema 校验参数，并把可转换的参数就地规整为正确类型。"""
         schema = tool.schema
         required = schema.get("required", [])
         properties = schema.get("properties", {})
@@ -397,10 +450,7 @@ class MCPToolManager:
             if key in properties:
                 expected_type = properties[key].get("type")
                 if expected_type and expected_type in self._TYPE_MAP:
-                    if not isinstance(value, self._TYPE_MAP[expected_type]):
-                        raise ValueError(
-                            f"工具 {tool.name} 参数 {key} 类型错误: 期望 {expected_type}，实际 {type(value).__name__}"
-                        )
+                    params[key] = self._coerce(value, expected_type, key)
 
     @staticmethod
     def _clean_text(value: Any) -> str:
