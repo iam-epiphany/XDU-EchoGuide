@@ -414,10 +414,22 @@ async def chat(req: ChatRequest, response: Response):
     response.headers["X-Trace-Id"] = trace.trace_id
 
     try:
-        # 0. 双层语义缓存：User 缓存（按 user_id 隔离的个性化答案）→ Global 缓存
-        #    （不依赖用户上下文的答案）。personal 领域（课表/待办等个人数据）
-        #    绝不缓存也不复用，否则会造成用户间数据串扰。
-        cached = _semantic_cache.get(req.message, user_id=req.user_id) if _semantic_cache else None
+        # 1. 先读取记忆上下文 —— 语义缓存必须在其后：
+        #    需要据此判断请求是否依赖历史上下文，并计算上下文指纹 context_fp
+        #    （同一用户不同对话上下文的"那几点开门？"等追问互不污染）。
+        async with span("memory_read"):
+            mem_ctx = await _memory.get_context(req.user_id, conv_id, query=req.message)
+        ctx_text = mem_ctx.to_prompt_text()
+        from mcp.semantic_cache import context_fingerprint
+
+        context_fp = context_fingerprint(ctx_text)
+
+        # 2. 双层语义缓存读取（读取层由 context_fp 决定）：
+        #    - 无上下文 → 只查 Global（公共答案）；
+        #    - 有上下文且身份有效 → 只查 User（user_id + 上下文指纹隔离，
+        #      miss 不回退 Global，防止公共答案绕过个性化 Agent 推理）；
+        #    - 有上下文但匿名 → 跳过缓存。
+        cached = _semantic_cache.get(req.message, user_id=req.user_id, context_fp=context_fp) if _semantic_cache else None
         if cached and cached.get("domain") == "personal":
             logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
             cached = None
@@ -437,11 +449,7 @@ async def chat(req: ChatRequest, response: Response):
                 knowledge_used=True,
             )
 
-        # 1. 读取记忆上下文
-        async with span("memory_read"):
-            mem_ctx = await _memory.get_context(req.user_id, conv_id, query=req.message)
-
-        # 2. 构建编排请求（含对话历史，用于意图识别上下文与追问继承）
+        # 3. 构建编排请求（含对话历史，用于意图识别上下文与追问继承）
         history = [
             {"role": m.role.value, "content": m.content}
             for m in mem_ctx.recent_messages[-5:]
@@ -451,20 +459,20 @@ async def chat(req: ChatRequest, response: Response):
             message=req.message,
             user_id=req.user_id,
             conv_id=conv_id,
-            context=mem_ctx.to_prompt_text(),
+            context=ctx_text,
             history=history,
         )
 
-        # 3. 执行（RAG 检索由 Agent 通过工具调用自主完成 —— Agentic RAG）
+        # 4. 执行（RAG 检索由 Agent 通过工具调用自主完成 —— Agentic RAG）
         async with span("orchestrator_run"):
             result = await _orchestrator.run(orch_req)
 
-        # 4. 写入记忆
+        # 5. 写入记忆
         async with span("memory_write"):
             await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
             await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, result.response)
 
-        # 5. 异步更新用户画像 + 双层语义缓存（不阻塞响应）
+        # 6. 异步更新用户画像 + 双层语义缓存（不阻塞响应）
         asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
         if _semantic_cache:
             # 写入层决策：无用户上下文 → Global；有个性化上下文且身份有效 → User（隔离）；
@@ -473,7 +481,7 @@ async def chat(req: ChatRequest, response: Response):
 
             tier = cache_tier(
                 domain=result.domain.value if result.domain else "other",
-                has_user_context=bool(mem_ctx.to_prompt_text()),
+                has_user_context=bool(ctx_text),
                 user_id=req.user_id,
             )
             if tier == "user":
@@ -482,6 +490,7 @@ async def chat(req: ChatRequest, response: Response):
                     domain=result.domain.value,
                     agent_type=result.agent_type.value,
                     user_id=req.user_id,
+                    context_fp=context_fp,
                 )
             elif tier == "global":
                 _semantic_cache.put(
@@ -536,34 +545,42 @@ async def chat_stream(req: ChatRequest):
         async def on_event(ev: dict) -> None:
             await queue.put(ev)
 
-        # 双层语义缓存命中：直接输出完整答案，跳过 LLM 链路。
-        # User 缓存按 user_id 隔离；Global 缓存只含不依赖用户上下文的答案。
-        # personal 领域条目丢弃（个人数据禁止复用，防跨用户串扰）
-        cached = _semantic_cache.get(req.message, user_id=req.user_id) if _semantic_cache else None
-        if cached and cached.get("domain") == "personal":
-            logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
-            cached = None
-        if cached:
-            await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
-            await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, cached["response"])
-            yield "data: " + json.dumps({"type": "hello", "conv_id": conv_id}, ensure_ascii=False) + "\n\n"
-            yield "data: " + json.dumps({
-                "type": "meta", "domain": cached["domain"], "action": "query",
-                "agent": cached["agent_type"], "cached": True,
-            }, ensure_ascii=False) + "\n\n"
-            yield "data: " + json.dumps({"type": "delta", "text": cached["response"]}, ensure_ascii=False) + "\n\n"
-            yield "data: " + json.dumps({
-                "type": "done", "conv_id": conv_id, "response": cached["response"],
-                "intent": cached["domain"], "agent_type": cached["agent_type"],
-                "escalated": False, "latency_ms": 0.0, "knowledge_used": True, "cached": True,
-            }, ensure_ascii=False) + "\n\n"
-            return
-
         async def run_and_finish() -> None:
             trace = begin_trace("chat_stream")
             try:
+                # 1. 先读记忆上下文 —— 语义缓存必须在其后（同 /chat）：
+                #    需要据此判断请求是否依赖历史上下文并计算 context_fp，
+                #    避免"那几点开门？"等追问在不同对话上下文中错误命中旧缓存。
                 async with span("memory_read"):
                     mem_ctx = await _memory.get_context(req.user_id, conv_id, query=req.message)
+                ctx_text = mem_ctx.to_prompt_text()
+                from mcp.semantic_cache import context_fingerprint
+
+                context_fp = context_fingerprint(ctx_text)
+
+                # 2. 双层语义缓存读取（读取层由 context_fp 决定，与 /chat 完全一致）：
+                #    - 无上下文 → 只查 Global；有上下文+身份有效 → 只查 User（指纹隔离，
+                #      不回退 Global）；有上下文但匿名 → 跳过缓存。
+                cached = _semantic_cache.get(req.message, user_id=req.user_id, context_fp=context_fp) if _semantic_cache else None
+                if cached and cached.get("domain") == "personal":
+                    logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
+                    cached = None
+                if cached:
+                    # 缓存命中：写记忆 + 推送 meta/delta/done（hello 由外层统一输出）
+                    await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
+                    await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, cached["response"])
+                    await queue.put({
+                        "type": "meta", "domain": cached["domain"], "action": "query",
+                        "agent": cached["agent_type"], "cached": True,
+                    })
+                    await queue.put({"type": "delta", "text": cached["response"]})
+                    await queue.put({
+                        "type": "done", "conv_id": conv_id, "response": cached["response"],
+                        "intent": cached["domain"], "agent_type": cached["agent_type"],
+                        "escalated": False, "latency_ms": 0.0, "knowledge_used": True, "cached": True,
+                    })
+                    return
+
                 history = [
                     {"role": m.role.value, "content": m.content}
                     for m in mem_ctx.recent_messages[-5:]
@@ -573,7 +590,7 @@ async def chat_stream(req: ChatRequest):
                     message=req.message,
                     user_id=req.user_id,
                     conv_id=conv_id,
-                    context=mem_ctx.to_prompt_text(),
+                    context=ctx_text,
                     history=history,
                 )
                 async with span("orchestrator_run"):
@@ -590,7 +607,7 @@ async def chat_stream(req: ChatRequest):
 
                     tier = cache_tier(
                         domain=result.domain.value if result.domain else "other",
-                        has_user_context=bool(mem_ctx.to_prompt_text()),
+                        has_user_context=bool(ctx_text),
                         user_id=req.user_id,
                     )
                     if tier == "user":
@@ -599,6 +616,7 @@ async def chat_stream(req: ChatRequest):
                             domain=result.domain.value,
                             agent_type=result.agent_type.value,
                             user_id=req.user_id,
+                            context_fp=context_fp,
                         )
                     elif tier == "global":
                         _semantic_cache.put(
