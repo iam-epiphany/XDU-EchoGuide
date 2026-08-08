@@ -11,6 +11,10 @@
   3. 熔断器（Circuit Breaker）—— 连续失败超阈值时自动断开，防止雪崩。
   4. 结果缓存（TTL Cache）—— 相同参数直接返回缓存，减少重复调用。
   5. 降级策略（Fallback）—— 工具不可用时返回有意义的降级结果。
+
+检索优化链路（查询改写 → 并行召回 → 去重 → LLM 重排）是 /search 演示接口
+与 Agentic RAG 主链路（Agent 调用 knowledge_search）共用的同一套链路：
+注册工具时设置 use_rewrite=True，call() 即自动走完整优化链路。
 """
 import asyncio
 import hashlib
@@ -114,6 +118,7 @@ class Tool:
     cache_ttl:   float = 0.0                 # 0 = 不缓存
     timeout_s:   float = 30.0
     supports_rerank: bool = False            # 是否支持结果重排
+    use_rewrite: bool = False                # 调用时是否自动走「查询改写→并行召回→去重→重排」链路
     fallback:    Optional[Callable] = None    # sync/async (params, context, error) -> Any
     agent_exposed: bool = True               # 是否暴露给 Agent 的 function calling
 
@@ -160,14 +165,33 @@ class MCPToolManager:
         *,
         use_cache: bool = True,
         rerank_top_k: int = 0,          # >0 时对结果重排，取 Top-K
+        use_rewrite: Optional[bool] = None,  # None=按工具配置，False=绕过，True=强制走改写链路
     ) -> ToolResult:
         """
         调用工具，完整执行链：
           缓存检查 → 熔断检查 → 参数校验 → 执行（含超时）→ 缓存写入 → 可选重排
+
+        use_rewrite=True 的工具（如 knowledge_search）自动走
+        「查询改写 → 并行召回 → 去重 → LLM 重排」完整检索优化链路
+        （与 /search 演示接口共用），Agentic RAG 主链路因此获得同样优化。
         """
         tool = self._tools.get(name)
         if not tool:
             return ToolResult(success=False, data=None, tool_name=name, error=f"工具不存在: {name}")
+
+        # 查询改写检索链路：注册时 use_rewrite=True 的工具，任何调用方（Agent 工具循环、
+        # /search 等）都自动走完整优化链路；子查询的参数（min_score/domain 等）原样透传，
+        # 保证领域过滤、相关性阈值等语义在改写链路中不丢失。
+        if tool.use_rewrite and use_rewrite is not False:
+            return await self.search_with_rewrite(
+                name,
+                params.get("query", ""),
+                top_k=params.get("top_k", 5),
+                context=context,
+                extra_params={
+                    k: v for k, v in params.items() if k not in ("query", "top_k")
+                },
+            )
 
         # 缓存命中
         if use_cache and tool.cache_ttl > 0:
@@ -285,20 +309,32 @@ class MCPToolManager:
         query: str,
         top_k: int = 5,
         context: Optional[Dict[str, Any]] = None,
+        extra_params: Optional[Dict[str, Any]] = None,
     ) -> ToolResult:
         """
         完整的检索优化链路：查询改写 → 并行召回 → 去重 → 重排 → Top-K
 
-        这是解决"检索不全、召回不好"的完整方案。
+        这是解决"检索不全、召回不好"的完整方案，同时服务于：
+          - /search 演示接口（直接调用本方法）
+          - Agentic RAG 主链路（use_rewrite=True 的工具经 call() 自动进入本链路）
+
+        extra_params: 透传给每个子查询的额外参数（如 min_score/domain），
+        保证领域过滤、相关性阈值等语义在改写链路中不丢失。
         """
         # 1. 查询改写：生成多角度子查询
         sub_queries = await self.rewrite_query(query, n=3)
         logger.info(f"查询改写: {query!r} → {sub_queries}")
 
-        # 2. 并行召回：所有子查询同时检索
+        # 2. 并行召回：所有子查询同时检索（use_rewrite=False 防递归：子查询本身不再改写）
         recall_k = max(top_k, 5)
         tasks = [
-            self.call(tool_name, {"query": q, "top_k": recall_k}, context, use_cache=True)
+            self.call(
+                tool_name,
+                {"query": q, "top_k": recall_k, **(extra_params or {})},
+                context,
+                use_cache=True,
+                use_rewrite=False,
+            )
             for q in sub_queries
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)

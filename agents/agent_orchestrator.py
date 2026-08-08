@@ -1,7 +1,7 @@
 """
-亮点：多 Agent 路由与编排（领域路由）
+亮点：多 Agent 路由与编排（领域路由 + 轻量协作流水线）
 
-核心问题：多 Agent 情况下如何做 Routing？
+核心问题：多 Agent 情况下如何做 Routing 与协作？
 
 路由策略（三层决策）：
   1. 领域路由 —— 根据 IntentDomain（学业/生活/校务/IT）直接映射到专属 Agent。
@@ -10,9 +10,13 @@
   2. 性能路由 —— 同类 Agent 有多个时，选成功率最高、延迟最低的
   3. 降级路由 —— 专属 Agent 不可用时，自动降级到 AcademicAgent（校园通用接待）
 
-并行协作：
-  - 复杂问题（如"教务系统故障 + 选课问题"）可同时派发给多个 Agent
-  - 结果由 Orchestrator 合并后返回
+轻量多 Agent 协作（复杂请求，非 Agent 间聊天）：
+  Planner 拆分任务 DAG（自包含任务，支持跨任务依赖）
+    → Executor 按 depends_on 分波并行执行，结果写入 SharedState
+    → 依赖任务执行时注入协作上下文（使用前序 Agent 结果）
+    → Synthesizer 合并为最终回复（LLM 失败降级拼接）。
+  工具按 Agent 类型做最小权限隔离（AGENT_TOOL_ALLOWLIST），
+  职责外工具不暴露、调用直接拒绝，避免误调与重复执行。
 
 升级机制：
   - 动作维度为转人工 / 置信度低于阈值 / 紧急度 CRITICAL → 自动升级
@@ -24,7 +28,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from anthropic import AsyncAnthropic
 
@@ -43,6 +47,20 @@ class AgentType(Enum):
     IT_HELP    = "it_help"    # IT 助手：教务系统/校园网/VPN/邮箱/统一身份认证
     PERSONAL   = "personal"   # 个人助理：我的课表/待办/考试安排/日程提醒
     ESCALATION = "escalation"  # 转人工（辅导员/教务老师）
+
+
+# 工具权限边界：每个 Agent 类型只暴露职责内的工具（最小权限原则）。
+# 与 Tool.agent_exposed 取交集：agent_exposed=False 的工具对所有 Agent 都不可见。
+# 目的：避免 Agent 职责模糊、工具选择空间过大导致错误调用，多 Agent 协作时不重复执行。
+AGENT_TOOL_ALLOWLIST: Dict[AgentType, Set[str]] = {
+    AgentType.ACADEMIC:    {"knowledge_search"},
+    AgentType.CAMPUS_LIFE: {"knowledge_search", "query_campus_info", "get_weather"},
+    AgentType.AFFAIRS:     {"knowledge_search"},
+    AgentType.IT_HELP:     {"knowledge_search"},
+    AgentType.PERSONAL:    {"knowledge_search", "query_schedule", "query_todo",
+                            "add_todo", "complete_todo", "query_ddl"},
+    AgentType.ESCALATION:  set(),
+}
 
 
 @dataclass
@@ -104,6 +122,247 @@ class OrchestratorResult:
     escalated:   bool  = False
     latency_ms:  float = 0.0
     tools_used:  List[str] = field(default_factory=list)  # 本次调用的工具（RAG 等）
+
+
+# ── 轻量多 Agent 协作（Task Planner / Shared State / Synthesizer）─────────────
+
+@dataclass
+class Task:
+    """多 Agent 协作中的最小执行单元（自包含：不依赖原始对话上下文）。"""
+    task_id:     str
+    agent_type:  AgentType
+    goal:        str                    # 领域化任务目标（给 Agent 的指令）
+    message:     str                    # 自包含请求内容
+    depends_on:  List[str] = field(default_factory=list)  # 依赖的其他 task_id
+
+
+class SharedState:
+    """协作共享状态：记录每个 Task 的结果，供依赖任务（如汇总）读取。"""
+
+    def __init__(self) -> None:
+        self._results: Dict[str, AgentResponse] = {}
+
+    def set_result(self, task_id: str, resp: AgentResponse) -> None:
+        self._results[task_id] = resp
+
+    def get_result(self, task_id: str) -> Optional[AgentResponse]:
+        return self._results.get(task_id)
+
+    def done(self, task_id: str) -> bool:
+        return task_id in self._results
+
+    def all_results(self) -> Dict[str, AgentResponse]:
+        return dict(self._results)
+
+    def snapshot(self) -> str:
+        """把已完成任务的结果序列化，注入依赖任务作为协作上下文。"""
+        if not self._results:
+            return ""
+        return "\n\n".join(
+            f"[{task_id}]\n{resp.content}"
+            for task_id, resp in self._results.items()
+        )
+
+
+class TaskPlanner:
+    """
+    规则式 Task Planner：复杂请求 → 自包含任务链（带依赖），最后汇总。
+
+    两级策略：
+      1. 内置复合规则（RULES）：命中特定复合意图时，生成**真实的依赖任务链**，
+         后续任务 depends_on 前序任务，执行时从 SharedState 读取前序结果
+         （注入协作上下文），例如：
+            t1 查课表(PERSONAL) ──┐
+                                  ├──→ t3 创建待办(PERSONAL, depends_on=[t1,t2])
+            t2 查办理信息(CAMPUS_LIFE)┘                │
+                                                       ↓
+                                                  Synthesizer 汇总
+      2. 通用降级：未命中任何规则时，每个领域一个自包含任务并行执行，
+         末尾一个汇总任务（depends_on 全部领域任务）。
+    """
+
+    GOAL_TEMPLATES: Dict[AgentType, str] = {
+        AgentType.ACADEMIC:    "从学业支持角度回答用户的请求（选课/课表/考试/成绩等）",
+        AgentType.CAMPUS_LIFE: "从校园生活角度回答用户的请求（宿舍/食堂/校车/天气等）",
+        AgentType.AFFAIRS:     "从校务办事角度回答用户的请求（校历/请假/奖学金/证明等）",
+        AgentType.IT_HELP:     "从 IT 支持角度回答用户的请求（教务系统/校园网/VPN/邮箱等）",
+        AgentType.PERSONAL:    "从个人助理角度回答用户的请求（我的课表/待办/考试安排等）",
+    }
+
+    # ── 内置复合规则 ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _plan_schedule_errand(req: Request) -> Optional[List[Task]]:
+        """
+        规则：个人日程 + 线下办事 + 记待办 的复合请求。
+
+        例："我明天下午有空，想去办校园卡，帮我记个待办"
+          t1 查课表（PERSONAL）→ t2 查办理信息（CAMPUS_LIFE）
+          → t3 创建待办（PERSONAL，depends_on=[t1,t2]，读取 SharedState 结果）
+        """
+        msg = req.message
+        has_schedule = any(keyword_hit(kw, msg) for kw in ("课表", "课程", "空闲", "上课", "没课", "有空"))
+        has_errand   = any(keyword_hit(kw, msg) for kw in ("校园卡", "办理", "材料", "缴费", "办证"))
+        has_todo     = any(keyword_hit(kw, msg) for kw in ("待办", "提醒", "记一下", "安排上"))
+        if not (has_schedule and has_errand and has_todo):
+            return None
+        return [
+            Task(
+                task_id="t1",
+                agent_type=AgentType.PERSONAL,
+                goal="查询课程空闲时间",
+                message=f"查询用户课程/空闲时间（如明天下午是否有课）。用户请求: {msg}",
+            ),
+            Task(
+                task_id="t2",
+                agent_type=AgentType.CAMPUS_LIFE,
+                goal="查询校园卡办理信息",
+                message=f"查询校园卡办理地点和所需材料。用户请求: {msg}",
+            ),
+            Task(
+                task_id="t3",
+                agent_type=AgentType.PERSONAL,
+                goal="创建校园卡办理待办",
+                message=(
+                    "根据协作上下文中的课程空闲时间和校园卡办理信息，"
+                    "为用户创建一个合适的办理待办/提醒（时间安排在空闲时段）。"
+                    f"用户请求: {msg}"
+                ),
+                depends_on=["t1", "t2"],
+            ),
+        ]
+
+    RULES = [_plan_schedule_errand]
+
+    # ── 主入口 ────────────────────────────────────────────────────────────────
+
+    def plan(self, req: Request, agent_types: List[AgentType]) -> List[Task]:
+        """生成任务 DAG：规则命中 → 依赖任务链；否则领域并行任务。"""
+        for rule in self.RULES:
+            tasks = rule(req)
+            if tasks:
+                return tasks
+
+        # 通用降级：每个领域一个自包含任务
+        tasks = []
+        for i, at in enumerate(agent_types):
+            goal = self.GOAL_TEMPLATES.get(at, "回答用户的请求")
+            tasks.append(Task(
+                task_id=f"t{i}",
+                agent_type=at,
+                goal=goal,
+                message=f"{goal}。\n用户请求: {req.message}",
+            ))
+        return tasks
+
+
+class TaskExecutor:
+    """
+    按依赖 DAG 分波执行任务：wave = 依赖全部完成的任务并行执行，
+    结果写入 SharedState；后续任务的 context 注入协作上下文快照
+    （真正"使用前序 Agent 结果"）。
+    """
+
+    def __init__(self, run_task):
+        """
+        run_task: async (req, task, shared, on_event) -> AgentResponse
+        （由编排器提供，负责把任务分发给对应领域 Agent）。
+        """
+        self._run_task = run_task
+
+    async def execute(
+        self,
+        req: Request,
+        tasks: List[Task],
+        on_event: Optional[Any] = None,
+    ) -> SharedState:
+        shared = SharedState()
+        pending = {t.task_id: t for t in tasks}
+
+        while pending:
+            # 当前波：所有依赖已完成的任务
+            wave = [t for t in pending.values()
+                    if all(shared.done(dep) for dep in t.depends_on)]
+            if not wave:
+                wave = list(pending.values())  # 依赖无法满足（防御）：剩余任务直接执行
+            for t in wave:
+                del pending[t.task_id]
+
+            results = await asyncio.gather(
+                *[self._run_task(req, t, shared, on_event) for t in wave],
+                return_exceptions=True,
+            )
+            for t, r in zip(wave, results):
+                if isinstance(r, AgentResponse):
+                    shared.set_result(t.task_id, r)
+                else:
+                    logger.warning(f"任务 {t.task_id} 执行失败: {r}")
+                    shared.set_result(t.task_id, AgentResponse(
+                        agent_type=t.agent_type, content="（该领域助手处理失败）", success=False,
+                    ))
+
+        return shared
+
+
+class Synthesizer:
+    """
+    协作合成器：一次 LLM 调用把多个任务结果合并为连贯的最终回复。
+
+    职责独立于业务任务（不是 Task，也不是 Specialist Agent）：
+    只读 SharedState 的最终结果做合并。LLM 失败时降级为规则拼接。
+    """
+
+    def __init__(self, client: AsyncAnthropic, model: str):
+        self._client = client
+        self._model  = model
+
+    async def synthesize(
+        self,
+        req: Request,
+        results: List[AgentResponse],
+    ) -> str:
+        parts = [
+            (r.agent_type, r.content) for r in results
+            if r.success and r.content and r.content != "（该领域助手处理失败）"
+        ]
+        if not parts:
+            return "抱歉，多个助手模块暂时都没能处理成功，请稍后重试。"
+        if len(parts) == 1:
+            return parts[0][1]
+
+        system = (
+            "你是 EchoGuide 多 Agent 协作的合成器。把多个领域助手的回答合并成一段给用户的连贯回复："
+            "去除重复内容，保留各自的有效信息与 [n] 引用标注，不要编造新的信息。"
+            "如果某个领域回答是失败占位（如「处理失败」），直接忽略它。"
+        )
+        content = "\n\n".join(f"[{at.value}]\n{text}" for at, text in parts)
+        from core.tracing import span
+
+        try:
+            async with span("synthesize", agents=",".join(at.value for at, _ in parts)):
+                resp = await self._client.messages.create(
+                    model=self._model,
+                    max_tokens=1024,
+                    system=system,
+                    messages=[{
+                        "role": "user",
+                        "content": f"用户请求: {req.message}\n\n各领域助手回答:\n{content}",
+                    }],
+                )
+            text = "".join(
+                b.text for b in resp.content if getattr(b, "type", "") == "text"
+            ).strip()
+            if text:
+                return text
+        except Exception as ex:
+            logger.warning(f"合成器调用失败，降级为规则拼接: {ex}")
+
+        return self._merge_parts(parts)
+
+    @staticmethod
+    def _merge_parts(parts: List[Tuple[AgentType, str]]) -> str:
+        """规则拼接（Synthesizer LLM 不可用时的兜底）。"""
+        return "\n\n".join(f"[{at.value}]\n{text}" for at, text in parts)
 
 
 # ── 基础 Agent ────────────────────────────────────────────────────────────────
@@ -171,14 +430,21 @@ class BaseAgent:
         """
         把 MCPToolManager 中注册的工具暴露给 LLM（function calling）。
 
-        工具声明使用 Anthropic tool_use 规范：name / description / input_schema。
+        权限边界：只暴露本 Agent 职责内的工具（默认取 AGENT_TOOL_ALLOWLIST，
+        实例可设置 _tool_allowlist 覆盖，供测试或定制场景使用），
+        避免 Agent 拿满屏无关工具造成误调/重复执行。
         """
         if self._tool_manager is None:
             return []
+        allowed = getattr(self, "_tool_allowlist", None)
+        if allowed is None:
+            allowed = AGENT_TOOL_ALLOWLIST.get(self.agent_type, set())
         tools = []
         for name, tool in self._tool_manager._tools.items():
             if not getattr(tool, "agent_exposed", True):
                 continue
+            if name not in allowed:
+                continue  # 最小权限：职责外工具不暴露
             tools.append({
                 "name": name,
                 "description": tool.description,
@@ -351,6 +617,13 @@ class BaseAgent:
         """执行工具，返回 (结构化数据, 错误信息)。"""
         if self._tool_manager is None:
             return None, "工具管理器不可用"
+        # 权限边界（防御纵深）：即使 LLM 声明了职责外工具，也直接拒绝执行
+        allowed = getattr(self, "_tool_allowlist", None)
+        if allowed is None:
+            allowed = AGENT_TOOL_ALLOWLIST.get(self.agent_type, set())
+        if name not in allowed:
+            logger.warning(f"{self.agent_type.value} 尝试调用权限外工具 {name}，已拒绝")
+            return None, f"工具 {name} 不在 {self.agent_type.value} Agent 权限范围内"
         from core.tracing import span
 
         async with span("tool_call", tool=name, query=str(params.get("query", ""))[:80]):
@@ -497,7 +770,12 @@ class AgentOrchestrator:
             kwargs["base_url"] = base_url
         client = AsyncAnthropic(**kwargs)
 
+        self._client = client      # 供合成器（Synthesizer）等直接调用 LLM
+        self._model  = model
         self._intent_recognizer = IntentRecognizer(api_key=api_key, base_url=base_url, model=model)
+        # 轻量多 Agent 协作链：Planner（拆分）→ Executor（分波执行）→ SharedState → Synthesizer（合并）
+        self._executor = TaskExecutor(self._run_task)
+        self._synthesizer = Synthesizer(client, model)
         self._skill_manager = skill_manager
         self._tool_manager  = tool_manager
 
@@ -627,27 +905,38 @@ class AgentOrchestrator:
         on_event: Optional[Any] = None,
     ) -> OrchestratorResult:
         """
-        并行派发给多个 Agent，合并结果。
-        适用于复杂问题（如同时涉及 IT 故障和选课问题）。
+        轻量多 Agent 协作（非 Agent 间聊天），职责链清晰：
+
+          Planner 拆分任务 DAG（自包含任务，支持跨任务依赖）
+            → Executor 按 depends_on 分波并行执行，结果写入 SharedState，
+              依赖任务执行时注入协作上下文（能看到前序 Agent 结果）
+            → Synthesizer 读取 SharedState 合并为最终回复（LLM 失败降级拼接）
+
+        OrchestratorResult 字段保持兼容。
         """
         t0 = time.monotonic()
-        tasks = [self._execute(req, at, on_event) for at in agent_types]
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 合并：拼接所有成功响应
-        parts = []
-        tools_used: List[str] = []
-        for r in responses:
-            if isinstance(r, AgentResponse) and r.success:
-                parts.append(f"[{r.agent_type.value}]\n{r.content}")
-                tools_used.extend(r.tools_used)
+        # 1. Planner：拆分为任务 DAG（规则命中 → 依赖链；否则领域并行）
+        tasks = TaskPlanner().plan(req, agent_types)
 
-        combined = "\n\n".join(parts) if parts else "抱歉，多个助手模块暂时都没能处理成功，请稍后重试。"
-        escalated = any(isinstance(r, AgentResponse) and r.escalate for r in responses)
+        # 2. Executor：分波执行，产出 SharedState
+        shared = await self._executor.execute(req, tasks, on_event)
+
+        # 3. Synthesizer：合并最终回复
+        final_text = await self._synthesizer.synthesize(
+            req, list(shared.all_results().values()),
+        )
+
+        escalated = any(r.escalate for r in shared.all_results().values())
+        tools_used = [
+            tool
+            for r in shared.all_results().values()
+            for tool in r.tools_used
+        ]
 
         return OrchestratorResult(
             request_id=req.request_id,
-            response=combined,
+            response=final_text,
             agent_type=agent_types[0],
             intent=req.intent,
             domain=req.domain,
@@ -656,6 +945,37 @@ class AgentOrchestrator:
             latency_ms=(time.monotonic() - t0) * 1000,
             tools_used=tools_used,
         )
+
+    # ── 协作任务执行 ──────────────────────────────────────────────────────────
+
+    async def _run_task(
+        self,
+        req: Request,
+        task: Task,
+        shared: SharedState,
+        on_event: Optional[Any] = None,
+    ) -> AgentResponse:
+        """
+        执行单个协作任务：自包含 message + 协作上下文（SharedState 快照）。
+        依赖任务能看到前序 Agent 已给出的结果（真正使用 SharedState）。
+        """
+        task_req = Request(
+            message=task.message,
+            user_id=req.user_id,
+            conv_id=req.conv_id,
+            context=req.context,
+            history=req.history,
+            intent=req.intent,
+            domain=req.domain,
+            action=req.action,
+            urgency=req.urgency,
+            request_id=req.request_id,
+        )
+        snapshot = shared.snapshot()
+        if snapshot:
+            # 注入协作上下文：让本任务知道其他 Agent 已给出什么（避免重复检索/重复回答）
+            task_req.context = f"{task_req.context}\n\n[协作上下文]\n{snapshot}".strip()
+        return await self._execute(task_req, task.agent_type, on_event)
 
     # ── 路由逻辑 ──────────────────────────────────────────────────────────────
 

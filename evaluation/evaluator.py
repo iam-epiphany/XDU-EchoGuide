@@ -75,6 +75,7 @@ class EvalReport:
     regressions:      List[str]          # 相比基线退化的指标
     recommendations:  List[str]
     results:          List[EvalResult]
+    retrieval:        Optional[Dict[str, Any]] = None  # RAG 检索硬指标（HitRate@K/Recall@K/MRR）
 
 
 # ── LLM-as-Judge ─────────────────────────────────────────────────────────────
@@ -188,6 +189,88 @@ Agent 响应: {response}
             value = str(value)
         return value.encode("utf-8", errors="ignore").decode("utf-8")
 
+    # ── 生成端扩展指标：Faithfulness / Answer Correctness ────────────────────
+
+    FAITHFULNESS_PROMPT = """你是 RAG 生成质量评估专家。判断回答是否**忠实于**给定的知识来源（不发生幻觉）。
+
+用户问题: {question}
+知识来源: {context}
+Agent 回答: {response}
+
+评分规则（0.0-1.0）：
+- 回答中的所有事实性陈述都能在知识来源中找到依据 → 1.0
+- 部分内容在来源中找不到依据（编造/幻觉）→ 按无依据内容占比扣分
+- 回答大量编造来源中不存在的信息 → 接近 0.0
+- 知识来源为空/不相关，无法判断 → 给 0.5
+
+只返回 JSON，例如: {{"faithfulness": 0.9}}"""
+
+    ANSWER_CORRECTNESS_PROMPT = """你是 RAG 生成质量评估专家。对比 Agent 回答与标准答案，评估其**正确性**。
+
+用户问题: {question}
+标准答案: {golden}
+Agent 回答: {response}
+
+评分规则（0.0-1.0）：
+- 与标准答案信息一致且完整 → 1.0
+- 信息正确但不够完整 → 0.6-0.9
+- 部分错误 → 0.3-0.5
+- 完全错误/答非所问 → 0.0
+
+只返回 JSON，例如: {{"correctness": 0.85}}"""
+
+    async def judge_faithfulness(self, question: str, response: str, context: str) -> float:
+        """回答忠实性：回答是否被检索上下文支持（无幻觉）。失败兜底 0.5。"""
+        prompt = self.FAITHFULNESS_PROMPT.format(
+            question=question, context=context[:3000], response=response
+        )
+        return await self._judge_scalar(prompt, "faithfulness")
+
+    async def judge_answer_correctness(self, question: str, response: str, golden: str) -> float:
+        """答案正确性：与标准答案的一致性（需要用例提供 golden_answer）。"""
+        prompt = self.ANSWER_CORRECTNESS_PROMPT.format(
+            question=question, golden=golden[:2000], response=response
+        )
+        return await self._judge_scalar(prompt, "correctness")
+
+    async def _judge_scalar(self, prompt: str, key: str) -> float:
+        """单指标 Judge：输出 {"key": 0.0-1.0}，解析失败兜底 0.5。"""
+        prompt = self._clean_text(prompt)
+        for attempt in range(2):
+            try:
+                resp = await self._client.messages.create(
+                    model=self._model, max_tokens=128, temperature=0.0,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                raw = resp.content[0].text
+                data = self._parse_raw_json(raw)
+                if data is None or key not in data:
+                    raise ValueError(f"Judge 输出缺少 {key}")
+                return float(data[key])
+            except Exception as ex:
+                logger.warning(f"Judge({key}) 第 {attempt + 1} 次失败: {ex}")
+                if attempt == 0:
+                    prompt = prompt + "\n\n注意：上次输出无法解析。请只输出一个 JSON 对象。"
+        return 0.5
+
+    @staticmethod
+    def _parse_raw_json(raw: str) -> Optional[Dict[str, Any]]:
+        """
+        从 Judge 输出中提取 JSON 对象（兼容代码块包裹/前后说明文字）。
+        不做键名归一化，保留原始键。
+        """
+        text = (raw or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
+        s, e = text.find("{"), text.rfind("}")
+        if s == -1 or e <= s:
+            return None
+        try:
+            data = json.loads(text[s:e + 1])
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+
 
 # ── 意图识别评测 ──────────────────────────────────────────────────────────────
 
@@ -263,6 +346,100 @@ class IntentEvaluator:
         }
 
 
+# ── RAG 检索硬指标（无 LLM，确定性）──────────────────────────────────────────
+
+@dataclass
+class RetrievalTestCase:
+    """检索评测用例：query + 知识库中相关文档的标题。"""
+    query:           str
+    relevant_titles: List[str]
+
+
+def compute_retrieval_metrics(
+    results: List[List[Dict[str, Any]]],
+    relevant: List[List[str]],
+    top_k: int = 5,
+) -> Dict[str, Any]:
+    """
+    纯函数：计算 RAG 检索硬指标（无需 LLM，可离线单测）。
+
+    results:  每个用例的检索结果（每项含 title 字段）
+    relevant: 每个用例的相关文档标题
+    指标：
+      - HitRate@K: 至少一个相关文档出现在 Top-K 的用例占比
+      - Recall@K:  相关文档被召回到 Top-K 的比例（逐用例平均）
+      - MRR:       第一个相关文档排名的倒数（逐用例平均）
+    """
+    assert len(results) == len(relevant), "results 与 relevant 用例数必须一致"
+    hits, recalls, mrrs = [], [], []
+    cases: List[Dict[str, Any]] = []
+
+    for res, rel in zip(results, relevant):
+        top_titles = [str(item.get("title", "")) for item in res[:top_k]]
+        rel_set = set(rel)
+        hit = any(t in rel_set for t in top_titles)
+        recalled = sum(1 for t in top_titles if t in rel_set)
+        recall = recalled / len(rel_set) if rel_set else 0.0
+        rank = next((i + 1 for i, t in enumerate(top_titles) if t in rel_set), None)
+        mrr = 1.0 / rank if rank else 0.0
+        hits.append(hit)
+        recalls.append(recall)
+        mrrs.append(mrr)
+        cases.append({
+            "relevant": sorted(rel_set),
+            "top_titles": top_titles,
+            "hit": hit,
+            "recall": round(recall, 4),
+            "mrr": round(mrr, 4),
+        })
+
+    return {
+        "hit_rate@K": round(sum(hits) / len(hits), 4) if hits else 0.0,
+        "recall@K":   round(statistics.mean(recalls), 4) if recalls else 0.0,
+        "mrr":        round(statistics.mean(mrrs), 4) if mrrs else 0.0,
+        "top_k":      top_k,
+        "total":      len(results),
+        "cases":      cases,
+    }
+
+
+def citation_correctness(answer: str, sources: List[Any]) -> Dict[str, Any]:
+    """
+    引用正确性（确定性）：解析回答中的 [n] 引用，校验是否都在来源范围内。
+
+    sources: 检索到的来源列表（每项 dict 或 str）
+    返回: {total, valid, invalid, score, has_citation}
+    """
+    indices = sorted({int(m) for m in re.findall(r"\[(\d+)\]", answer)})
+    n_sources = len(sources)
+    valid = [i for i in indices if 1 <= i <= n_sources]
+    return {
+        "total": len(indices),
+        "valid": len(valid),
+        "invalid": [i for i in indices if not (1 <= i <= n_sources)],
+        "score": round(len(valid) / len(indices), 4) if indices else 1.0,
+        "has_citation": len(indices) > 0,
+    }
+
+
+class RetrievalEvaluator:
+    """RAG 检索硬指标评测：真实调用知识库，输出 HitRate@K / Recall@K / MRR。"""
+
+    def __init__(self, knowledge_base):
+        self._kb = knowledge_base
+
+    async def run(self, cases: List[RetrievalTestCase], top_k: int = 5) -> Dict[str, Any]:
+        results, relevant = [], []
+        for case in cases:
+            items = await asyncio.to_thread(self._kb.search, case.query, top_k=top_k)
+            results.append(items)
+            relevant.append(case.relevant_titles)
+        metrics = compute_retrieval_metrics(results, relevant, top_k=top_k)
+        for case, detail in zip(cases, metrics["cases"]):
+            detail["query"] = case.query
+        return metrics
+
+
 # ── 端到端评测器 ──────────────────────────────────────────────────────────────
 
 class EndToEndEvaluator:
@@ -290,12 +467,15 @@ class EndToEndEvaluator:
         judge_base_url: Optional[str] = None,
         judge_model:    Optional[str] = None,
         baseline_path: Optional[str] = None,
+        knowledge_base: Optional[Any] = None,
     ):
         """
         双模型 LLM-as-Judge：
 
         生成模型（api_key/base_url/model）与评判模型（judge_*）可分离，
         消除"自己给自己打分"的自评偏差。judge_* 缺省时退化为同模型（向后兼容）。
+        knowledge_base: 传入时启用 RAG 检索硬指标（HitRate@K/Recall@K/MRR）
+        与生成端 Citation Correctness / Faithfulness 评测。
         """
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -311,6 +491,7 @@ class EndToEndEvaluator:
         self._judge            = LLMJudge(judge_client, judge_model or model)
         self._judge_model      = judge_model or model
         self._intent_evaluator = IntentEvaluator(recognizer)
+        self._retrieval_evaluator = RetrievalEvaluator(knowledge_base) if knowledge_base else None
         self._history:         List[EvalReport] = []
         self._baseline_path = pathlib.Path(baseline_path) if baseline_path else None
         self._baseline: Optional[EvalReport] = self._load_baseline()
@@ -320,6 +501,7 @@ class EndToEndEvaluator:
         intent_cases:    Optional[List[IntentTestCase]] = None,
         dialog_cases:    Optional[List[Dict[str, Any]]] = None,
         routing_cases:   Optional[List[Dict[str, Any]]] = None,
+        retrieval_cases: Optional[List[RetrievalTestCase]] = None,
     ) -> EvalReport:
         """
         运行完整评测。
@@ -328,11 +510,15 @@ class EndToEndEvaluator:
         dialog_cases:
           - 单轮: [{"question": "..."}]
           - 多轮: [{"turns": ["第一轮", "第二轮", ...]}]
+          - 可选字段: golden_answer（Answer Correctness 用）
         routing_cases: 路由评测用例 [{"turns": [...], "expected_agent": "campus_life"}]
+        retrieval_cases: RAG 检索硬指标用例 [{"query": ..., "relevant_titles": [...]}]
+          需要 knowledge_base（检索端 HitRate@K/Recall@K/MRR）。
         """
         results: List[EvalResult] = []
         all_scores: Dict[str, List[float]] = {
-            "relevance": [], "accuracy": [], "completeness": [], "helpfulness": []
+            "relevance": [], "accuracy": [], "completeness": [], "helpfulness": [],
+            "faithfulness": [], "answer_correctness": [], "citation_correctness": [],
         }
 
         # 1. 意图识别评测
@@ -370,7 +556,30 @@ class EndToEndEvaluator:
                 r.scores.get("accuracy", 0.0) for r in routing_results
             ]
 
-        # 4. 汇总
+        # 4. RAG 检索硬指标（HitRate@K / Recall@K / MRR，真实调用知识库，无 LLM）
+        retrieval_metrics: Optional[Dict[str, Any]] = None
+        if retrieval_cases and self._retrieval_evaluator is not None:
+            retrieval_metrics = await self._retrieval_evaluator.run(retrieval_cases)
+            results.append(EvalResult(
+                test_id="rag_retrieval",
+                passed=retrieval_metrics["hit_rate@K"] >= 0.5,
+                scores={
+                    "hit_rate@K": retrieval_metrics["hit_rate@K"],
+                    "recall@K": retrieval_metrics["recall@K"],
+                    "mrr": retrieval_metrics["mrr"],
+                },
+                detail=(
+                    f"HitRate@{retrieval_metrics['top_k']} {retrieval_metrics['hit_rate@K']:.1%}，"
+                    f"Recall@{retrieval_metrics['top_k']} {retrieval_metrics['recall@K']:.3f}，"
+                    f"MRR {retrieval_metrics['mrr']:.3f}"
+                ),
+                metadata={"cases": retrieval_metrics["cases"]},
+            ))
+            all_scores["hit_rate@K"] = [retrieval_metrics["hit_rate@K"]]
+            all_scores["recall@K"] = [retrieval_metrics["recall@K"]]
+            all_scores["mrr"] = [retrieval_metrics["mrr"]]
+
+        # 5. 汇总
         avg_scores = {
             k: round(statistics.mean(v), 4) for k, v in all_scores.items() if v
         }
@@ -380,10 +589,10 @@ class EndToEndEvaluator:
         passed_count = sum(1 for r in results if r.passed)
         pass_rate    = passed_count / len(results) if results else 0.0
 
-        # 5. 回归检测
+        # 6. 回归检测
         regressions = self._detect_regressions(avg_scores)
 
-        # 6. 优化建议
+        # 7. 优化建议
         recommendations = self._recommendations(avg_scores, intent_metrics)
 
         report = EvalReport(
@@ -395,6 +604,7 @@ class EndToEndEvaluator:
             regressions=regressions,
             recommendations=recommendations,
             results=results,
+            retrieval=retrieval_metrics,
         )
         self._history.append(report)
         self._save_baseline(report)
@@ -410,6 +620,7 @@ class EndToEndEvaluator:
 
         conv_id = str(case.get("conv_id") or f"eval_{case_idx}")
         user_id = str(case.get("user_id") or "eval_user")
+        golden_answer = str(case.get("golden_answer") or "").strip()  # Answer Correctness 用
         history: List[Dict[str, str]] = []
         results: List[EvalResult] = []
 
@@ -427,6 +638,53 @@ class EndToEndEvaluator:
 
             scores = await self._judge.judge(question, actual_answer, context=context or None)
             passed = scores.overall >= self.PASS_THRESHOLD
+            score_dict = {
+                "relevance": scores.relevance,
+                "accuracy": scores.accuracy,
+                "completeness": scores.completeness,
+                "helpfulness": scores.helpfulness,
+                "overall": scores.overall,
+            }
+            metadata: Dict[str, Any] = {
+                "question": question,
+                "response": actual_answer,
+                "agent_type": orch_result.agent_type.value,
+                "intent": orch_result.intent.value if orch_result.intent else None,
+                "turn": turn_idx,
+                "conv_id": conv_id,
+                "judge_failed": scores.judge_failed,
+                "judge_error": scores.error,
+            }
+
+            # 生成端 RAG 硬指标：Citation Correctness（确定性）+ Faithfulness（Judge）
+            if self._retrieval_evaluator is not None:
+                sources = await asyncio.to_thread(
+                    self._retrieval_evaluator._kb.search, question, top_k=5,
+                )
+                source_titles = [str(s.get("title", "")) for s in sources]
+                citation = citation_correctness(actual_answer, source_titles)
+                score_dict["citation_correctness"] = citation["score"]
+                metadata["citation"] = citation
+                metadata["sources"] = source_titles
+
+                if sources:
+                    sources_text = "\n".join(
+                        f"[{i + 1}] {s.get('title', '')}: {s.get('content', '')[:200]}"
+                        for i, s in enumerate(sources)
+                    )
+                    faithfulness = await self._judge.judge_faithfulness(
+                        question, actual_answer, sources_text,
+                    )
+                    score_dict["faithfulness"] = faithfulness
+                    metadata["faithfulness"] = faithfulness
+
+            # Answer Correctness：用例提供 golden_answer 时才评测
+            if golden_answer:
+                correctness = await self._judge.judge_answer_correctness(
+                    question, actual_answer, golden_answer,
+                )
+                score_dict["answer_correctness"] = correctness
+                metadata["answer_correctness"] = correctness
 
             history.append({"role": "user", "content": question})
             history.append({"role": "assistant", "content": actual_answer})
@@ -435,24 +693,9 @@ class EndToEndEvaluator:
             results.append(EvalResult(
                 test_id=test_id,
                 passed=passed,
-                scores={
-                    "relevance": scores.relevance,
-                    "accuracy": scores.accuracy,
-                    "completeness": scores.completeness,
-                    "helpfulness": scores.helpfulness,
-                    "overall": scores.overall,
-                },
+                scores=score_dict,
                 detail=f"Q: {question[:30]}... → 综合评分 {scores.overall:.3f}",
-                metadata={
-                    "question": question,
-                    "response": actual_answer,
-                    "agent_type": orch_result.agent_type.value,
-                    "intent": orch_result.intent.value if orch_result.intent else None,
-                    "turn": turn_idx,
-                    "conv_id": conv_id,
-                    "judge_failed": scores.judge_failed,
-                    "judge_error": scores.error,
-                },
+                metadata=metadata,
             ))
 
         return results
@@ -562,6 +805,12 @@ class EndToEndEvaluator:
             recs.append("完整性偏低：Agent 可能过早结束回答，考虑在 prompt 中要求提供完整解决方案")
         if scores.get("helpfulness", 1.0) < 0.75:
             recs.append("有用性偏低：回答可能过于抽象，考虑要求 Agent 提供具体操作步骤")
+        if scores.get("hit_rate@K", 1.0) < 0.8:
+            recs.append("检索 HitRate@K < 80%：检查知识库覆盖度与分块质量，必要时补充文档或调低相关性阈值")
+        if scores.get("recall@K", 1.0) < 0.6:
+            recs.append("检索 Recall@K 偏低：确认查询改写链路生效（Agent 调用 knowledge_search 应走 search_with_rewrite）")
+        if scores.get("faithfulness", 1.0) < 0.8:
+            recs.append("回答忠实性偏低：提示 Agent 严格基于检索结果作答，禁止编造来源中不存在的信息")
         if not recs:
             recs.append("所有指标均达标，继续保持")
         return recs
@@ -613,6 +862,7 @@ class EndToEndEvaluator:
                 )
                 for r in data.get("results", [])
             ],
+            retrieval=data.get("retrieval"),
         )
 
 
@@ -671,4 +921,15 @@ DEFAULT_ROUTING_CASES: List[Dict[str, Any]] = [
     {"turns": ["帮我查一下校园卡余额"], "expected_agent": "campus_life"},
     {"turns": ["南校区食堂几点关门？", "那几点开门呢？"], "expected_agent": "campus_life"},
     {"turns": ["教务系统登录不上怎么办？", "怎么重置密码？"], "expected_agent": "it_help"},
+]
+
+# RAG 检索硬指标用例：query → 知识库默认文档中应被召回的相关标题
+DEFAULT_RETRIEVAL_CASES: List[RetrievalTestCase] = [
+    RetrievalTestCase("这学期选课什么时候开始？", ["选课指南"]),
+    RetrievalTestCase("选课分几个阶段？", ["选课指南"]),
+    RetrievalTestCase("校园穿梭车怎么预约？", ["校园穿梭车（校车）"]),
+    RetrievalTestCase("南校区食堂几点关门？", ["食堂与餐饮"]),
+    RetrievalTestCase("宿舍几点关门？", ["宿舍管理"]),
+    RetrievalTestCase("图书馆开放时间？", ["图书馆"]),
+    RetrievalTestCase("校历有什么重要时间节点？", ["校历与重要时间节点"]),
 ]

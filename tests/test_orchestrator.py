@@ -15,6 +15,7 @@ from agents.agent_orchestrator import (
     AgentType,
     BaseAgent,
     Request,
+    TaskPlanner,
 )
 
 FAKE_KEY = "sk-test-not-used"
@@ -257,7 +258,10 @@ def _tool_agent(responses):
         schema={"type": "object", "properties": {"text": {"type": "string"}}},
     ))
     client = _FakeClient(responses)
-    return _ToolAgent(client, model="test-model", tool_manager=tm), client
+    agent = _ToolAgent(client, model="test-model", tool_manager=tm)
+    # 测试专用：显式授权 echo 工具（默认权限表只放行各领域职责内工具）
+    agent._tool_allowlist = {"echo"}
+    return agent, client
 
 
 def test_multi_tool_use_results_merged_into_single_message():
@@ -307,3 +311,142 @@ def test_tool_round_limit_finishes_with_results_filled():
     assert len(msgs[-1]["content"]) == 1
     assert msgs[-1]["content"][0]["type"] == "tool_result"
     assert msgs[-1]["content"][0]["tool_use_id"] == "tu2"
+
+
+# ── 轻量多 Agent 协作（Planner / Executor / SharedState / Synthesizer）────────
+
+def test_planner_rule_generates_dependency_chain():
+    """复合规则命中：t1/t2 无依赖并行，t3 依赖 t1+t2（同一 Agent 类型可多任务）。"""
+    orch = _orchestrator()
+    req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
+    tasks = TaskPlanner().plan(req, [AgentType.PERSONAL, AgentType.CAMPUS_LIFE])
+    by_id = {t.task_id: t for t in tasks}
+    assert set(by_id) == {"t1", "t2", "t3"}
+    assert by_id["t1"].agent_type == AgentType.PERSONAL
+    assert by_id["t2"].agent_type == AgentType.CAMPUS_LIFE
+    assert by_id["t3"].agent_type == AgentType.PERSONAL      # 同一 Agent 类型多任务
+    assert by_id["t3"].depends_on == ["t1", "t2"]            # 依赖前序任务
+    assert by_id["t1"].depends_on == [] and by_id["t2"].depends_on == []
+    # 任务自包含：message 携带目标与用户请求
+    assert "用户请求" in by_id["t1"].message
+
+
+def test_planner_fallback_generates_parallel_tasks():
+    """未命中规则：每个领域一个任务，无依赖（通用降级）。"""
+    orch = _orchestrator()
+    req = _req("教务系统打不开，选课怎么办")
+    tasks = TaskPlanner().plan(req, [AgentType.IT_HELP, AgentType.ACADEMIC])
+    assert len(tasks) == 2
+    assert all(not t.depends_on for t in tasks)
+
+
+def test_parallel_executor_runs_waves_and_injects_shared_state():
+    """
+    执行器分波执行：wave1 = t1/t2 并行（无协作上下文），
+    wave2 = t3 依赖完成后执行，context 注入前序 Agent 结果（SharedState 真正生效）。
+    Synthesizer LLM 不可用（FAKE_KEY）时降级为规则拼接。
+    """
+    orch = _orchestrator()
+    req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
+
+    calls: list = []  # (agent_type, context)
+
+    async def fake_execute(task_req, agent_type, on_event=None):
+        calls.append((agent_type.value, task_req.context or ""))
+        return AgentResponse(
+            agent_type=agent_type,
+            content=f"{agent_type.value} 的结果",
+            success=True,
+        )
+
+    orch._execute = fake_execute
+    result = asyncio.run(orch.run_parallel(
+        req, [AgentType.PERSONAL, AgentType.CAMPUS_LIFE],
+    ))
+
+    # wave1：t1/t2 并行执行，无协作上下文
+    first_wave = [c for c in calls if "协作上下文" not in c[1]]
+    assert [a for a, _ in first_wave] == ["personal", "campus_life"]
+    # wave2：t3（personal）在依赖完成后执行，并看到前序结果
+    dep_calls = [c for c in calls if "协作上下文" in c[1]]
+    assert len(dep_calls) == 1
+    assert dep_calls[0][0] == "personal"
+    assert "personal 的结果" in dep_calls[0][1]
+    assert "campus_life 的结果" in dep_calls[0][1]
+    # 合成器降级拼接
+    assert result.response
+    assert result.tools_used == []
+
+
+def test_parallel_synthesizer_failure_degrades_to_concat():
+    """Synthesizer LLM 失败 → 规则拼接（主链路可用）。"""
+    orch = _orchestrator()
+    req = _req("南校区食堂几点关门，顺便帮我查下图书馆开放时间")
+
+    async def fake_execute(task_req, agent_type, on_event=None):
+        return AgentResponse(agent_type=agent_type, content=f"{agent_type.value} 回答", success=True)
+
+    orch._execute = fake_execute
+    result = asyncio.run(orch.run_parallel(req, [AgentType.CAMPUS_LIFE, AgentType.AFFAIRS]))
+    # 无规则命中 → 2 个领域任务并行 + 合成失败降级拼接
+    assert "[campus_life]" in result.response
+    assert "[affairs]" in result.response
+
+
+# ── Agent 工具权限边界 ───────────────────────────────────────────────────────
+
+def _fake_tool_manager():
+    from mcp.tool_manager import MCPToolManager, Tool
+
+    tm = MCPToolManager(api_key=FAKE_KEY)
+
+    async def noop(params, context):
+        return []
+
+    for name, schema in {
+        "knowledge_search": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        "query_schedule":   {"type": "object", "properties": {"date": {"type": "string"}}},
+        "query_todo":       {"type": "object", "properties": {"status": {"type": "string"}}},
+        "add_todo":         {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]},
+        "complete_todo":    {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]},
+        "query_ddl":        {"type": "object", "properties": {"horizon_days": {"type": "integer"}}},
+        "query_campus_info": {"type": "object", "properties": {"category": {"type": "string"}}, "required": ["category"]},
+        "get_weather":      {"type": "object", "properties": {"place": {"type": "string"}}},
+    }.items():
+        tm.register(Tool(name=name, description=f"{name} 工具", handler=noop, schema=schema))
+    return tm
+
+
+def test_build_tools_respects_agent_allowlist():
+    """工具权限边界：每个 Agent 只暴露职责内工具（最小权限）。"""
+    from agents.agent_orchestrator import AGENT_TOOL_ALLOWLIST
+
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    for agent_type, agents in orch._pool.items():
+        for agent in agents:
+            names = {t["name"] for t in agent._build_tools()}
+            assert names == AGENT_TOOL_ALLOWLIST[agent_type]
+
+    # 典型断言：Personal 有个人工具；Academic 无个人工具
+    personal = orch._pool[AgentType.PERSONAL][0]
+    names = {t["name"] for t in personal._build_tools()}
+    assert {"query_schedule", "add_todo", "query_ddl"} <= names
+    academic = orch._pool[AgentType.ACADEMIC][0]
+    names = {t["name"] for t in academic._build_tools()}
+    assert "knowledge_search" in names and "query_schedule" not in names
+
+
+def test_execute_tool_rejects_out_of_scope_tool():
+    """防御纵深：Agent 尝试调用权限外工具被直接拒绝，不执行。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    academic = orch._pool[AgentType.ACADEMIC][0]
+
+    data, error = asyncio.run(academic._execute_tool("query_schedule", {"date": "今天"}, _req("hi")))
+    assert data is None
+    assert "权限" in error
+
+    # 权限内工具正常走执行链（无 handler 结果时返回失败但非权限拒绝）
+    data, error = asyncio.run(academic._execute_tool("knowledge_search", {"query": "选课"}, _req("hi")))
+    assert "权限" not in (error or "")

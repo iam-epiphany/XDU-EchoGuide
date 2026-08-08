@@ -164,6 +164,7 @@ async def lifespan(app: FastAPI):
         },
         cache_ttl=300.0,
         supports_rerank=True,
+        use_rewrite=True,  # Agent 调用 knowledge_search 也走「改写→并行召回→去重→重排」链路（与 /search 一致）
         fallback=knowledge_fallback,
     ))
 
@@ -299,6 +300,7 @@ async def lifespan(app: FastAPI):
 
     # 评测器（复用编排器内部的意图识别器，避免双实例缓存/统计分家）
     # 双模型 LLM-as-Judge：评判模型可与生成模型分离，消除自评偏差
+    # 传入知识库 → 额外产出 RAG 检索硬指标（HitRate@K/Recall@K/MRR）与生成端引用/忠实性评测
     _evaluator = EndToEndEvaluator(
         orchestrator=_orchestrator,
         recognizer=_orchestrator.intent_recognizer,
@@ -309,6 +311,7 @@ async def lifespan(app: FastAPI):
         judge_base_url=os.getenv("EVAL_JUDGE_BASE_URL") or cfg.get("base_url"),
         judge_model=os.getenv("EVAL_JUDGE_MODEL") or cfg["model"],
         baseline_path=os.getenv("EVAL_BASELINE_PATH", "/app/data/eval/baseline.json"),
+        knowledge_base=kb,
     )
 
     logger.info("EchoGuide 西电校园智慧助手已就绪")
@@ -411,10 +414,10 @@ async def chat(req: ChatRequest, response: Response):
     response.headers["X-Trace-Id"] = trace.trace_id
 
     try:
-        # 0. 语义缓存：相似问题直接复用答案（GPTCache 思路）
-        #    注意：缓存 key 不区分 user_id，personal 领域（课表/待办等个人数据）
-        #    的回答绝不缓存也不复用，否则会造成用户间数据串扰。
-        cached = _semantic_cache.get(req.message) if _semantic_cache else None
+        # 0. 双层语义缓存：User 缓存（按 user_id 隔离的个性化答案）→ Global 缓存
+        #    （不依赖用户上下文的答案）。personal 领域（课表/待办等个人数据）
+        #    绝不缓存也不复用，否则会造成用户间数据串扰。
+        cached = _semantic_cache.get(req.message, user_id=req.user_id) if _semantic_cache else None
         if cached and cached.get("domain") == "personal":
             logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
             cached = None
@@ -461,15 +464,31 @@ async def chat(req: ChatRequest, response: Response):
             await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
             await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, result.response)
 
-        # 5. 异步更新用户画像 + 语义缓存（不阻塞响应）
+        # 5. 异步更新用户画像 + 双层语义缓存（不阻塞响应）
         asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
-        if _semantic_cache and result.domain and result.domain.value not in ("other", "personal"):
-            # personal 领域含个人数据，禁止进共享缓存（防跨用户串扰）
-            _semantic_cache.put(
-                req.message, result.response,
-                domain=result.domain.value,
-                agent_type=result.agent_type.value,
+        if _semantic_cache:
+            # 写入层决策：无用户上下文 → Global；有个性化上下文且身份有效 → User（隔离）；
+            # personal/other 领域或匿名带上下文 → 不缓存（防跨用户串扰）
+            from mcp.semantic_cache import cache_tier
+
+            tier = cache_tier(
+                domain=result.domain.value if result.domain else "other",
+                has_user_context=bool(mem_ctx.to_prompt_text()),
+                user_id=req.user_id,
             )
+            if tier == "user":
+                _semantic_cache.put(
+                    req.message, result.response,
+                    domain=result.domain.value,
+                    agent_type=result.agent_type.value,
+                    user_id=req.user_id,
+                )
+            elif tier == "global":
+                _semantic_cache.put(
+                    req.message, result.response,
+                    domain=result.domain.value,
+                    agent_type=result.agent_type.value,
+                )
 
         return ChatResponse(
             conv_id=conv_id,
@@ -517,9 +536,10 @@ async def chat_stream(req: ChatRequest):
         async def on_event(ev: dict) -> None:
             await queue.put(ev)
 
-        # 语义缓存命中：直接输出完整答案，跳过 LLM 链路。
-        # personal 领域条目丢弃（缓存 key 不区分 user_id，防跨用户串扰）
-        cached = _semantic_cache.get(req.message) if _semantic_cache else None
+        # 双层语义缓存命中：直接输出完整答案，跳过 LLM 链路。
+        # User 缓存按 user_id 隔离；Global 缓存只含不依赖用户上下文的答案。
+        # personal 领域条目丢弃（个人数据禁止复用，防跨用户串扰）
+        cached = _semantic_cache.get(req.message, user_id=req.user_id) if _semantic_cache else None
         if cached and cached.get("domain") == "personal":
             logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
             cached = None
@@ -564,13 +584,28 @@ async def chat_stream(req: ChatRequest):
                     await _memory.add_message(req.user_id, conv_id, MsgRole.ASSISTANT, result.response)
                 asyncio.create_task(_memory.update_profile(req.user_id, conv_id))
 
-                if _semantic_cache and result.domain and result.domain.value not in ("other", "personal"):
-                    # personal 领域含个人数据，禁止进共享缓存（防跨用户串扰）
-                    _semantic_cache.put(
-                        req.message, result.response,
-                        domain=result.domain.value,
-                        agent_type=result.agent_type.value,
+                if _semantic_cache:
+                    # 写入层决策：无用户上下文 → Global；有个性化上下文且身份有效 → User（隔离）
+                    from mcp.semantic_cache import cache_tier
+
+                    tier = cache_tier(
+                        domain=result.domain.value if result.domain else "other",
+                        has_user_context=bool(mem_ctx.to_prompt_text()),
+                        user_id=req.user_id,
                     )
+                    if tier == "user":
+                        _semantic_cache.put(
+                            req.message, result.response,
+                            domain=result.domain.value,
+                            agent_type=result.agent_type.value,
+                            user_id=req.user_id,
+                        )
+                    elif tier == "global":
+                        _semantic_cache.put(
+                            req.message, result.response,
+                            domain=result.domain.value,
+                            agent_type=result.agent_type.value,
+                        )
 
                 await queue.put({
                     "type": "done",
@@ -709,11 +744,18 @@ class EvalIntentInput(BaseModel):
 
 
 class EvalDialogInput(BaseModel):
-    """对话质量评测用例。question 单轮，turns 多轮。"""
+    """对话质量评测用例。question 单轮，turns 多轮；可选 golden_answer（Answer Correctness）。"""
     question: Optional[str] = None
     turns: Optional[List[str]] = None
     user_id: Optional[str] = None
     conv_id: Optional[str] = None
+    golden_answer: Optional[str] = None
+
+
+class RetrievalCaseInput(BaseModel):
+    """RAG 检索硬指标评测用例。"""
+    query: str
+    relevant_titles: List[str]
 
 
 class EvalRunInput(BaseModel):
@@ -721,6 +763,7 @@ class EvalRunInput(BaseModel):
     intent_cases: Optional[List[EvalIntentInput]] = None
     dialog_cases: Optional[List[EvalDialogInput]] = None
     routing_cases: Optional[List[Dict[str, Any]]] = None
+    retrieval_cases: Optional[List[RetrievalCaseInput]] = None
 
 
 @app.post("/knowledge/add", tags=["知识库"])
@@ -986,8 +1029,10 @@ async def run_eval(body: Optional[EvalRunInput] = None):
     from evaluation.evaluator import (
         DEFAULT_DIALOG_CASES,
         DEFAULT_INTENT_CASES,
+        DEFAULT_RETRIEVAL_CASES,
         DEFAULT_ROUTING_CASES,
         IntentTestCase,
+        RetrievalTestCase,
     )
 
     if body and body.intent_cases is not None:
@@ -1012,10 +1057,19 @@ async def run_eval(body: Optional[EvalRunInput] = None):
 
     routing_cases = body.routing_cases if body and body.routing_cases is not None else DEFAULT_ROUTING_CASES
 
+    if body and body.retrieval_cases is not None:
+        retrieval_cases = [
+            RetrievalTestCase(query=c.query, relevant_titles=c.relevant_titles)
+            for c in body.retrieval_cases
+        ]
+    else:
+        retrieval_cases = DEFAULT_RETRIEVAL_CASES
+
     report = await _evaluator.run(
         intent_cases=intent_cases,
         dialog_cases=dialog_cases,
         routing_cases=routing_cases,
+        retrieval_cases=retrieval_cases,
     )
     return {
         "pass_rate":       report.pass_rate,
@@ -1024,6 +1078,7 @@ async def run_eval(body: Optional[EvalRunInput] = None):
         "avg_scores":      report.avg_scores,
         "regressions":     report.regressions,
         "recommendations": report.recommendations,
+        "retrieval":       report.retrieval,
         "results": [
             {
                 "test_id": r.test_id,
