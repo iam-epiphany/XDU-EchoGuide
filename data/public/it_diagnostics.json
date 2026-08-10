@@ -1,0 +1,46 @@
+[
+  {
+    "id": "campus_network_authenticated_no_internet",
+    "name": "校园网已认证但无法访问网页",
+    "match": ["校园网", "认证", "打不开", "无法访问", "无网络"],
+    "steps": ["关闭代理、VPN 和私人 DNS 后重试", "确认系统时间与时区正确", "断开 Wi-Fi 后重新连接并打开认证页面", "使用另一个网站排除单站点故障"],
+    "next_branch": "仍失败时记录 IP、MAC、认证时间和报错截图后报修",
+    "contact": "西安电子科技大学信息网络技术中心",
+    "source_url": "https://xxc.xidian.edu.cn/",
+    "updated_at": "2026-08-09",
+    "version": "2026.08"
+  },
+  {
+    "id": "vpn_connection_failure",
+    "name": "校园 VPN 连接失败",
+    "match": ["vpn", "连接失败", "超时", "证书"],
+    "steps": ["确认当前网络可以访问公网", "核对 VPN 客户端与学校当前推荐版本", "重新输入统一身份认证账号", "检查系统时间和证书错误"],
+    "next_branch": "保留客户端版本和错误码，联系信息网络技术中心",
+    "contact": "西安电子科技大学信息网络技术中心",
+    "source_url": "https://xxc.xidian.edu.cn/",
+    "updated_at": "2026-08-09",
+    "version": "2026.08"
+  },
+  {
+    "id": "identity_login_failure",
+    "name": "统一身份认证登录失败",
+    "match": ["统一身份认证", "账号", "密码", "验证码", "登录不上"],
+    "steps": ["确认账号格式和键盘大小写", "使用无痕窗口排除旧 Cookie", "核对验证码和系统时间", "通过学校密码服务尝试重置密码"],
+    "next_branch": "账号锁定或重置失败时由身份认证管理员处理",
+    "contact": "西安电子科技大学信息网络技术中心",
+    "source_url": "https://xxc.xidian.edu.cn/",
+    "updated_at": "2026-08-09",
+    "version": "2026.08"
+  },
+  {
+    "id": "academic_system_login_failure",
+    "name": "教务系统登录或访问失败",
+    "match": ["教务系统", "登录不上", "报错", "无法访问"],
+    "steps": ["先确认统一身份认证是否可正常登录", "使用学校推荐浏览器或无痕窗口", "清理站点 Cookie 后重新进入", "避开选课高峰并确认本科生院是否发布维护通知"],
+    "next_branch": "认证正常但教务系统持续报错时联系本科生院教务系统支持",
+    "contact": "本科生院或信息网络技术中心",
+    "source_url": "https://jwc.xidian.edu.cn/",
+    "updated_at": "2026-08-09",
+    "version": "2026.08"
+  }
+]

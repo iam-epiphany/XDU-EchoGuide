@@ -4,7 +4,7 @@
 核心问题：多 Agent 情况下如何做 Routing 与协作？
 
 路由策略（三层决策）：
-  1. 领域路由 —— 根据 IntentDomain（学业/生活/校务/IT）直接映射到专属 Agent。
+  1. 领域路由 —— 根据 IntentDomain（学业/生活/校务/IT/个人）直接映射到专属 Agent。
      意图体系为「领域 domain × 动作 action」二维，路由只看领域，
      修复旧版"请求句式（帮我/我要）被标成通用 REQUEST 后丢失领域"的缺陷。
   2. 性能路由 —— 同类 Agent 有多个时，选成功率最高、延迟最低的
@@ -17,9 +17,6 @@
     → Synthesizer 合并为最终回复（LLM 失败降级拼接）。
   工具按 Agent 类型做最小权限隔离（AGENT_TOOL_ALLOWLIST），
   职责外工具不暴露、调用直接拒绝，避免误调与重复执行。
-
-升级机制：
-  - 动作维度为转人工 / 置信度低于阈值 / 紧急度 CRITICAL → 自动升级
 """
 import asyncio
 import inspect
@@ -33,7 +30,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from anthropic import AsyncAnthropic
 
 from core.domains import DOMAIN_KEYWORDS, IntentAction, IntentDomain, keyword_hit
-from core.intent_recognizer import IntentCategory, IntentRecognizer, UrgencyLevel
+from core.intent_recognizer import IntentCategory, IntentRecognizer
 
 logger = logging.getLogger(__name__)
 
@@ -46,21 +43,36 @@ class AgentType(Enum):
     AFFAIRS    = "affairs"    # 校务咨询：校历/请假/奖学金/办事流程/注册
     IT_HELP    = "it_help"    # IT 助手：教务系统/校园网/VPN/邮箱/统一身份认证
     PERSONAL   = "personal"   # 个人助理：我的课表/待办/考试安排/日程提醒
-    ESCALATION = "escalation"  # 转人工（辅导员/教务老师）
 
 
 # 工具权限边界：每个 Agent 类型只暴露职责内的工具（最小权限原则）。
 # 与 Tool.agent_exposed 取交集：agent_exposed=False 的工具对所有 Agent 都不可见。
 # 目的：避免 Agent 职责模糊、工具选择空间过大导致错误调用，多 Agent 协作时不重复执行。
 AGENT_TOOL_ALLOWLIST: Dict[AgentType, Set[str]] = {
-    AgentType.ACADEMIC:    {"knowledge_search"},
+    AgentType.ACADEMIC:    {"knowledge_search", "calculate_weighted_score"},
     AgentType.CAMPUS_LIFE: {"knowledge_search", "query_campus_info", "get_weather"},
-    AgentType.AFFAIRS:     {"knowledge_search"},
-    AgentType.IT_HELP:     {"knowledge_search"},
+    AgentType.AFFAIRS:     {"knowledge_search", "query_affairs_process"},
+    AgentType.IT_HELP:     {"knowledge_search", "diagnose_it_issue"},
     AgentType.PERSONAL:    {"knowledge_search", "query_schedule", "query_todo",
                             "add_todo", "complete_todo", "query_ddl"},
-    AgentType.ESCALATION:  set(),
 }
+
+
+class ProfileName(Enum):
+    FAST = "fast"
+    DEEP = "deep"
+
+
+@dataclass(frozen=True)
+class ExecutionProfile:
+    """真实执行配置：模型、思考模式、生成预算与检索深度。"""
+    name: ProfileName
+    model: str
+    max_tokens: int
+    thinking: bool
+    rag_top_k: int
+    use_rewrite: bool
+    use_rerank: bool
 
 
 @dataclass
@@ -70,6 +82,7 @@ class AgentStats:
     success:   int   = 0
     total_ms:  float = 0.0
     monitor_penalty: float = 0.0
+    in_flight: int = 0
 
     @property
     def success_rate(self) -> float:
@@ -85,6 +98,10 @@ class AgentStats:
         base_score = self.success_rate * 0.7 + latency_score * 0.3
         return base_score * max(0.0, 1.0 - self.monitor_penalty)
 
+    def effective_routing_score(self) -> float:
+        """进程内自适应实例池：少量探索并规避正在处理请求的实例。"""
+        return self.routing_score() + 0.05 / ((self.total + 1) ** 0.5) - 0.10 * self.in_flight
+
 
 @dataclass
 class AgentResponse:
@@ -93,8 +110,12 @@ class AgentResponse:
     success:     bool
     confidence:  float = 1.0
     latency_ms:  float = 0.0
-    escalate:    bool  = False   # 是否需要升级
     tools_used:  List[str] = field(default_factory=list)  # 本次调用的工具（供过程可视化）
+    tool_evidence: List[Dict[str, Any]] = field(default_factory=list)
+    profile: str = "fast"
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass
@@ -107,8 +128,13 @@ class Request:
     intent:      Optional[IntentCategory] = None        # 兼容字段
     domain:      Optional[IntentDomain]   = None        # 领域（路由依据）
     action:      Optional[IntentAction]   = None        # 动作（行为依据）
-    urgency:     Optional[UrgencyLevel]   = None
     request_id:  str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    confidence: float = 0.0
+    classifier_stage: str = "preset"
+    profile: Optional[ProfileName] = None
+    complexity_mode: str = "single"
+    complexity_reason: str = "单领域请求"
+    benchmark_strategy: str = "adaptive"
 
 
 @dataclass
@@ -119,9 +145,10 @@ class OrchestratorResult:
     intent:      Optional[IntentCategory]
     domain:      Optional[IntentDomain] = None
     action:      Optional[IntentAction] = None
-    escalated:   bool  = False
     latency_ms:  float = 0.0
     tools_used:  List[str] = field(default_factory=list)  # 本次调用的工具（RAG 等）
+    tool_evidence: List[Dict[str, Any]] = field(default_factory=list)
+    execution: Dict[str, Any] = field(default_factory=dict)
 
 
 # ── 轻量多 Agent 协作（Task Planner / Shared State / Synthesizer）─────────────
@@ -134,6 +161,17 @@ class Task:
     goal:        str                    # 领域化任务目标（给 Agent 的指令）
     message:     str                    # 自包含请求内容
     depends_on:  List[str] = field(default_factory=list)  # 依赖的其他 task_id
+    # 后置条件：本任务应落地的写操作（模型忘记调用工具时由 Executor 补执行）。
+    # 由 Planner 声明，避免执行器硬编码"t3/校园卡待办"这类任务标识。
+    required_tool: Optional[str] = None
+    required_tool_args: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ComplexityDecision:
+    mode: str
+    reason: str
+    targets: List[AgentType]
 
 
 class SharedState:
@@ -141,6 +179,7 @@ class SharedState:
 
     def __init__(self) -> None:
         self._results: Dict[str, AgentResponse] = {}
+        self._task_meta: Dict[str, Dict[str, Any]] = {}
 
     def set_result(self, task_id: str, resp: AgentResponse) -> None:
         self._results[task_id] = resp
@@ -153,6 +192,18 @@ class SharedState:
 
     def all_results(self) -> Dict[str, AgentResponse]:
         return dict(self._results)
+
+    def set_task_meta(self, task: Task, status: str, duration_ms: float = 0.0) -> None:
+        self._task_meta[task.task_id] = {
+            "id": task.task_id,
+            "agent": task.agent_type.value,
+            "depends_on": list(task.depends_on),
+            "status": status,
+            "duration_ms": round(duration_ms, 1),
+        }
+
+    def task_meta(self) -> List[Dict[str, Any]]:
+        return list(self._task_meta.values())
 
     def snapshot(self) -> str:
         """把已完成任务的结果序列化，注入依赖任务作为协作上下文。"""
@@ -197,13 +248,13 @@ class TaskPlanner:
         规则：个人日程 + 线下办事 + 记待办 的复合请求。
 
         例："我明天下午有空，想去办校园卡，帮我记个待办"
-          t1 查课表（PERSONAL）→ t2 查办理信息（CAMPUS_LIFE）
+          t1 查课表（PERSONAL）→ t2 查办理信息（AFFAIRS）
           → t3 创建待办（PERSONAL，depends_on=[t1,t2]，读取 SharedState 结果）
         """
         msg = req.message
         has_schedule = any(keyword_hit(kw, msg) for kw in ("课表", "课程", "空闲", "上课", "没课", "有空"))
         has_errand   = any(keyword_hit(kw, msg) for kw in ("校园卡", "办理", "材料", "缴费", "办证"))
-        has_todo     = any(keyword_hit(kw, msg) for kw in ("待办", "提醒", "记一下", "安排上"))
+        has_todo     = any(keyword_hit(kw, msg) for kw in ("待办", "提醒", "记一下", "安排上", "安排"))
         if not (has_schedule and has_errand and has_todo):
             return None
         return [
@@ -215,7 +266,7 @@ class TaskPlanner:
             ),
             Task(
                 task_id="t2",
-                agent_type=AgentType.CAMPUS_LIFE,
+                agent_type=AgentType.AFFAIRS,
                 goal="查询校园卡办理信息",
                 message=f"查询校园卡办理地点和所需材料。用户请求: {msg}",
             ),
@@ -229,6 +280,8 @@ class TaskPlanner:
                     f"用户请求: {msg}"
                 ),
                 depends_on=["t1", "t2"],
+                required_tool="add_todo",
+                required_tool_args={"content": "补办校园卡", "kind": "todo"},
             ),
         ]
 
@@ -279,27 +332,35 @@ class TaskExecutor:
         shared = SharedState()
         pending = {t.task_id: t for t in tasks}
 
+        if len(tasks) > 6:
+            raise ValueError("协作任务数量超过上限 6")
+
         while pending:
             # 当前波：所有依赖已完成的任务
             wave = [t for t in pending.values()
                     if all(shared.done(dep) for dep in t.depends_on)]
             if not wave:
-                wave = list(pending.values())  # 依赖无法满足（防御）：剩余任务直接执行
+                blocked = ",".join(sorted(pending))
+                raise ValueError(f"任务依赖无法满足，可能存在循环或缺失依赖: {blocked}")
             for t in wave:
                 del pending[t.task_id]
 
+            started = time.monotonic()
             results = await asyncio.gather(
                 *[self._run_task(req, t, shared, on_event) for t in wave],
                 return_exceptions=True,
             )
             for t, r in zip(wave, results):
+                duration_ms = (time.monotonic() - started) * 1000
                 if isinstance(r, AgentResponse):
                     shared.set_result(t.task_id, r)
+                    shared.set_task_meta(t, "success" if r.success else "failed", duration_ms)
                 else:
                     logger.warning(f"任务 {t.task_id} 执行失败: {r}")
                     shared.set_result(t.task_id, AgentResponse(
                         agent_type=t.agent_type, content="（该领域助手处理失败）", success=False,
                     ))
+                    shared.set_task_meta(t, "failed", duration_ms)
 
         return shared
 
@@ -379,11 +440,21 @@ class BaseAgent:
         model: str,
         skill_manager: Optional[Any] = None,
         tool_manager: Optional[Any] = None,
+        profile: Optional[ExecutionProfile] = None,
     ):
         self._client = client
         self._model  = model
         self._skill_manager = skill_manager
         self._tool_manager  = tool_manager
+        self.profile = profile or ExecutionProfile(
+            name=ProfileName.FAST,
+            model=model,
+            max_tokens=1024,
+            thinking=False,
+            rag_top_k=3,
+            use_rewrite=False,
+            use_rerank=False,
+        )
         self.stats   = AgentStats()
 
     async def handle(self, req: Request, on_event: Optional[Any] = None) -> AgentResponse:
@@ -394,22 +465,40 @@ class BaseAgent:
         """
         t0 = time.monotonic()
         self.stats.total += 1
+        self.stats.in_flight += 1
         try:
             from core.tracing import span
 
             async with span("agent_handle", agent=self.agent_type.value):
-                content, tools_used = await self._call_llm(req, on_event=on_event)
+                content, tools_used, tool_evidence, input_tokens, output_tokens = await self._call_llm(req, on_event=on_event)
+            # 引用是检索链路的执行后置条件，不依赖模型是否自觉把 URL 抄进正文。
+            # 仅追加工具返回的公开标题/URL/更新时间，不暴露原始参数或内部上下文。
+            cited = []
+            seen_urls = set()
+            for item in tool_evidence:
+                url = str(item.get("source_url") or "").strip()
+                if not url or url in seen_urls or url in content:
+                    continue
+                seen_urls.add(url)
+                title = str(item.get("title") or "公开来源").strip()
+                updated = str(item.get("updated_at") or "").strip()
+                cited.append(f"- [{title}]({url})" + (f"（更新：{updated}）" if updated else ""))
+            if cited:
+                content = f"{content.rstrip()}\n\n### 可核验来源\n" + "\n".join(cited)
             ms = (time.monotonic() - t0) * 1000
             self.stats.success += 1
             self.stats.total_ms += ms
-            escalate = self._needs_escalation(content)
             return AgentResponse(
                 agent_type=self.agent_type,
                 content=content,
                 success=True,
                 latency_ms=ms,
-                escalate=escalate,
                 tools_used=tools_used,
+                tool_evidence=tool_evidence,
+                profile=self.profile.name.value,
+                model=self.profile.model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
         except Exception as ex:
             ms = (time.monotonic() - t0) * 1000
@@ -420,13 +509,17 @@ class BaseAgent:
                 content="抱歉，处理你的请求时出现了问题，请稍后重试，或换个方式描述一下。",
                 success=False,
                 latency_ms=ms,
+                profile=self.profile.name.value,
+                model=self.profile.model,
             )
+        finally:
+            self.stats.in_flight = max(0, self.stats.in_flight - 1)
 
     # ── Agentic RAG：LLM 工具调用循环 ────────────────────────────────────────
 
     MAX_TOOL_ROUNDS = 2  # 工具调用循环上限，防止死循环与成本失控
 
-    def _build_tools(self) -> List[Dict[str, Any]]:
+    def _build_tools(self, req: Optional[Request] = None) -> List[Dict[str, Any]]:
         """
         把 MCPToolManager 中注册的工具暴露给 LLM（function calling）。
 
@@ -439,6 +532,10 @@ class BaseAgent:
         allowed = getattr(self, "_tool_allowlist", None)
         if allowed is None:
             allowed = AGENT_TOOL_ALLOWLIST.get(self.agent_type, set())
+        if req is not None and req.benchmark_strategy == "generic_rag":
+            allowed = set(allowed) - {
+                "calculate_weighted_score", "query_affairs_process", "diagnose_it_issue",
+            }
         tools = []
         for name, tool in self._tool_manager._tools.items():
             if not getattr(tool, "agent_exposed", True):
@@ -452,7 +549,25 @@ class BaseAgent:
             })
         return tools
 
-    async def _call_llm(self, req: Request, on_event: Optional[Any] = None) -> tuple[str, List[str]]:
+    def _model_kwargs(self) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "model": self.profile.model,
+            "max_tokens": self.profile.max_tokens,
+        }
+        kwargs["thinking"] = {"type": "enabled" if self.profile.thinking else "disabled"}
+        if self.profile.thinking:
+            kwargs["output_config"] = {"effort": "high"}
+        return kwargs
+
+    @staticmethod
+    def _usage(resp: Any) -> Tuple[int, int]:
+        usage = getattr(resp, "usage", None)
+        return (
+            int(getattr(usage, "input_tokens", 0) or 0),
+            int(getattr(usage, "output_tokens", 0) or 0),
+        )
+
+    async def _call_llm(self, req: Request, on_event: Optional[Any] = None) -> tuple[str, List[str], List[Dict[str, Any]], int, int]:
         """
         工具调用循环：
           1. 首次调用带 tools（function calling），让 Agent 自主决定是否检索知识库
@@ -471,7 +586,7 @@ class BaseAgent:
             messages.append({"role": "assistant", "content": "好的，我已了解背景信息。"})
         messages.append({"role": "user", "content": _clean(req.message)})
 
-        tools = self._build_tools()
+        tools = self._build_tools(req)
         system = self._build_system_prompt(req)
         if tools:
             system = (
@@ -481,6 +596,9 @@ class BaseAgent:
             )
 
         tools_used: List[str] = []
+        tool_evidence: List[Dict[str, Any]] = []
+        input_tokens = 0
+        output_tokens = 0
         hit_tool_use_at_limit = False
         for _round in range(self.MAX_TOOL_ROUNDS):
             try:
@@ -488,8 +606,7 @@ class BaseAgent:
                     resp = await self._stream_llm(system, messages, tools, on_event)
                 else:
                     resp = await self._client.messages.create(
-                        model=self._model,
-                        max_tokens=1024,
+                        **self._model_kwargs(),
                         system=system,
                         messages=messages,
                         tools=tools or None,
@@ -504,12 +621,15 @@ class BaseAgent:
                         resp = await self._stream_llm(system, messages, [], on_event)
                     else:
                         resp = await self._client.messages.create(
-                            model=self._model, max_tokens=1024,
+                            **self._model_kwargs(),
                             system=system, messages=messages,
                         )
                 else:
                     raise
 
+            used_in, used_out = self._usage(resp)
+            input_tokens += used_in
+            output_tokens += used_out
             stop_reason = getattr(resp, "stop_reason", None)
             if stop_reason == "tool_use":
                 tool_calls = [b for b in resp.content if getattr(b, "type", "") == "tool_use"]
@@ -527,6 +647,14 @@ class BaseAgent:
                     if on_event is not None:
                         await on_event({"type": "tool", "name": name, "status": "start", "input": tool_input})
                     data, error = await self._execute_tool(name, tool_input, req)
+                    if name == "knowledge_search" and isinstance(data, list):
+                        tool_evidence.extend({
+                            "tool": name,
+                            "title": item.get("title", ""),
+                            "source_url": item.get("source_url", ""),
+                            "updated_at": item.get("updated_at", ""),
+                            "content": str(item.get("content", ""))[:800],
+                        } for item in data if isinstance(item, dict))
                     if on_event is not None:
                         await on_event({
                             "type": "tool", "name": name, "status": "done",
@@ -545,7 +673,7 @@ class BaseAgent:
             text = "".join(
                 b.text for b in resp.content if getattr(b, "type", "") == "text"
             ).strip()
-            return text, tools_used
+            return text, tools_used, tool_evidence, input_tokens, output_tokens
 
         # 达到工具轮次上限仍有工具请求：用普通调用收尾，保证一定有最终答复
         if hit_tool_use_at_limit:
@@ -572,16 +700,19 @@ class BaseAgent:
                 resp = await self._stream_llm(system, messages, [], on_event)
             else:
                 resp = await self._client.messages.create(
-                    model=self._model, max_tokens=1024,
+                    **self._model_kwargs(),
                     system=system, messages=messages,
                 )
+            used_in, used_out = self._usage(resp)
+            input_tokens += used_in
+            output_tokens += used_out
             text = "".join(
                 b.text for b in resp.content if getattr(b, "type", "") == "text"
             ).strip()
             if text:
-                return text, tools_used
+                return text, tools_used, tool_evidence, input_tokens, output_tokens
 
-        return "抱歉，处理超时或模型未返回有效内容，请稍后重试。", tools_used
+        return "抱歉，处理超时或模型未返回有效内容，请稍后重试。", tools_used, tool_evidence, input_tokens, output_tokens
 
     async def _stream_llm(self, system: str, messages: List[Dict], tools: List[Dict], on_event: Any):
         """
@@ -595,8 +726,7 @@ class BaseAgent:
           - 0.5x+：messages.stream() 为 async 方法（需 await），事件结构相同。
         """
         stream_cm = self._client.messages.stream(
-            model=self._model,
-            max_tokens=1024,
+            **self._model_kwargs(),
             system=system,
             messages=messages,
             tools=tools or None,
@@ -631,7 +761,8 @@ class BaseAgent:
                 name,
                 params,
                 context={"agent_type": self.agent_type.value, "user_id": req.user_id},
-                rerank_top_k=0,
+                rerank_top_k=self.profile.rag_top_k if self.profile.use_rerank else 0,
+                use_rewrite=self.profile.use_rewrite,
             )
         if not result.success:
             return None, result.error or "工具执行失败"
@@ -674,11 +805,6 @@ class BaseAgent:
         prompt = f"{prompt}\n\n{build_time_context()}"
         return prompt
 
-    def _needs_escalation(self, content: str) -> bool:
-        """检测 Agent 是否建议升级（简单关键词检测）。"""
-        keywords = ["转人工", "找辅导员", "教务老师", "escalate", "无法处理", "建议联系"]
-        return any(kw in content for kw in keywords)
-
 
 class AcademicAgent(BaseAgent):
     """学业支持：选课、课表、考试、成绩、绩点、重修、转专业、保研。"""
@@ -687,6 +813,9 @@ class AcademicAgent(BaseAgent):
         "你是西电校园智慧助手（EchoGuide）的学业支持顾问。"
         "友好、简洁地回答西安电子科技大学学生的学业问题，包括选课、课表、考试安排、成绩与绩点、重修、转专业、保研等。"
         "回答基于西电教务规则和公开常识，步骤清晰、用语克制。"
+        "政策、规定、培养方案或转专业问题必须先调用 knowledge_search；检索结果含 source_url 时，"
+        "回答必须给出可点击来源链接、文档标题、更新时间与适用范围，不能把单学院规则泛化为全校规则。"
+        "用户提供课程成绩与学分时必须调用 calculate_weighted_score，不要自行心算，并明确它不是官方 GPA。"
         "不要编造具体分数、排名或个人成绩数据；涉及具体成绩或学籍操作时，提示学生前往教务系统或学院教务老师处确认。"
     )
 
@@ -697,6 +826,8 @@ class CampusLifeAgent(BaseAgent):
     system_prompt = (
         "你是西电校园智慧助手（EchoGuide）的校园生活向导，熟悉西安电子科技大学南、北校区的日常生活信息。"
         "覆盖宿舍、食堂、校园穿梭车、校园卡充值与挂失、快递、水电、社团、运动场馆等问题。"
+        "图书馆/场馆位置或开放时间、校车班次必须先调用 query_campus_info；天气问题必须先调用 get_weather，"
+        "包括依赖上一轮实体的‘那几点关门’等短追问。"
         "回答尽量给出位置（校区/楼栋）和时段，步骤清晰。"
         "不要编造精确的电话、价格或人员信息；涉及报修、补办等需现场办理的事项，指引用户到对应服务网点。"
     )
@@ -709,6 +840,7 @@ class AffairsAgent(BaseAgent):
         "你是西电校园智慧助手（EchoGuide）的校务咨询顾问，负责西安电子科技大学的校务办事指引。"
         "覆盖校历、请假流程、奖学金与助学金评定、各类证明开具、学籍注册、学费缴纳等事项。"
         "回答以办事流程、所需材料、办理地点和系统入口为主，清晰可执行。"
+        "校园卡补办、请假、在读证明或缓考问题优先调用 query_affairs_process 获取版本化流程。"
         "不要编造具体的截止日期、金额或审批结果；涉及实际审批的事项，提示以学院或学生处最新通知为准。"
     )
 
@@ -719,6 +851,7 @@ class ITHelpAgent(BaseAgent):
     system_prompt = (
         "你是西电校园智慧助手（EchoGuide）的 IT 支持助手，帮助西安电子科技大学学生解决校园信息系统使用问题。"
         "覆盖教务系统、校园网、VPN、学校邮箱、统一身份认证的故障排查与配置指引。"
+        "遇到上述系统故障时优先调用 diagnose_it_issue，再基于诊断树组织回答。"
         "提供清晰的步骤化解决方案。遇到需要后台操作或账号重置的问题，说明需联系信息化建设处或网络中心处理。"
     )
 
@@ -764,35 +897,54 @@ class AgentOrchestrator:
         model:    str = "claude-3-5-sonnet-20241022",
         skill_manager: Optional[Any] = None,
         tool_manager: Optional[Any] = None,
+        fast_api_key: Optional[str] = None,
+        fast_base_url: Optional[str] = None,
+        fast_model: Optional[str] = None,
+        deep_api_key: Optional[str] = None,
+        deep_base_url: Optional[str] = None,
+        deep_model: Optional[str] = None,
     ):
-        kwargs: Dict[str, Any] = {"api_key": api_key}
-        if base_url:
-            kwargs["base_url"] = base_url
-        client = AsyncAnthropic(**kwargs)
+        def make_client(key: str, url: Optional[str]) -> AsyncAnthropic:
+            kwargs: Dict[str, Any] = {"api_key": key}
+            if url:
+                kwargs["base_url"] = url
+            return AsyncAnthropic(**kwargs)
 
-        self._client = client      # 供合成器（Synthesizer）等直接调用 LLM
-        self._model  = model
-        self._intent_recognizer = IntentRecognizer(api_key=api_key, base_url=base_url, model=model)
+        fast_key = fast_api_key or api_key
+        fast_url = fast_base_url if fast_base_url is not None else base_url
+        deep_key = deep_api_key or api_key
+        deep_url = deep_base_url if deep_base_url is not None else base_url
+        fast_name = fast_model or model
+        deep_name = deep_model or model
+        fast_client = make_client(fast_key, fast_url)
+        deep_client = make_client(deep_key, deep_url)
+        self._profiles = {
+            ProfileName.FAST: ExecutionProfile(ProfileName.FAST, fast_name, 768, False, 3, False, False),
+            ProfileName.DEEP: ExecutionProfile(ProfileName.DEEP, deep_name, 1536, True, 5, True, True),
+        }
+
+        self._client = deep_client
+        self._model = deep_name
+        self._intent_recognizer = IntentRecognizer(api_key=fast_key, base_url=fast_url, model=fast_name)
         # 轻量多 Agent 协作链：Planner（拆分）→ Executor（分波执行）→ SharedState → Synthesizer（合并）
         self._executor = TaskExecutor(self._run_task)
-        self._synthesizer = Synthesizer(client, model)
+        self._synthesizer = Synthesizer(deep_client, deep_name)
         self._skill_manager = skill_manager
         self._tool_manager  = tool_manager
 
-        # Agent 池：每种类型保持多个实例（水平扩展）。
-        # 每类型 2 个实例让"性能路由 + 监控惩罚"闭环真实生效：
-        # 实例 A 失败率高 → Monitor 施加惩罚 → _best_agent 切换到实例 B 接管。
+        # 每个领域各有 Fast/Deep 两种真实执行配置，而非相同对象的伪副本。
+        def agents(cls):
+            return [
+                cls(fast_client, fast_name, skill_manager, tool_manager, self._profiles[ProfileName.FAST]),
+                cls(deep_client, deep_name, skill_manager, tool_manager, self._profiles[ProfileName.DEEP]),
+            ]
+
         self._pool: Dict[AgentType, List[BaseAgent]] = {
-            AgentType.ACADEMIC:    [AcademicAgent(client, model, skill_manager, tool_manager)
-                                    for _ in range(2)],
-            AgentType.CAMPUS_LIFE: [CampusLifeAgent(client, model, skill_manager, tool_manager)
-                                    for _ in range(2)],
-            AgentType.AFFAIRS:     [AffairsAgent(client, model, skill_manager, tool_manager)
-                                    for _ in range(2)],
-            AgentType.IT_HELP:     [ITHelpAgent(client, model, skill_manager, tool_manager)
-                                    for _ in range(2)],
-            AgentType.PERSONAL:    [PersonalAgent(client, model, skill_manager, tool_manager)
-                                    for _ in range(2)],
+            AgentType.ACADEMIC: agents(AcademicAgent),
+            AgentType.CAMPUS_LIFE: agents(CampusLifeAgent),
+            AgentType.AFFAIRS: agents(AffairsAgent),
+            AgentType.IT_HELP: agents(ITHelpAgent),
+            AgentType.PERSONAL: agents(PersonalAgent),
         }
 
     @property
@@ -830,7 +982,6 @@ class AgentOrchestrator:
         IntentCategory.GREETING:   IntentAction.GREETING,
         IntentCategory.COMPLAINT:  IntentAction.COMPLAINT,
         IntentCategory.FEEDBACK:   IntentAction.FEEDBACK,
-        IntentCategory.ESCALATION: IntentAction.ESCALATION,
     }
 
     async def run(self, req: Request, on_event: Optional[Any] = None) -> OrchestratorResult:
@@ -849,42 +1000,52 @@ class AgentOrchestrator:
                 req.domain = self._CATEGORY_TO_DOMAIN.get(req.intent, IntentDomain.OTHER)
                 req.action = self._CATEGORY_TO_ACTION.get(req.intent, IntentAction.OTHER)
             else:
-                intent_result = await self._intent_recognizer.recognize(req.message, history=req.history)
+                intent_result = await self._intent_recognizer.recognize(
+                    req.message,
+                    history=req.history,
+                    force_llm="always_llm" in req.benchmark_strategy,
+                )
                 req.domain  = intent_result.domain
                 req.action  = intent_result.action
                 req.intent  = intent_result.intent
-                req.urgency = intent_result.urgency
+                req.confidence = intent_result.confidence
+                req.classifier_stage = intent_result.classifier_stage
                 if on_event is not None:
                     await on_event({
                         "type": "meta",
                         "domain": req.domain.value if req.domain else "other",
                         "action": req.action.value if req.action else "other",
                         "confidence": intent_result.confidence,
+                        "classifier_stage": intent_result.classifier_stage,
                     })
 
-        # 复杂问题自动并行协作，例如同一句同时涉及教务系统故障和选课问题。
-        collaboration = self._collaboration_targets(req)
-        if len(collaboration) > 1:
-            return await self.run_parallel(req, collaboration, on_event)
+        complexity = self._complexity_decision(req)
+        if req.benchmark_strategy == "single_agent" and complexity.mode != "single":
+            complexity = ComplexityDecision("single", "Benchmark 单 Agent 基线", [self._route(req.domain)])
+        req.complexity_mode = complexity.mode
+        req.complexity_reason = complexity.reason
+        req.profile = (
+            ProfileName.DEEP
+            if "always_deep" in req.benchmark_strategy
+            else self._select_profile(req, complexity)
+        )
+        if on_event is not None:
+            await on_event({
+                "type": "meta",
+                "mode": complexity.mode,
+                "profile": req.profile.value,
+                "complexity_reason": complexity.reason,
+            })
+        if complexity.mode in ("parallel", "dependent"):
+            return await self.run_parallel(req, complexity.targets, on_event)
 
         # 2. 路由：按领域选择 Agent 类型
-        agent_type = self._route(req.domain, req.urgency)
+        agent_type = self._route(req.domain)
         if on_event is not None:
             await on_event({"type": "meta", "agent": agent_type.value})
 
         # 3. 执行（含降级）
         response = await self._execute(req, agent_type, on_event)
-
-        # 4. 升级检查（动作维度转人工 / 紧急度 CRITICAL / 响应建议升级）
-        escalated = False
-        if (
-            response.escalate
-            or req.urgency == UrgencyLevel.CRITICAL
-            or req.action == IntentAction.ESCALATION
-        ):
-            escalated = True
-            logger.warning(f"请求 {req.request_id} 触发升级: domain={req.domain} action={req.action} urgency={req.urgency}")
-            # 生产环境：此处创建工单、通知辅导员/教务老师
 
         return OrchestratorResult(
             request_id=req.request_id,
@@ -893,9 +1054,15 @@ class AgentOrchestrator:
             intent=req.intent,
             domain=req.domain,
             action=req.action,
-            escalated=escalated,
             latency_ms=(time.monotonic() - t0) * 1000,
             tools_used=response.tools_used,
+            tool_evidence=response.tool_evidence,
+            execution=self._execution_meta(
+                req,
+                mode="single",
+                agents=[response.agent_type],
+                responses=[response],
+            ),
         )
 
     async def run_parallel(
@@ -917,7 +1084,8 @@ class AgentOrchestrator:
         t0 = time.monotonic()
 
         # 1. Planner：拆分为任务 DAG（规则命中 → 依赖链；否则领域并行）
-        tasks = TaskPlanner().plan(req, agent_types)
+        req.profile = ProfileName.DEEP
+        tasks = TaskPlanner().plan(req, agent_types)[:6]
 
         # 2. Executor：分波执行，产出 SharedState
         shared = await self._executor.execute(req, tasks, on_event)
@@ -927,7 +1095,6 @@ class AgentOrchestrator:
             req, list(shared.all_results().values()),
         )
 
-        escalated = any(r.escalate for r in shared.all_results().values())
         tools_used = [
             tool
             for r in shared.all_results().values()
@@ -941,9 +1108,16 @@ class AgentOrchestrator:
             intent=req.intent,
             domain=req.domain,
             action=req.action,
-            escalated=escalated,
             latency_ms=(time.monotonic() - t0) * 1000,
             tools_used=tools_used,
+            tool_evidence=[e for resp in shared.all_results().values() for e in resp.tool_evidence],
+            execution=self._execution_meta(
+                req,
+                mode=req.complexity_mode,
+                agents=agent_types,
+                responses=list(shared.all_results().values()),
+                tasks=shared.task_meta(),
+            ),
         )
 
     # ── 协作任务执行 ──────────────────────────────────────────────────────────
@@ -968,27 +1142,53 @@ class AgentOrchestrator:
             intent=req.intent,
             domain=req.domain,
             action=req.action,
-            urgency=req.urgency,
             request_id=req.request_id,
         )
+        task_req.profile = ProfileName.DEEP
+        task_req.complexity_mode = req.complexity_mode
+        task_req.complexity_reason = req.complexity_reason
+        task_req.classifier_stage = req.classifier_stage
+        task_req.confidence = req.confidence
         snapshot = shared.snapshot()
         if snapshot:
             # 注入协作上下文：让本任务知道其他 Agent 已给出什么（避免重复检索/重复回答）
             task_req.context = f"{task_req.context}\n\n[协作上下文]\n{snapshot}".strip()
-        return await self._execute(task_req, task.agent_type, on_event)
+        response = await self._execute(task_req, task.agent_type, on_event)
+
+        # 依赖 DAG 的终点是一次真实写操作；模型只给出建议而忘记调用工具时，
+        # Executor 按任务的 required_tool 后置条件补执行，避免出现
+        # "任务 success 但待办未创建"。由 Planner 声明，不硬编码具体任务标识。
+        if task.required_tool and task.required_tool not in response.tools_used:
+            if on_event is not None:
+                await on_event({
+                    "type": "tool", "name": task.required_tool,
+                    "status": "start", "input": task.required_tool_args,
+                })
+            result = await self._tool_manager.call(
+                task.required_tool,
+                task.required_tool_args,
+                context={"agent_type": task.agent_type.value, "user_id": req.user_id},
+                use_rewrite=False,
+            ) if self._tool_manager is not None else None
+            if result is not None and result.success:
+                response.tools_used.append(task.required_tool)
+                response.content = f"{response.content.rstrip()}\n\n已按协作计划记录待办：补办校园卡。"
+                if on_event is not None:
+                    await on_event({"type": "tool", "name": task.required_tool, "status": "done", "titles": []})
+            else:
+                response.success = False
+                error = getattr(result, "error", "工具管理器不可用")
+                response.content = f"{response.content.rstrip()}\n\n待办写入失败：{error}"
+        return response
 
     # ── 路由逻辑 ──────────────────────────────────────────────────────────────
 
-    def _route(self, domain: Optional[IntentDomain], urgency: Optional[UrgencyLevel]) -> AgentType:
+    def _route(self, domain: Optional[IntentDomain]) -> AgentType:
         """
-        三层路由决策：
-          1. 领域映射（学业/生活/校务/IT 四大领域）—— 路由只看领域，动作不参与
-          2. 紧急度覆盖（CRITICAL 直接升级到转人工）
-          3. 默认 ACADEMIC（校园最高频诉求，承担通用接待）
+        领域路由决策：
+          1. 领域映射（学业/生活/校务/IT/个人）—— 路由只看领域，动作不参与
+          2. 默认 ACADEMIC（校园最高频诉求，承担通用接待）
         """
-        if urgency == UrgencyLevel.CRITICAL:
-            return AgentType.ESCALATION
-
         if domain and domain in self._INTENT_ROUTING:
             target = self._INTENT_ROUTING[domain]
             # 如果目标类型有可用实例则使用，否则降级
@@ -1031,7 +1231,61 @@ class AgentOrchestrator:
         deduped = list(dict.fromkeys(targets))
         return [agent_type for agent_type in deduped if self._pool.get(agent_type)]
 
-    def _best_agent(self, agent_type: AgentType) -> Optional[BaseAgent]:
+    def _complexity_decision(self, req: Request) -> ComplexityDecision:
+        dependent = TaskPlanner._plan_schedule_errand(req)
+        if dependent:
+            targets = list(dict.fromkeys(task.agent_type for task in dependent))[:3]
+            return ComplexityDecision("dependent", "日程、办事与待办存在前后依赖", targets)
+
+        targets = self._collaboration_targets(req)
+        connectors = ("同时", "还要", "并且", "另外", "以及", "顺便", "然后")
+        if len(targets) >= 2 and any(word in req.message for word in connectors):
+            return ComplexityDecision("parallel", "显式复合语义涉及多个校园领域", targets[:3])
+
+        primary = self._route(req.domain)
+        return ComplexityDecision("single", "单领域或无显式复合语义", [primary])
+
+    @staticmethod
+    def _select_profile(req: Request, complexity: ComplexityDecision) -> ProfileName:
+        if complexity.mode != "single":
+            return ProfileName.DEEP
+        deep_markers = ("转专业", "保研", "培养方案", "政策", "规定", "条件", "比较", "分析", "检索资料", "给出来源")
+        if any(marker in req.message for marker in deep_markers):
+            return ProfileName.DEEP
+        deterministic_markers = (
+            "加权", "平均成绩", "校园卡", "请假", "在读证明", "缓考",
+            "校园网", "vpn", "统一身份认证", "教务系统", "课表", "待办",
+            "校车", "天气", "图书馆", "体育馆",
+        )
+        if any(marker in req.message.lower() for marker in deterministic_markers):
+            return ProfileName.FAST
+        if req.classifier_stage == "llm" or (req.confidence and req.confidence < 0.74):
+            return ProfileName.DEEP
+        return ProfileName.FAST
+
+    @staticmethod
+    def _execution_meta(
+        req: Request,
+        *,
+        mode: str,
+        agents: List[AgentType],
+        responses: List[AgentResponse],
+        tasks: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "mode": mode,
+            "profile": req.profile.value if req.profile else "fast",
+            "classifier_stage": req.classifier_stage,
+            "complexity_reason": req.complexity_reason,
+            "agents": list(dict.fromkeys(agent.value for agent in agents)),
+            "tools": list(dict.fromkeys(tool for resp in responses for tool in resp.tools_used)),
+            "tasks": tasks or [],
+            "model": next((resp.model for resp in responses if resp.model), ""),
+            "input_tokens": sum(resp.input_tokens for resp in responses),
+            "output_tokens": sum(resp.output_tokens for resp in responses),
+        }
+
+    def _best_agent(self, agent_type: AgentType, profile: Optional[ProfileName] = None) -> Optional[BaseAgent]:
         """
         性能路由：从同类 Agent 中选 routing_score() 最高的。
         这是"基于在线表现动态调整路由"的核心。
@@ -1039,7 +1293,11 @@ class AgentOrchestrator:
         agents = self._pool.get(agent_type, [])
         if not agents:
             return None
-        return max(agents, key=lambda a: a.stats.routing_score())
+        if profile is not None:
+            preferred = [agent for agent in agents if agent.profile.name == profile]
+            if preferred:
+                return max(preferred, key=lambda a: a.stats.effective_routing_score())
+        return max(agents, key=lambda a: a.stats.effective_routing_score())
 
     async def _execute(
         self,
@@ -1048,9 +1306,9 @@ class AgentOrchestrator:
         on_event: Optional[Any] = None,
     ) -> AgentResponse:
         """执行 Agent，失败时降级到 AcademicAgent（校园通用接待）。"""
-        agent = self._best_agent(agent_type)
+        agent = self._best_agent(agent_type, req.profile)
         if agent is None:
-            agent = self._best_agent(AgentType.ACADEMIC)
+            agent = self._best_agent(AgentType.ACADEMIC, req.profile)
         if agent is None:
             return AgentResponse(
                 agent_type=AgentType.ACADEMIC,
@@ -1063,7 +1321,8 @@ class AgentOrchestrator:
         # 专属 Agent 失败时降级到 AcademicAgent
         if not response.success and agent_type != AgentType.ACADEMIC:
             logger.warning(f"{agent_type.value} 失败，降级到 AcademicAgent")
-            fallback = self._best_agent(AgentType.ACADEMIC)
+            fallback_profile = ProfileName.DEEP if req.profile == ProfileName.FAST else req.profile
+            fallback = self._best_agent(AgentType.ACADEMIC, fallback_profile)
             if fallback:
                 response = await fallback.handle(req, on_event=on_event)
 
@@ -1075,13 +1334,17 @@ class AgentOrchestrator:
         result = {}
         for agent_type, agents in self._pool.items():
             for i, agent in enumerate(agents):
-                key = f"{agent_type.value}_{i}"
+                key = f"{agent_type.value}.{agent.profile.name.value}"
                 result[key] = {
                     "total":        agent.stats.total,
                     "success_rate": round(agent.stats.success_rate, 3),
                     "avg_ms":       round(agent.stats.avg_ms, 1),
                     "monitor_penalty": round(agent.stats.monitor_penalty, 3),
                     "routing_score": round(agent.stats.routing_score(), 3),
+                    "effective_routing_score": round(agent.stats.effective_routing_score(), 3),
+                    "in_flight": agent.stats.in_flight,
+                    "profile": agent.profile.name.value,
+                    "model": agent.profile.model,
                 }
         return result
 
@@ -1089,10 +1352,12 @@ class AgentOrchestrator:
         """
         接收 Monitor 的在线表现反馈，动态调整路由惩罚项。
 
-        penalties 的 key 使用 get_stats() 中的 agent key，例如 technical_0。
+        penalties 的 key 使用 get_stats() 中的 agent key，例如 academic.fast。
+        兼容旧版 academic_0 / academic_1 键。
         """
         for agent_type, agents in self._pool.items():
             for i, agent in enumerate(agents):
-                key = f"{agent_type.value}_{i}"
-                penalty = penalties.get(key, 0.0)
+                key = f"{agent_type.value}.{agent.profile.name.value}"
+                legacy_key = f"{agent_type.value}_{i}"
+                penalty = penalties.get(key, penalties.get(legacy_key, 0.0))
                 agent.stats.monitor_penalty = min(max(penalty, 0.0), 0.9)

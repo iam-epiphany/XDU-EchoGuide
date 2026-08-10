@@ -75,13 +75,13 @@ def test_unknown_method_returns_jsonrpc_error():
     assert resp["error"]["code"] == -32601
 
 
-def test_unknown_tool_returns_internal_error():
+def test_unknown_tool_returns_invalid_params():
     server = _make_server()
     resp = _run(server.handle(json.dumps({
         "jsonrpc": "2.0", "id": 5, "method": "tools/call",
         "params": {"name": "not_exist", "arguments": {}},
     })))
-    assert resp["error"]["code"] == -32603
+    assert resp["error"]["code"] == -32602
 
 
 def test_malformed_json_returns_parse_error():
@@ -146,13 +146,11 @@ def test_param_type_coercion_tolerates_llm_quirks():
     assert "integer" in bad.error
 
 
-def test_batch_requests_supported():
+def test_batch_requests_rejected_for_streamable_http():
     server = _make_server()
     batch = json.dumps([
         {"jsonrpc": "2.0", "id": 10, "method": "ping", "params": {}},
         {"jsonrpc": "2.0", "id": 11, "method": "tools/list", "params": {}},
     ])
-    responses = _run(server.handle(batch))
-    assert len(responses) == 2
-    assert responses[0]["id"] == 10
-    assert responses[1]["id"] == 11
+    response = _run(server.handle(batch))
+    assert response["error"]["code"] == -32600

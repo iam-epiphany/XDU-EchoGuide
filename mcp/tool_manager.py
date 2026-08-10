@@ -179,6 +179,12 @@ class MCPToolManager:
         if not tool:
             return ToolResult(success=False, data=None, tool_name=name, error=f"工具不存在: {name}")
 
+        # 熔断检查：先于改写链路，避免熔断期所有改写调用绕过熔断继续打后端，
+        # 也避免熔断状态被 rewrite 链路掩盖（子查询各自 fallback 导致假成功）。
+        if not tool.breaker.allow():
+            error = f"工具熔断中: {name}，请稍后重试"
+            return await self._fallback_result(tool, params, context, error)
+
         # 查询改写检索链路：注册时 use_rewrite=True 的工具，任何调用方（Agent 工具循环、
         # /search 等）都自动走完整优化链路；子查询的参数（min_score/domain 等）原样透传，
         # 保证领域过滤、相关性阈值等语义在改写链路中不丢失。
@@ -200,11 +206,6 @@ class MCPToolManager:
                 tool.stats.total += 1
                 tool.stats.success += 1
                 return ToolResult(success=True, data=cached, tool_name=name, cached=True)
-
-        # 熔断检查
-        if not tool.breaker.allow():
-            error = f"工具熔断中: {name}，请稍后重试"
-            return await self._fallback_result(tool, params, context, error)
 
         t0 = time.monotonic()
         tool.stats.total += 1
@@ -290,9 +291,13 @@ class MCPToolManager:
 返回 JSON 数组，例如: ["子查询1", "子查询2", "子查询3"]"""
         prompt = self._clean_text(prompt)
         try:
-            resp = await self._client.messages.create(
-                model=self._model, max_tokens=256, temperature=0.3,
-                messages=[{"role": "user", "content": prompt}],
+            resp = await asyncio.wait_for(
+                self._client.messages.create(
+                    model=self._model, max_tokens=256, temperature=0.3,
+                    thinking={"type": "disabled"},
+                    messages=[{"role": "user", "content": prompt}],
+                ),
+                timeout=15.0,
             )
             raw = resp.content[0].text
             s, e = raw.find("["), raw.rfind("]") + 1
@@ -339,18 +344,28 @@ class MCPToolManager:
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 3. 合并去重（按内容哈希去重）
+        # 3. 合并去重（按内容哈希去重）；剔除降级占位条目 —— fallback 数据不是
+        # 真实检索结果，混入合并池会被 LLM 重排成"证据"误导 Agent 引用。
         seen, merged = set(), []
         for r in results:
             if isinstance(r, ToolResult) and r.success and isinstance(r.data, list):
                 for item in r.data:
+                    if isinstance(item, dict) and item.get("fallback"):
+                        continue
                     key = hashlib.md5(str(item).encode()).hexdigest()
                     if key not in seen:
                         seen.add(key)
                         merged.append(item)
 
         if not merged:
-            return ToolResult(success=False, data=[], tool_name=tool_name, error="所有子查询均无结果")
+            errors = "; ".join(
+                r.error for r in results
+                if isinstance(r, ToolResult) and r.error
+            )
+            detail = "所有子查询均无结果"
+            if errors:
+                detail = f"{detail}（{errors}）"
+            return ToolResult(success=False, data=[], tool_name=tool_name, error=detail)
 
         # 4. 重排：用 LLM 对合并结果按相关性打分，取 Top-K
         reranked = await self._rerank(query, merged, top_k)
@@ -381,9 +396,13 @@ class MCPToolManager:
         prompt = self._clean_text(prompt)
 
         try:
-            resp = await self._client.messages.create(
-                model=self._model, max_tokens=256, temperature=0.0,
-                messages=[{"role": "user", "content": prompt}],
+            resp = await asyncio.wait_for(
+                self._client.messages.create(
+                    model=self._model, max_tokens=256, temperature=0.0,
+                    thinking={"type": "disabled"},
+                    messages=[{"role": "user", "content": prompt}],
+                ),
+                timeout=15.0,
             )
             raw = resp.content[0].text
             s, e = raw.find("["), raw.rfind("]") + 1
@@ -396,11 +415,23 @@ class MCPToolManager:
 
     # ── 缓存 ──────────────────────────────────────────────────────────────────
 
-    def _cache_key(self, name: str, params: Dict) -> str:
-        return f"{name}:{hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()}"
+    def _cache_key(self, name: str, params: Dict) -> Optional[str]:
+        """缓存键。params 含不可序列化值时返回 None（跳过缓存），不抛异常。
+
+        此前 json.dumps 失败会直接打穿 call()；而写缓存失败又会被 except 吞成
+        "工具失败"并计入熔断 —— 序列化问题不应污染工具状态。
+        """
+        try:
+            serialized = json.dumps(params, sort_keys=True)
+        except (TypeError, ValueError):
+            logger.warning("缓存键序列化失败，跳过缓存: %s", name)
+            return None
+        return f"{name}:{hashlib.md5(serialized.encode()).hexdigest()}"
 
     def _get_cache(self, name: str, params: Dict) -> Optional[Any]:
         key = self._cache_key(name, params)
+        if key is None:
+            return None
         if key in self._cache:
             data, expire_at = self._cache[key]
             if time.monotonic() < expire_at:
@@ -409,11 +440,14 @@ class MCPToolManager:
         return None
 
     def _set_cache(self, name: str, params: Dict, data: Any, ttl: float) -> None:
+        key = self._cache_key(name, params)
+        if key is None:
+            return
         if len(self._cache) >= 5000:
             # 清掉最旧的 1/4
             for k in list(self._cache)[:1250]:
                 del self._cache[k]
-        self._cache[self._cache_key(name, params)] = (data, time.monotonic() + ttl)
+        self._cache[key] = (data, time.monotonic() + ttl)
 
     # ── 参数校验（宽容模式）─────────────────────────────────────────────────
     #

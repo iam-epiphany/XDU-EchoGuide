@@ -45,5 +45,5 @@ def test_citation_correctness_invalid_index():
 
 def test_citation_correctness_no_citation():
     c = citation_correctness("没有任何引用的回答", ["文档A"])
-    assert c["total"] == 0 and c["score"] == 1.0
+    assert c["total"] == 0 and c["score"] is None and c["has_citation"] is False
     assert c["has_citation"] is False

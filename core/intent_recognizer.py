@@ -6,14 +6,14 @@
   - 领域 IntentDomain（academic/campus_life/affairs/it_help/other）
       —— 路由的唯一依据。修复了旧版 P0 缺陷：请求句式（"帮我…/我要…"）被
          few-shot 标成通用 REQUEST 后丢失领域信息，校务问题被学业 Agent 回答。
-  - 动作 IntentAction（query/request/greeting/complaint/feedback/escalation）
-      —— 行为决策依据（是否升级、是否转人工、紧急度）。
+  - 动作 IntentAction（query/request/greeting/complaint/feedback）
+      —— 行为决策依据。
 
-三路融合策略（与旧版一致的权重哲学）：
-  1. LLM 语义理解（权重 70%）—— 主力，理解复杂语义和上下文
-  2. Embedding 向量相似度（权重 20%）—— 快速匹配常见表达
-  3. 关键词模式匹配（权重 10%）—— 零延迟兜底（评分改为边际衰减，修正旧版
-     hits/len(kws) 导致的长关键词表永远低分问题）
+级联识别策略：
+  1. Pattern 高置信度命中直接返回
+  2. Embedding 达到阈值且与第二候选有足够间隔时返回
+  3. 短追问优先继承历史领域
+  4. 只有低置信度请求才调用 LLM
 
 追问处理（对话感知）：
   - 无领域命中的短句（"那几点开门？"）自动从最近对话继承领域，保证追问路由正确。
@@ -26,6 +26,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -34,7 +35,6 @@ from typing import Any, Dict, List, Optional
 from anthropic import AsyncAnthropic
 
 from core.domains import (
-    URGENCY_KEYWORDS,
     IntentAction,
     IntentDomain,
     action_hit_score,
@@ -51,7 +51,6 @@ class IntentCategory(Enum):
     GREETING   = "greeting"     # 问候
     COMPLAINT  = "complaint"    # 投诉不满
     FEEDBACK   = "feedback"     # 正面反馈
-    ESCALATION = "escalation"   # 转人工/升级
     # 西电校园场景的领域意图（兼容旧版路由）
     ACADEMIC   = "academic"     # 学业支持
     CAMPUS_LIFE = "campus_life" # 校园生活
@@ -59,13 +58,6 @@ class IntentCategory(Enum):
     IT_HELP    = "it_help"      # IT 助手
     PERSONAL   = "personal"     # 个人助理（课表/待办/日程）
     OTHER      = "other"
-
-
-class UrgencyLevel(Enum):
-    LOW      = 1
-    MEDIUM   = 2
-    HIGH     = 3
-    CRITICAL = 4
 
 
 # 领域 → 兼容意图 的映射（旧版消费方只需要领域值）
@@ -83,7 +75,6 @@ _ACTION_TO_CATEGORY = {
     IntentAction.GREETING:  IntentCategory.GREETING,
     IntentAction.COMPLAINT: IntentCategory.COMPLAINT,
     IntentAction.FEEDBACK:  IntentCategory.FEEDBACK,
-    IntentAction.ESCALATION: IntentCategory.ESCALATION,
 }
 
 
@@ -93,18 +84,18 @@ class IntentResult:
     action:     IntentAction     # 动作（行为依据）
     intent:     IntentCategory   # 兼容字段（domain 优先，其次 action）
     confidence: float
-    urgency:    UrgencyLevel
     entities:   Dict[str, List[str]]
     reasoning:  str
     latency_ms: float
+    classifier_stage: str = "llm"
 
 
 # ── Few-shot 模板 ─────────────────────────────────────────────────────────────
 # 领域模板：用于 LLM 示例与 Embedding 匹配；动作模板：用于 LLM 示例。
 _DOMAIN_TEMPLATES: Dict[IntentDomain, List[str]] = {
     IntentDomain.ACADEMIC:    ["这学期选课什么时候开始？", "绩点怎么算的？", "重修怎么报名？", "保研有什么条件？", "培养方案学分要求是什么？"],
-    IntentDomain.CAMPUS_LIFE: ["南校区食堂几点关门？", "校车最后一班几点？", "宿舍怎么报修？", "校园卡在哪充值？", "校园卡丢了怎么补办？"],
-    IntentDomain.AFFAIRS:     ["奖学金什么时候评？", "请假流程怎么走？", "在读证明在哪开？", "学费缴费方式有哪些？", "我要请假怎么走流程"],
+    IntentDomain.CAMPUS_LIFE: ["南校区食堂几点关门？", "校车最后一班几点？", "宿舍怎么报修？", "校园卡在哪充值？"],
+    IntentDomain.AFFAIRS:     ["奖学金什么时候评？", "请假流程怎么走？", "在读证明在哪开？", "学费缴费方式有哪些？", "我要请假怎么走流程", "校园卡丢了怎么补办？"],
     IntentDomain.IT_HELP:     ["教务系统登录不上", "校园网连不上", "VPN怎么配置？", "学校邮箱收不到邮件"],
     IntentDomain.PERSONAL:    ["今天有什么课？", "帮我查一下我的课表", "明天第几节在哪上课？", "这周周几没课？", "帮我记个待办，周三前交实验报告", "我最近的考试安排？", "还有什么没做完？"],
 }
@@ -115,12 +106,18 @@ _ACTION_TEMPLATES: Dict[IntentAction, List[str]] = {
     IntentAction.GREETING:    ["你好", "嗨", "在吗", "早上好"],
     IntentAction.COMPLAINT:   ["宿舍热水一直不来！", "校车等了半小时还没来", "食堂排队太久了"],
     IntentAction.FEEDBACK:    ["这个助手很实用！", "回答得很清楚，谢谢", "帮我大忙了"],
-    IntentAction.ESCALATION:  ["我要找辅导员", "转人工老师", "这个问题得找教务处"],
 }
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
-    """纯 Python 余弦相似度，不依赖 numpy。"""
+    """纯 Python 余弦相似度，不依赖 numpy。
+
+    维度不一致时返回 0.0（不参与匹配）：真实 Embedding 384 维、n-gram 兜底
+    256 维，若嵌入器中途降级导致混维，继续计算会产生无意义分数。
+    """
+    if len(a) != len(b):
+        logger.warning(f"向量维度不一致（{len(a)} vs {len(b)}），跳过相似度计算")
+        return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     na  = sum(x * x for x in a) ** 0.5
     nb  = sum(x * x for x in b) ** 0.5
@@ -140,14 +137,18 @@ class IntentRecognizer:
         api_key: str,
         base_url: Optional[str] = None,
         model: str = "claude-3-5-sonnet-20241022",
-        confidence_threshold: float = 0.5,
+        pattern_threshold: float = 0.90,
+        embedding_threshold: float = 0.74,
+        embedding_margin: float = 0.08,
     ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
         self.client    = AsyncAnthropic(**kwargs)
         self.model     = model
-        self.threshold = confidence_threshold
+        self.pattern_threshold = pattern_threshold
+        self.embedding_threshold = embedding_threshold
+        self.embedding_margin = embedding_margin
         # 真实 Embedding：本地 all-MiniLM-L6-v2（与知识库同源，384 维）。
         # 与 base_url 无关 —— DeepSeek 等兼容端点同样使用真向量。
         # 模型不可用（如离线环境）时自动回退字符 n-gram 哈希向量，保证链路可用。
@@ -165,6 +166,7 @@ class IntentRecognizer:
         self,
         message: str,
         history: Optional[List[Dict[str, str]]] = None,
+        force_llm: bool = False,
     ) -> IntentResult:
         """
         识别用户意图（领域 + 动作）。
@@ -172,7 +174,7 @@ class IntentRecognizer:
         history 格式：[{"role": "user"/"assistant", "content": "..."}]
         缓存 key 包含最近对话指纹 —— 同一句追问在不同上下文不会命中陈旧结果。
         """
-        key = self._cache_key(message, history)
+        key = self._cache_key(message, history) + (":llm" if force_llm else "")
         if key in self._cache:
             self.cache_hits += 1
             return self._cache[key]
@@ -183,35 +185,69 @@ class IntentRecognizer:
         from core.tracing import span
 
         async with span("intent_recognize"):
-            # LLM 和 Embedding 并行（Embedding 不可用时跳过）
-            llm_task = asyncio.create_task(self._llm_recognize(message, history))
-            emb_task = asyncio.create_task(self._embedding_recognize(message)) if self._embedding_enabled else None
-            pat      = self._pattern_recognize(message)
+            pat = self._pattern_recognize(message)
+            action = pat.get("action", IntentAction.OTHER)
+            domain = IntentDomain.OTHER
+            confidence = 0.0
+            reasoning = ""
+            stage = "pattern"
 
-            if emb_task:
-                llm, emb = await asyncio.gather(llm_task, emb_task)
+            if force_llm:
+                llm = await self._llm_recognize(message, history)
+                domain = llm.get("domain", IntentDomain.OTHER)
+                action = llm.get("action", action)
+                confidence = float(llm.get("confidence", 0.0))
+                reasoning = llm.get("reasoning", "")
+                stage = "llm"
+            elif (
+                pat.get("domain") != IntentDomain.OTHER
+                and pat.get("confidence", 0.0) >= self.pattern_threshold
+            ):
+                domain = pat["domain"]
+                confidence = float(pat["confidence"])
+                reasoning = "关键词高置信度命中"
             else:
-                llm = await llm_task
-                emb = {"domain": IntentDomain.OTHER, "action": IntentAction.OTHER, "confidence": 0.0}
+                emb = await self._embedding_recognize(message) if self._embedding_enabled else {
+                    "domain": IntentDomain.OTHER,
+                    "action": IntentAction.OTHER,
+                    "confidence": 0.0,
+                    "margin": 0.0,
+                }
+                if (
+                    emb.get("domain") != IntentDomain.OTHER
+                    and emb.get("confidence", 0.0) >= self.embedding_threshold
+                    and emb.get("margin", 0.0) >= self.embedding_margin
+                ):
+                    domain = emb["domain"]
+                    confidence = float(emb["confidence"])
+                    reasoning = "Embedding 高置信度命中"
+                    stage = "embedding"
+                else:
+                    inherited = self._inherit_domain(message, history, IntentDomain.OTHER, action)
+                    if inherited != IntentDomain.OTHER and self._is_short_followup(message):
+                        domain = inherited
+                        confidence = 0.80
+                        reasoning = "从最近对话继承领域"
+                        stage = "history"
+                    else:
+                        llm = await self._llm_recognize(message, history)
+                        domain = llm.get("domain", IntentDomain.OTHER)
+                        action = llm.get("action", action)
+                        confidence = float(llm.get("confidence", 0.0))
+                        reasoning = llm.get("reasoning", "")
+                        stage = "llm"
 
-            domain = self._vote_domain(llm, emb, pat)
-            action = self._vote_action(llm, pat)
-
-            # 追问继承：无领域命中的短句从最近对话继承领域
-            domain = self._inherit_domain(message, history, domain, action)
-
-            entities = await self._extract_entities(message)
-            urgency  = self._urgency(message, action, domain)
+            entities = self._extract_entities_local(message)
 
         result = IntentResult(
             domain=domain,
             action=action,
             intent=self._legacy_intent(domain, action),
-            confidence=self._voted_confidence(llm, emb, pat, domain),
-            urgency=urgency,
+            confidence=round(confidence, 4),
             entities=entities,
-            reasoning=llm.get("reasoning", ""),
+            reasoning=reasoning,
             latency_ms=(time.monotonic() - t0) * 1000,
+            classifier_stage=stage,
         )
 
         # LRU 缓存
@@ -272,7 +308,7 @@ class IntentRecognizer:
 - domain 表示用户问题属于哪个校园领域（学业/生活/校务/IT/个人助理）；无法判断时用 other。
 - personal（个人助理）指与"我的"日程相关：我的课表、待办、考试安排、DDL 倒计时；
   而 academic 指教务规则类问题（选课流程、绩点算法、培养方案等）。
-- action 表示用户希望系统做什么（查询/操作/问候/投诉/反馈/转人工等）。
+- action 表示用户希望系统做什么（查询/操作/问候/投诉/反馈等）。
 - 追问（如"那几点开门？"）应结合最近对话推断 domain。"""
         prompt = self._clean_text(prompt)
 
@@ -281,6 +317,7 @@ class IntentRecognizer:
                 model=self.model,
                 max_tokens=256,
                 temperature=0.1,
+                thinking={"type": "disabled"},
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = resp.content[0].text
@@ -311,16 +348,22 @@ class IntentRecognizer:
             await self._load_template_embeddings()
             msg_vec = await self._embed_text(message)
 
-            best_domain, best_score = IntentDomain.OTHER, 0.0
+            scored: List[tuple[float, IntentDomain]] = []
             for domain, vecs in self._tpl_embeddings.items():
                 score = max(_cosine(msg_vec, v) for v in vecs)
-                if score > best_score:
-                    best_score, best_domain = score, domain
-
-            return {"domain": best_domain, "action": IntentAction.OTHER, "confidence": best_score}
+                scored.append((score, domain))
+            scored.sort(key=lambda item: item[0], reverse=True)
+            best_score, best_domain = scored[0] if scored else (0.0, IntentDomain.OTHER)
+            second_score = scored[1][0] if len(scored) > 1 else 0.0
+            return {
+                "domain": best_domain,
+                "action": IntentAction.OTHER,
+                "confidence": best_score,
+                "margin": max(0.0, best_score - second_score),
+            }
         except Exception as ex:
             logger.warning(f"Embedding 识别失败: {ex}")
-            return {"domain": IntentDomain.OTHER, "action": IntentAction.OTHER, "confidence": 0.0}
+            return {"domain": IntentDomain.OTHER, "action": IntentAction.OTHER, "confidence": 0.0, "margin": 0.0}
 
     def _pattern_recognize(self, message: str) -> Dict[str, Any]:
         """
@@ -338,60 +381,6 @@ class IntentRecognizer:
             "action": action or IntentAction.OTHER,
             "confidence": max(domain_score, action_score) or 0.0,
         }
-
-    # ── 投票合并 ──────────────────────────────────────────────────────────────
-
-    def _vote_domain(self, llm: Dict, emb: Dict, pat: Dict) -> IntentDomain:
-        """领域维度加权投票。embedding 不可用时权重自动转移到 LLM 和 Pattern。"""
-        if llm.get("failed"):
-            if emb.get("domain") != IntentDomain.OTHER and emb.get("confidence", 0.0) > 0:
-                return emb["domain"]
-            if pat.get("domain") != IntentDomain.OTHER and pat.get("confidence", 0.0) > 0:
-                return pat["domain"]
-            return IntentDomain.OTHER
-
-        if self._embedding_enabled:
-            weights = [(llm, 0.7), (emb, 0.2), (pat, 0.1)]
-        else:
-            weights = [(llm, 0.85), (pat, 0.15)]
-        scores: Dict[IntentDomain, float] = {}
-        for result, w in weights:
-            domain = result.get("domain", IntentDomain.OTHER)
-            conf   = result.get("confidence", 0.0)
-            scores[domain] = scores.get(domain, 0.0) + w * conf
-
-        best = max(scores, key=scores.get)  # type: ignore
-        return best if scores[best] >= self.threshold else IntentDomain.OTHER
-
-    def _vote_action(self, llm: Dict, pat: Dict) -> IntentAction:
-        """动作维度投票：LLM 主导，Pattern 兜底。"""
-        if llm.get("failed"):
-            if pat.get("action") != IntentAction.OTHER and pat.get("confidence", 0.0) > 0:
-                return pat["action"]
-            return IntentAction.OTHER
-
-        scores: Dict[IntentAction, float] = {}
-        for result, w in [(llm, 0.85), (pat, 0.15)]:
-            action = result.get("action", IntentAction.OTHER)
-            conf   = result.get("confidence", 0.0)
-            scores[action] = scores.get(action, 0.0) + w * conf
-
-        best = max(scores, key=scores.get)  # type: ignore
-        return best if scores[best] >= self.threshold else IntentAction.OTHER
-
-    def _voted_confidence(self, llm: Dict, emb: Dict, pat: Dict, domain: IntentDomain) -> float:
-        """返回最终投票结果的置信度（而非 LLM 单路置信度，修正旧版失真）。"""
-        if llm.get("failed"):
-            return emb.get("confidence", 0.0) or pat.get("confidence", 0.0) or 0.0
-        if self._embedding_enabled:
-            weights = [(llm, 0.7), (emb, 0.2), (pat, 0.1)]
-        else:
-            weights = [(llm, 0.85), (pat, 0.15)]
-        return round(sum(
-            w * r.get("confidence", 0.0)
-            for r, w in weights
-            if r.get("domain") == domain
-        ), 4)
 
     # ── 追问继承（对话感知）──────────────────────────────────────────────────
 
@@ -426,26 +415,33 @@ class IntentRecognizer:
                 return hit_domain
         return domain
 
+    @staticmethod
+    def _is_short_followup(message: str) -> bool:
+        compact = re.sub(r"[\s，。！？、,.!?]", "", message or "")
+        return 0 < len(compact) <= 14
+
     # ── 实体提取 ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _extract_entities_local(message: str) -> Dict[str, List[str]]:
+        """本地提取高频校园实体，避免级联命中后再次产生 LLM 调用。"""
+        text = message or ""
+        campuses = [name for name in ("南校区", "北校区", "太白校区", "长安校区") if name in text]
+        systems = [name for name in ("教务系统", "校园网", "VPN", "邮箱", "统一身份认证") if name.lower() in text.lower()]
+        terms = re.findall(r"(?:今天|明天|后天|本周|这周|下周|周[一二三四五六日天]|\d{1,2}月\d{1,2}日)", text)
+        locations = re.findall(r"(?:[A-Ga-g]楼|[A-Ga-g]栋|信远楼|图书馆|体育馆|行政楼)", text)
+        course_matches = re.findall(r"([\u4e00-\u9fffA-Za-z]{2,16})(?:课|课程)", text)
+        return {
+            "course": list(dict.fromkeys(course_matches)),
+            "term": list(dict.fromkeys(terms)),
+            "location": list(dict.fromkeys(locations)),
+            "campus": list(dict.fromkeys(campuses)),
+            "system": list(dict.fromkeys(systems)),
+        }
+
     async def _extract_entities(self, message: str) -> Dict[str, List[str]]:
-        """用 LLM 从消息中提取结构化实体（西电校园场景）。"""
-        message = self._clean_text(message)
-        prompt = f"""从西电校园用户消息中提取实体，返回 JSON（字段值为列表，没有则为空列表）:
-消息: "{message}"
-格式: {{"course":[],"term":[],"location":[],"campus":[],"system":[]}}
-（course=课程名, term=学期/时间, location=地点, campus=南校区/北校区, system=教务系统/校园网/VPN/邮箱等）"""
-        prompt = self._clean_text(prompt)
-        try:
-            resp = await self.client.messages.create(
-                model=self.model, max_tokens=256, temperature=0.0,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = resp.content[0].text
-            s, e = raw.find("{"), raw.rfind("}") + 1
-            return json.loads(raw[s:e])
-        except Exception:
-            return {"course": [], "term": [], "location": [], "campus": [], "system": []}
+        """兼容旧调用方；实体提取现为本地确定性实现。"""
+        return self._extract_entities_local(message)
 
     # ── 辅助 ──────────────────────────────────────────────────────────────────
 
@@ -511,17 +507,6 @@ class IntentRecognizer:
             sign = 1.0 if digest[4] % 2 == 0 else -1.0
             vec[idx] += sign
         return vec
-
-    def _urgency(self, message: str, action: IntentAction, domain: IntentDomain) -> UrgencyLevel:
-        msg = message.lower()
-        for level, kws in URGENCY_KEYWORDS.items():
-            if any(kw in msg for kw in kws):
-                return UrgencyLevel[level.upper()]
-        if action == IntentAction.ESCALATION:
-            return UrgencyLevel.HIGH
-        if action == IntentAction.COMPLAINT:
-            return UrgencyLevel.MEDIUM
-        return UrgencyLevel.LOW
 
     @staticmethod
     def _legacy_intent(domain: IntentDomain, action: IntentAction) -> IntentCategory:

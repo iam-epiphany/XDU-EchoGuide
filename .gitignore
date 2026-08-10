@@ -15,8 +15,13 @@ node_modules/
 # 本地工具目录
 .zcode/
 
-# 数据目录
-data/
+# 本地生成文档与历史归档（README 资产统一放 assets/readme/）
+/docs/
+
+# 本地运行数据（公开样例与评测数据可版本化）
+data/chroma/
+data/echoguide.db
+data/eval/results/
 logs/
 
 # IDE

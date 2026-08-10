@@ -20,6 +20,12 @@ def _user_id(context: Any) -> str:
     return (context.get("user_id") or "").strip() or "anonymous"
 
 
+def _auth_required(context: Any) -> Dict[str, Any] | None:
+    if _user_id(context) == "anonymous":
+        return {"available": False, "auth_required": True, "message": "请先登录后使用个人待办。"}
+    return None
+
+
 async def query_todo_handler(params: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     查询待办清单。
@@ -28,6 +34,8 @@ async def query_todo_handler(params: Dict[str, Any], context: Any) -> Dict[str, 
       status: "open"（未完成，默认）/ "done" / "all"
       kinds:  过滤类型列表，如 ["ddl", "exam"]；不传返回全部类型
     """
+    if denied := _auth_required(context):
+        return denied
     service: PersonalService = context.get("personal_service")
     if service is None:
         return {"available": False, "message": "个人数据中心不可用，请稍后重试。"}
@@ -49,6 +57,8 @@ async def add_todo_handler(params: Dict[str, Any], context: Any) -> Dict[str, An
       kind:    "todo"（默认）/ "ddl"（截止任务）/ "exam"（考试）
       due_at:  截止/考试时间，"YYYY-MM-DD" 或 "YYYY-MM-DD HH:MM"，可选
     """
+    if denied := _auth_required(context):
+        return denied
     service: PersonalService = context.get("personal_service")
     if service is None:
         return {"available": False, "message": "个人数据中心不可用，请稍后重试。"}
@@ -74,6 +84,8 @@ async def complete_todo_handler(params: Dict[str, Any], context: Any) -> Dict[st
       id:   待办 id（必填）
       done:  true=标记完成（默认），false=恢复未完成
     """
+    if denied := _auth_required(context):
+        return denied
     service: PersonalService = context.get("personal_service")
     if service is None:
         return {"available": False, "message": "个人数据中心不可用，请稍后重试。"}

@@ -18,8 +18,6 @@ import re
 from enum import Enum
 from typing import Dict, List
 
-logger = None  # 保持轻量，不强制 logging 依赖
-
 
 class IntentDomain(Enum):
     """领域维度 —— 路由的唯一依据。"""
@@ -32,13 +30,12 @@ class IntentDomain(Enum):
 
 
 class IntentAction(Enum):
-    """动作维度 —— 决定行为（是否升级、是否转人工等）。"""
+    """动作维度 —— 决定行为（查询/请求/问候/投诉/反馈等）。"""
     QUERY     = "query"       # 信息查询
     REQUEST   = "request"     # 请求操作
     GREETING  = "greeting"    # 问候
     COMPLAINT = "complaint"   # 投诉不满
     FEEDBACK  = "feedback"    # 正面反馈
-    ESCALATION = "escalation" # 转人工/升级
     OTHER     = "other"
 
 
@@ -51,12 +48,13 @@ DOMAIN_KEYWORDS: Dict[IntentDomain, List[str]] = {
     ],
     IntentDomain.CAMPUS_LIFE: [
         "食堂", "餐厅", "早餐", "午餐", "晚餐", "宿舍", "校车", "班车", "校园卡",
-        "快递", "水电", "超市", "运动场", "体育馆", "社团", "充值", "挂失", "补办",
+        "快递", "水电", "超市", "运动场", "体育馆", "社团", "充值",
         "门禁", "报修", "南校区", "北校区", "通勤", "图书馆", "自习",
     ],
     IntentDomain.AFFAIRS: [
         "校历", "请假", "奖学金", "助学金", "证明", "在读证明", "缴费", "学费",
         "注册", "学籍", "学生处", "教务处", "办事", "流程", "盖章", "假期",
+        "校园卡补办", "补卡", "挂失", "补办", "缓考",
     ],
     IntentDomain.IT_HELP: [
         "教务系统", "校园网", "vpn", "邮箱", "统一身份认证", "登录不上", "报错",
@@ -89,7 +87,6 @@ ACTION_KEYWORDS: Dict[IntentAction, List[str]] = {
     IntentAction.QUERY:      ["?", "？", "怎么", "什么", "几点", "在哪", "什么时候", "如何"],
     IntentAction.REQUEST:    ["帮我", "需要", "我要", "申请", "办理", "怎么办"],
     IntentAction.GREETING:   ["你好", "您好", "嗨", "hello", "hi", "在吗", "早上好", "晚上好"],
-    IntentAction.ESCALATION: ["转人工", "找辅导员", "教务处", "找老师", "escalate"],
 }
 
 # 动作关键词权重：显式意图词 > 通用疑问词（疑问词默认 0.3，避免平局抢占语义）
@@ -99,15 +96,7 @@ ACTION_KEYWORD_WEIGHTS: Dict[str, float] = {
     "帮我": 0.65, "需要": 0.6, "我要": 0.65, "申请": 0.6, "办理": 0.6, "怎么办": 0.6,
     "你好": 0.7, "您好": 0.7, "嗨": 0.7, "hello": 0.7, "hi": 0.7, "在吗": 0.65,
     "早上好": 0.7, "晚上好": 0.7,
-    "转人工": 0.75, "找辅导员": 0.75, "教务处": 0.6, "找老师": 0.7, "escalate": 0.75,
     "太差": 0.6, "糟糕": 0.6, "等了很久": 0.6, "一直没人": 0.6, "投诉": 0.7, "不满": 0.6,
-}
-
-# 紧急关键词
-URGENCY_KEYWORDS = {
-    "critical": ["紧急", "emergency", "urgent", "asap", "立刻", "马上要交"],
-    "high":     ["今天", "马上", "尽快", "hurry", "now", "截止前"],
-    "medium":   ["这周", "soon", "快点", "这学期"],
 }
 
 # 与 SkillManager 保持一致：内部注入逻辑只依赖这里的数据，不再各自维护关键词。
@@ -122,6 +111,22 @@ def domain_hit_score(message: str) -> tuple[IntentDomain | None, float]:
       首个命中 0.55，每多命中一个关键词 +0.2，上限 0.95。
     """
     msg = (message or "").lower()
+
+    # 高精度业务短语优先于通用词计数。它们既让级联分类器可以零 LLM
+    # 直达，也解决“宿舍 + 校园网”“校园卡 + 补办”这类跨词表平局。
+    if "待办" in msg and any(word in msg for word in ("课表", "课程", "空闲", "上课", "没课", "有空")):
+        return IntentDomain.PERSONAL, 0.95
+    if "校园卡" in msg and any(word in msg for word in ("丢", "挂失", "补办", "补卡")):
+        return IntentDomain.AFFAIRS, 0.95
+    if any(word in msg for word in ("校园网", "统一身份认证", "教务系统")) or keyword_hit("vpn", msg):
+        return IntentDomain.IT_HELP, 0.95
+    if any(word in msg for word in ("加权成绩", "加权学分", "平均成绩")):
+        return IntentDomain.ACADEMIC, 0.95
+    if any(word in msg for word in ("我的课表", "什么课", "待办", "课程表")):
+        return IntentDomain.PERSONAL, 0.95
+    if any(word in msg for word in ("天气", "校车", "班车", "图书馆")):
+        return IntentDomain.CAMPUS_LIFE, 0.95
+
     best_domain: IntentDomain | None = None
     best_score = 0.0
     for domain, keywords in DOMAIN_KEYWORDS.items():
@@ -138,8 +143,8 @@ def action_hit_score(message: str) -> tuple[IntentAction | None, float]:
     计算动作维度命中。领域词优先于通用疑问词，避免动作吞掉领域信息。
 
     动作关键词带权重（ACTION_KEYWORD_WEIGHTS）：
-      显式意图词（帮我/我要/转人工/投诉）权重高；
-      通用疑问词（怎么/什么/几点）权重低，避免平局时疑问词抢占请求/升级语义。
+      显式意图词（帮我/我要/投诉）权重高；
+      通用疑问词（怎么/什么/几点）权重低，避免平局时疑问词抢占请求语义。
     """
     msg = (message or "").lower()
     best_action: IntentAction | None = None
@@ -168,7 +173,7 @@ def keyword_hit(keyword: str, text: str) -> bool:
       用 ASCII 字符类前后向断言（而非 \b —— \b 会把中文也当作词字符，
       导致 "vpn配置" 这类中英混合文本匹配失败）。这样 "capital" 不再命中 "api"。
     - 中文关键词（≥2 字）按子串匹配。
-    - 中文单字关键词视为非法配置，直接不匹配（在日志中提示维护者）。
+    - 中文单字关键词视为非法配置，静默不匹配（防止过拟合误命中）。
     """
     keyword = (keyword or "").strip().lower()
     if not keyword:

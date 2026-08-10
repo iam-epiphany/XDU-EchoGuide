@@ -16,9 +16,16 @@
         <button class="kb-button" @click="openTodos">
           <span class="kb-icon">✅</span> 待办
         </button>
-        <button class="kb-button" @click="openKb">
+        <button v-if="authUser?.role === 'admin'" class="kb-button" @click="openKb">
           <span class="kb-icon">📚</span> 知识库
         </button>
+        <div v-if="authUser" class="account-chip">
+          <span class="account-dot"></span>
+          <span>{{ authUser.username }}</span>
+          <small v-if="authUser.role === 'admin'">管理员</small>
+          <button class="account-action" @click="doLogout">退出</button>
+        </div>
+        <button v-else class="login-button" @click="openAuth('login')">登录</button>
       </div>
     </header>
 
@@ -53,7 +60,27 @@
           </div>
           <!-- 工具调用过程徽标（Agentic RAG 可视化） -->
           <div v-if="item.toolStatus" class="tool-badge">{{ item.toolStatus }}</div>
-          <span class="message-text" v-html="renderMarkdown(item.content)"></span><span v-if="item.streaming" class="stream-cursor">▍</span>
+          <span class="message-text" v-html="renderMarkdownMemo(item.content)"></span><span v-if="item.streaming" class="stream-cursor">▍</span>
+          <details v-if="debugMode && item.execution" class="execution-details" open>
+            <summary>执行详情</summary>
+            <div class="execution-grid">
+              <span><b>路径</b>{{ item.execution.mode || '-' }}</span>
+              <span><b>配置</b>{{ item.execution.profile || '-' }}</span>
+              <span><b>分类</b>{{ item.execution.classifier_stage || '-' }}</span>
+              <span><b>模型</b>{{ item.execution.model || '-' }}</span>
+              <span><b>Agent</b>{{ (item.execution.agents || []).join(' → ') || '-' }}</span>
+              <span><b>工具</b>{{ (item.execution.tools || []).join(', ') || '-' }}</span>
+              <span><b>Token</b>{{ item.execution.input_tokens || 0 }} in / {{ item.execution.output_tokens || 0 }} out</span>
+              <span><b>Trace</b>{{ item.execution.trace_id || '-' }}</span>
+            </div>
+            <p class="execution-reason">{{ item.execution.complexity_reason }}</p>
+            <ol v-if="item.execution.tasks?.length" class="task-list">
+              <li v-for="task in item.execution.tasks" :key="task.id">
+                {{ task.id }} · {{ task.agent }} · {{ task.status }} · {{ task.duration_ms || 0 }} ms
+                <small v-if="task.depends_on?.length">依赖 {{ task.depends_on.join(', ') }}</small>
+              </li>
+            </ol>
+          </details>
         </article>
         <div v-if="busy && !streamingMessage" class="message assistant typing">
           <div class="typing-dots"><i></i><i></i><i></i></div>
@@ -90,7 +117,7 @@
           </div>
           <div class="inline-form">
             <input v-model="searchQuery" placeholder="输入关键词，如：校车、选课" @keydown.enter.prevent="searchKnowledge" />
-            <button @click="searchKnowledge" :disabled="busy || !searchQuery.trim()">检索</button>
+            <button @click="searchKnowledge" :disabled="busyData || !searchQuery.trim()">检索</button>
           </div>
           <div class="result-list">
             <article v-for="item in searchResults" :key="item.id || item.title" class="result-item">
@@ -115,7 +142,7 @@
             <textarea v-model="docContent" rows="4" placeholder="输入知识库内容"></textarea>
           </label>
           <div class="actions">
-            <button @click="submitKnowledge" :disabled="busy || !docTitle.trim() || !docContent.trim()">添加文档</button>
+            <button @click="submitKnowledge" :disabled="busyData || !docTitle.trim() || !docContent.trim()">添加文档</button>
             <label class="file-button">
               上传文件
               <input type="file" accept=".txt,.md,.json" @change="handleUpload" />
@@ -138,7 +165,7 @@
         <section class="kb-section">
           <div class="panel-heading">
             <h3>导入课表</h3>
-            <span class="pill soft">用户 {{ settings.userId }}</span>
+            <span class="pill soft">{{ authUser?.username }}</span>
           </div>
           <p class="schedule-tip">
             教务系统导出 <code>.ics</code> 日历文件（选课 → 导出课表）或 <code>.json</code> 课表上传，
@@ -149,7 +176,7 @@
               上传 .ics / .json
               <input type="file" accept=".ics,.json" @change="handleScheduleUpload" />
             </label>
-            <button class="danger-button" v-if="scheduleCourses.length" @click="doClearSchedule" :disabled="busy">清空课表</button>
+            <button class="danger-button" v-if="scheduleCourses.length" @click="doClearSchedule" :disabled="busyData">清空课表</button>
           </div>
           <p v-if="scheduleMsg" class="kb-status">{{ scheduleMsg }}</p>
         </section>
@@ -198,7 +225,7 @@
               <option value="exam">考试</option>
             </select>
             <input v-model="newTodoDue" type="date" title="截止日期（可选）" />
-            <button @click="doAddTodo" :disabled="busy || !newTodoContent.trim()">添加</button>
+            <button @click="doAddTodo" :disabled="busyData || !newTodoContent.trim()">添加</button>
           </div>
           <p v-if="todoMsg" class="kb-status">{{ todoMsg }}</p>
         </section>
@@ -225,6 +252,39 @@
         </section>
       </div>
     </div>
+
+    <!-- ── 校园通行证：轻量登录/注册 ──────────────────────────────────────── -->
+    <div v-if="showAuth" class="auth-mask" @click.self="closeAuth">
+      <section class="auth-card" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <div class="auth-ticket">
+          <span>XD</span>
+          <small>ECHO PASS</small>
+        </div>
+        <div class="auth-content">
+          <button class="auth-close" aria-label="关闭" @click="closeAuth">✕</button>
+          <p class="auth-eyebrow">西电校园助手 · 个人空间</p>
+          <h2 id="auth-title">{{ authMode === 'login' ? '登录校园通行证' : '创建校园通行证' }}</h2>
+          <p class="auth-note">登录后，课表、待办和对话记忆只属于你。</p>
+          <form class="auth-form" @submit.prevent="submitAuth">
+            <label>
+              <span>用户名</span>
+              <input v-model.trim="authForm.username" autocomplete="username" minlength="3" maxlength="32" required autofocus />
+            </label>
+            <label>
+              <span>密码</span>
+              <input v-model="authForm.password" type="password" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" minlength="6" maxlength="128" required />
+            </label>
+            <p v-if="authError" class="auth-error" role="alert">{{ authError }}</p>
+            <button class="auth-submit" :disabled="authBusy">
+              {{ authBusy ? '处理中…' : authMode === 'login' ? '登录' : '注册并登录' }}
+            </button>
+          </form>
+          <button class="auth-switch" @click="toggleAuthMode">
+            {{ authMode === 'login' ? '还没有账号？立即注册' : '已有账号？返回登录' }}
+          </button>
+        </div>
+      </section>
+    </div>
   </main>
 </template>
 
@@ -241,7 +301,11 @@ import {
   deleteTodo,
   getSchedule,
   getTodos,
+  getCurrentUser,
   importScheduleFile,
+  loginUser,
+  logoutUser,
+  registerUser,
   requestChatStream,
   requestKnowledgeStats,
   requestSearch,
@@ -252,7 +316,8 @@ import {
 const settings = reactive(createInitialSettings())
 const messages = ref([])
 const draft = ref('')
-const busy = ref(false)
+const busy = ref(false)        // 对话请求进行中（发送按钮/typing 指示器）
+const busyData = ref(false)    // 数据操作进行中（知识库/课表/待办），与对话互不阻塞
 const statusText = ref('')
 const knowledgeCount = ref('-')
 const searchQuery = ref('校车')
@@ -263,6 +328,13 @@ const docContent = ref('校园穿梭车连接南校区与北校区，工作日�
 const showKb = ref(false)
 const messageList = ref(null)
 const streamingMessage = ref(null)
+const debugMode = new URLSearchParams(window.location.search).get('debug') === '1'
+const authUser = ref(null)
+const showAuth = ref(false)
+const authMode = ref('login')
+const authBusy = ref(false)
+const authError = ref('')
+const authForm = reactive({ username: '', password: '' })
 
 // 个人数据中心：课表
 const showSchedule = ref(false)
@@ -292,7 +364,7 @@ const topics = [
   { icon: '🖥️', title: '教务系统', desc: '登录不上怎么办？', question: '教务系统登录不上怎么办？' },
 ]
 
-const currentBackend = backendMeta('python', settings)
+const currentBackend = backendMeta(settings)
 
 // 课表按星期分组（周一到周日），供周视图渲染
 const scheduleByDay = computed(() => {
@@ -310,9 +382,99 @@ watch(
   () => persist()
 )
 
-onMounted(() => {
+onMounted(async () => {
+  await restoreSession()
   loadStats()
 })
+
+async function restoreSession() {
+  try {
+    const data = await getCurrentUser(settings)
+    authUser.value = data.authenticated ? data.user : null
+    settings.userId = authUser.value?.id || 'anonymous'
+  } catch {
+    authUser.value = null
+    settings.userId = 'anonymous'
+  }
+}
+
+function openAuth(mode = 'login') {
+  authMode.value = mode
+  authError.value = ''
+  authForm.password = ''
+  showAuth.value = true
+}
+
+function closeAuth() {
+  showAuth.value = false
+  authError.value = ''
+}
+
+function toggleAuthMode() {
+  authMode.value = authMode.value === 'login' ? 'register' : 'login'
+  authError.value = ''
+}
+
+async function submitAuth() {
+  authBusy.value = true
+  authError.value = ''
+  try {
+    const action = authMode.value === 'login' ? loginUser : registerUser
+    const data = await action(settings, authForm.username, authForm.password)
+    authUser.value = data.user
+    settings.userId = data.user.id
+    settings.conversationId = ''
+    messages.value = []  // 登录后清空匿名会话消息，避免残留挂在新会话下
+    authForm.password = ''
+    closeAuth()
+    persist()
+  } catch (error) {
+    authError.value = readableError(error)
+  } finally {
+    authBusy.value = false
+  }
+}
+
+async function doLogout() {
+  try {
+    await logoutUser(settings)
+  } finally {
+    authUser.value = null
+    settings.userId = 'anonymous'
+    settings.conversationId = ''
+    messages.value = []
+    persist()
+  }
+}
+
+function readableError(error) {
+  const raw = String(error?.message || error)
+  try {
+    const jsonStart = raw.indexOf('{')
+    if (jsonStart >= 0) {
+      const detail = JSON.parse(raw.slice(jsonStart)).detail
+      // 只有 detail 是非空字符串时才采用，避免误切正文或返回 undefined
+      if (typeof detail === 'string' && detail.trim()) return detail
+    }
+  } catch {
+    // 保留原始错误
+  }
+  return raw
+}
+
+// ── Markdown 渲染缓存（流式 delta 每帧全量重渲，用 memo 避免重复计算）────────
+const mdCache = new Map()
+const MAX_MD_CACHE = 200
+function renderMarkdownMemo(text) {
+  const key = text || ''
+  if (mdCache.has(key)) return mdCache.get(key)
+  const html = renderMarkdown(key)
+  if (mdCache.size >= MAX_MD_CACHE) {
+    mdCache.delete(mdCache.keys().next().value)
+  }
+  mdCache.set(key, html)
+  return html
+}
 
 function persist() {
   saveSettings(settings)
@@ -334,6 +496,10 @@ async function sendMessage() {
   const content = draft.value.trim()
   if (!content) return
   messages.value.push({ id: createId(), role: 'user', content })
+  // 长会话内存保护：只保留最近 100 条
+  if (messages.value.length > 100) {
+    messages.value = messages.value.slice(-100)
+  }
   draft.value = ''
   busy.value = true
 
@@ -344,13 +510,14 @@ async function sendMessage() {
     content: '',
     meta: '',
     toolStatus: '',
+    execution: null,
     streaming: true
   }
   messages.value.push(assistantMsg)
   streamingMessage.value = assistantMsg
 
   try {
-    const done = await requestChatStream('python', settings, content, {
+    const done = await requestChatStream(settings, content, {
       onEvent: (ev) => {
         if (ev.type === 'delta') {
           assistantMsg.content += ev.text
@@ -362,7 +529,7 @@ async function sendMessage() {
             assistantMsg.toolStatus = `✅ 检索完成${titles ? '：' + titles : ''}`
           }
         } else if (ev.type === 'meta') {
-          assistantMsg.meta = [ev.domain, ev.action, ev.agent].filter(Boolean).join(' · ')
+          assistantMsg.meta = [ev.domain, ev.action, ev.agent, ev.profile, ev.mode].filter(Boolean).join(' · ')
         }
       }
     })
@@ -371,12 +538,12 @@ async function sendMessage() {
       persist()
     }
     assistantMsg.content = done.response
+    assistantMsg.execution = done.execution || null
     assistantMsg.streaming = false
     assistantMsg.meta = [
       done.intent,
       done.agent_type,
-      done.knowledge_used ? 'RAG' : '',
-      done.escalated ? '转人工' : ''
+      done.knowledge_used ? 'RAG' : ''
     ].filter(Boolean).join(' · ')
   } catch (error) {
     assistantMsg.content = error.message
@@ -393,6 +560,7 @@ async function sendMessage() {
 // ── 知识库 ──────────────────────────────────────────────────────────────────
 
 function openKb() {
+  if (authUser.value?.role !== 'admin') return
   showKb.value = true
   loadStats()
 }
@@ -403,7 +571,7 @@ function closeKb() {
 
 async function loadStats() {
   try {
-    const stats = await requestKnowledgeStats('python', settings)
+    const stats = await requestKnowledgeStats(settings)
     knowledgeCount.value = stats.total_chunks ?? stats.totalChunks ?? '-'
   } catch {
     // 后端不可用时保持现状
@@ -411,22 +579,22 @@ async function loadStats() {
 }
 
 async function searchKnowledge() {
-  busy.value = true
+  busyData.value = true
   searched.value = true
   try {
-    const data = await requestSearch('python', settings, searchQuery.value, 5)
+    const data = await requestSearch(settings, searchQuery.value, 5)
     searchResults.value = data.results || []
   } catch (error) {
     statusText.value = error.message
   } finally {
-    busy.value = false
+    busyData.value = false
   }
 }
 
 async function submitKnowledge() {
-  busy.value = true
+  busyData.value = true
   try {
-    const data = await addKnowledge('python', settings, [
+    const data = await addKnowledge(settings, [
       { title: docTitle.value.trim(), content: docContent.value.trim() }
     ])
     statusText.value = data.message || JSON.stringify(data)
@@ -436,7 +604,7 @@ async function submitKnowledge() {
   } catch (error) {
     statusText.value = error.message
   } finally {
-    busy.value = false
+    busyData.value = false
   }
 }
 
@@ -444,21 +612,25 @@ async function handleUpload(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
   if (!file) return
-  busy.value = true
+  busyData.value = true
   try {
-    const data = await uploadKnowledge('python', settings, file)
+    const data = await uploadKnowledge(settings, file)
     statusText.value = data.message || JSON.stringify(data)
     await loadStats()
   } catch (error) {
     statusText.value = error.message
   } finally {
-    busy.value = false
+    busyData.value = false
   }
 }
 
 // ── 我的课表 ─────────────────────────────────────────────────────────────────
 
 async function openSchedule() {
+  if (!authUser.value) {
+    openAuth('login')
+    return
+  }
   showSchedule.value = true
   scheduleMsg.value = ''
   scheduleLoaded.value = false
@@ -471,7 +643,7 @@ function closeSchedule() {
 
 async function loadSchedule() {
   try {
-    const data = await getSchedule('python', settings)
+    const data = await getSchedule(settings)
     scheduleCourses.value = data.courses || []
     scheduleWeekNum.value = data.week_num ?? '-'
     scheduleInSemester.value = data.in_semester !== false
@@ -486,36 +658,40 @@ async function handleScheduleUpload(event) {
   const file = event.target.files?.[0]
   event.target.value = ''
   if (!file) return
-  busy.value = true
+  busyData.value = true
   scheduleMsg.value = '导入中…'
   try {
-    const data = await importScheduleFile('python', settings, file)
+    const data = await importScheduleFile(settings, file)
     scheduleMsg.value = data.message || JSON.stringify(data)
     await loadSchedule()
   } catch (error) {
     scheduleMsg.value = error.message
   } finally {
-    busy.value = false
+    busyData.value = false
   }
 }
 
 async function doClearSchedule() {
   if (!confirm('确定清空课表吗？清空后需要重新导入。')) return
-  busy.value = true
+  busyData.value = true
   try {
-    const data = await clearSchedule('python', settings)
+    const data = await clearSchedule(settings)
     scheduleMsg.value = data.message || '已清空'
     scheduleCourses.value = []
   } catch (error) {
     scheduleMsg.value = error.message
   } finally {
-    busy.value = false
+    busyData.value = false
   }
 }
 
 // ── 待办 / DDL / 考试 ────────────────────────────────────────────────────────
 
 async function openTodos() {
+  if (!authUser.value) {
+    openAuth('login')
+    return
+  }
   showTodos.value = true
   todoMsg.value = ''
   await loadTodos()
@@ -527,7 +703,7 @@ function closeTodos() {
 
 async function loadTodos() {
   try {
-    const data = await getTodos('python', settings, 'all')
+    const data = await getTodos(settings, 'all')
     todos.value = data.todos || []
   } catch (error) {
     todoMsg.value = error.message
@@ -541,9 +717,9 @@ function kindLabel(kind) {
 async function doAddTodo() {
   const content = newTodoContent.value.trim()
   if (!content) return
-  busy.value = true
+  busyData.value = true
   try {
-    await addTodo('python', settings, content, newTodoKind.value, newTodoDue.value)
+    await addTodo(settings, content, newTodoKind.value, newTodoDue.value)
     newTodoContent.value = ''
     newTodoDue.value = ''
     todoMsg.value = '已添加'
@@ -551,13 +727,13 @@ async function doAddTodo() {
   } catch (error) {
     todoMsg.value = error.message
   } finally {
-    busy.value = false
+    busyData.value = false
   }
 }
 
 async function doCompleteTodo(t) {
   try {
-    await completeTodo('python', settings, t.id, !t.done)
+    await completeTodo(settings, t.id, !t.done)
     await loadTodos()
   } catch (error) {
     todoMsg.value = error.message
@@ -566,7 +742,7 @@ async function doCompleteTodo(t) {
 
 async function doDeleteTodo(t) {
   try {
-    await deleteTodo('python', settings, t.id)
+    await deleteTodo(settings, t.id)
     await loadTodos()
   } catch (error) {
     todoMsg.value = error.message

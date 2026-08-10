@@ -18,6 +18,10 @@ async def query_ddl_handler(params: Dict[str, Any], context: Any) -> Dict[str, A
     params:
       horizon_days: 查询范围天数，默认 30（含今天到期与已过期未完成的）
     """
+    user_id = (context.get("user_id") or "").strip() or "anonymous"
+    if user_id == "anonymous":
+        return {"available": False, "auth_required": True, "message": "请先登录后查看考试与 DDL。"}
+
     service: PersonalService = context.get("personal_service")
     if service is None:
         return {"available": False, "message": "个人数据中心不可用，请稍后重试。"}
@@ -27,7 +31,6 @@ async def query_ddl_handler(params: Dict[str, Any], context: Any) -> Dict[str, A
     except (TypeError, ValueError):
         horizon = 30
 
-    user_id = (context.get("user_id") or "").strip() or "anonymous"
     items = await service.upcoming(user_id, horizon_days=horizon)
     return {
         "available": True,

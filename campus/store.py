@@ -197,16 +197,31 @@ class CampusInfoStore:
         libs = self._data.get("library.json", [])
         return {"libraries": libs} if libs else {"available": False, "message": "图书馆开放时间数据暂未录入，请以图书馆现场公告为准。"}
 
+    def _freshness(self, filename: str) -> Dict[str, Any]:
+        """公开数据缺少官方来源或时效字段时明确降级，避免被误当作实时信息。"""
+        raw = self._data.get(filename)
+        records = raw.get("routes", []) if isinstance(raw, dict) else (raw or [])
+        if isinstance(raw, dict) and raw.get("source_url"):
+            return {"source_url": raw.get("source_url"), "checked_at": raw.get("checked_at"), "valid_from": raw.get("valid_from"), "warning": None}
+        sample = records[0] if records and isinstance(records[0], dict) else {}
+        if sample.get("source_url") and sample.get("checked_at"):
+            return {"source_url": sample.get("source_url"), "checked_at": sample.get("checked_at"), "valid_from": sample.get("valid_from"), "warning": None}
+        return {"source_url": None, "checked_at": None, "valid_from": None, "warning": "该结构化数据未附可核验官方来源与时效字段，仅作演示参考，请以学校官方公告为准。"}
+
     def search(self, category: str, keyword: Optional[str] = None) -> Dict[str, Any]:
         """统一查询入口（MCP 工具 / REST API 共用）。"""
         category = (category or "").strip().lower()
         keyword = (keyword or "").strip() or None
         if category in ("shuttle", "校车", "班车"):
-            return self.next_shuttle(keyword)
+            result = self.next_shuttle(keyword)
+            result["data_freshness"] = self._freshness("shuttle_schedule.json")
+            return result
         if category in ("buildings", "building", "楼宇", "教学楼", "楼"):
-            return {"buildings": self.find_building(keyword or "")}
+            return {"buildings": self.find_building(keyword or ""), "data_freshness": self._freshness("buildings.json")}
         if category in ("venues", "场馆", "运动场", "体育馆"):
-            return {"venues": self.list_venues(keyword)}
+            return {"venues": self.list_venues(keyword), "data_freshness": self._freshness("venues.json")}
         if category in ("library", "图书馆", "自习"):
-            return self.library_info()
+            result = self.library_info()
+            result["data_freshness"] = self._freshness("library.json")
+            return result
         return {"available": False, "message": f"未知类别: {category}（支持 shuttle/buildings/venues/library）"}

@@ -1,0 +1,58 @@
+[
+  {
+    "id": "campus_card_reissue",
+    "name": "校园卡挂失与补办",
+    "aliases": ["校园卡", "校园卡补办", "补卡", "挂失"],
+    "department": "校园一卡通服务",
+    "location": "优先通过学校一网通办或校园卡服务入口查询当前办理点",
+    "materials": ["本人有效身份证件", "可验证的校园身份信息"],
+    "steps": ["先在校园卡服务渠道完成挂失", "查询当前校区补卡窗口与开放时间", "携带材料办理并确认旧卡失效"],
+    "notes": ["补卡费用和领取方式以办理页面实时说明为准"],
+    "source_url": "https://ehall.xidian.edu.cn/",
+    "updated_at": "2026-08-09",
+    "version": "2026.08",
+    "verified_scope": "公开入口与通用流程，具体地点和费用需实时确认"
+  },
+  {
+    "id": "student_leave",
+    "name": "学生请假",
+    "aliases": ["请假", "销假", "事假", "病假"],
+    "department": "所在学院/书院",
+    "location": "学校一网通办及所在学院/书院",
+    "materials": ["请假事由", "起止时间", "必要的证明材料"],
+    "steps": ["在一网通办提交请假申请", "按请假时长等待相应层级审批", "返校后按学院要求销假"],
+    "notes": ["紧急情况应先联系辅导员，补充线上流程"],
+    "source_url": "https://ehall.xidian.edu.cn/",
+    "updated_at": "2026-08-09",
+    "version": "2026.08",
+    "verified_scope": "演示级结构化流程，审批层级以学院最新规定为准"
+  },
+  {
+    "id": "enrollment_certificate",
+    "name": "在读证明开具",
+    "aliases": ["在读证明", "学籍证明", "证明开具"],
+    "department": "本科生院或研究生院",
+    "location": "学校一网通办/自助打印服务",
+    "materials": ["校园统一身份认证账号"],
+    "steps": ["登录一网通办", "搜索在读证明或学籍证明服务", "选择用途和语言后下载或打印"],
+    "notes": ["需要盖章原件时按页面指引前往对应部门"],
+    "source_url": "https://ehall.xidian.edu.cn/",
+    "updated_at": "2026-08-09",
+    "version": "2026.08",
+    "verified_scope": "公开服务入口，具体模板以系统为准"
+  },
+  {
+    "id": "exam_deferral",
+    "name": "缓考申请",
+    "aliases": ["缓考", "延期考试", "不能参加考试"],
+    "department": "所在学院教学办公室",
+    "location": "教务系统及所在学院",
+    "materials": ["缓考申请", "医院证明或其他必要证明"],
+    "steps": ["考试前在教务系统提交申请", "向学院教学办公室补充证明材料", "确认审批结果和后续考试安排"],
+    "notes": ["不得以未审批的申请替代正式批准"],
+    "source_url": "https://jwc.xidian.edu.cn/",
+    "updated_at": "2026-08-09",
+    "version": "2026.08",
+    "verified_scope": "通用流程，时间节点以本科生院和学院通知为准"
+  }
+]

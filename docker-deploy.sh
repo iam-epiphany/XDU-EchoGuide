@@ -53,8 +53,6 @@ create_directories() {
     mkdir -p data/chroma
     mkdir -p logs
     mkdir -p config/nginx/ssl
-    mkdir -p config/grafana/provisioning
-    mkdir -p config/grafana/dashboards
     mkdir -p config/alerts
 
     print_info "目录创建完成"

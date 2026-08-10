@@ -16,8 +16,12 @@ ChromaDB 在这里的角色：
   - min_score 相关性阈值：低分噪音不进 prompt，避免误导 LLM
   - domain 元数据过滤：领域问题只检索对应领域的文档片段
 """
+import asyncio
 import hashlib
+import json
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
@@ -34,7 +38,14 @@ class KnowledgeBase:
     不需要额外调用 Anthropic Embeddings API。
     """
 
-    COLLECTION_NAME = "knowledge_base"
+    # v2 显式使用 cosine。旧 collection 的默认距离可能是 L2，不能将 1-distance
+    # 当作余弦相似度解释；首次启动会把旧文档重新写入 v2 以重新生成索引。
+    COLLECTION_NAME = "knowledge_base_v2"
+    LEGACY_COLLECTION_NAME = "knowledge_base"
+    COLLECTION_METADATA = {
+        "hnsw:space": "cosine",
+        "description": "西电校园知识库（EchoGuide RAG，cosine）",
+    }
 
     # 标题 → 领域 的粗粒度映射（导入时写入 metadata，供检索按领域过滤）
     TITLE_DOMAIN_MAP = {
@@ -72,9 +83,9 @@ class KnowledgeBase:
         # 使用服务端时不传 embedding_function，让服务端处理
         # 本地模式时也不传，使用 ChromaDB 默认的（会触发模型下载）
         self._collection = self._client.get_or_create_collection(
-            name=self.COLLECTION_NAME,
-            metadata={"description": "西电校园知识库（EchoGuide RAG）"},
+            name=self.COLLECTION_NAME, metadata=self.COLLECTION_METADATA,
         )
+        self._migrate_legacy_collection()
 
         # 如果知识库为空，导入默认文档
         if self._collection.count() == 0:
@@ -84,10 +95,14 @@ class KnowledgeBase:
                 # 本地模式首次写入需下载内置 embedding 模型（~79MB）；
                 # 下载失败不应拖垮整个服务启动，知识库后续仍可导入文档使用。
                 logger.warning(f"默认知识库导入失败（首次启动可稍后重试）: {ex}")
+        try:
+            self._load_public_docs()
+        except Exception as ex:
+            logger.warning(f"版本化公开知识导入失败: {ex}")
 
     # ── 文档管理 ──────────────────────────────────────────────────────────────
 
-    def add_documents(self, documents: List[Dict[str, str]]) -> int:
+    def add_documents(self, documents: List[Dict[str, Any]]) -> int:
         """
         批量导入文档到知识库。
 
@@ -111,11 +126,17 @@ class KnowledgeBase:
                     "chunk_index": i,
                     "total_chunks": len(chunks),
                     "domain": domain,
+                    "source_url": str(doc.get("source_url") or ""),
+                    "updated_at": str(doc.get("updated_at") or ""),
+                    "valid_from": str(doc.get("valid_from") or ""),
+                    "source_status": str(doc.get("source_status") or "unverified"),
+                    "version": str(doc.get("version") or ""),
+                    "scope": str(doc.get("scope") or ""),
                 })
 
         if ids:
             # ChromaDB 会自动生成 Embedding
-            self._collection.add(ids=ids, documents=docs, metadatas=metas)
+            self._collection.upsert(ids=ids, documents=docs, metadatas=metas)
             logger.info(f"知识库导入 {len(ids)} 个文档片段")
 
         return len(ids)
@@ -157,7 +178,9 @@ class KnowledgeBase:
                 results["metadatas"][0],
                 results["distances"][0],
             ):
-                score = round(1.0 - dist, 4)  # ChromaDB 返回距离，转为相似度
+                # cosine 距离的定义为 1-cosine_similarity；显式配置 collection
+                # 后该换算才成立。为应对数值误差夹紧到 [0, 1]。
+                score = round(max(0.0, min(1.0, 1.0 - float(dist))), 4)
                 if score < min_score:
                     continue  # 相关性阈值过滤
                 items.append({
@@ -166,6 +189,12 @@ class KnowledgeBase:
                     "score":    score,
                     "chunk":    meta.get("chunk_index", 0),
                     "domain":   meta.get("domain", "general"),
+                    "source_url": meta.get("source_url", ""),
+                    "updated_at": meta.get("updated_at", ""),
+                    "valid_from": meta.get("valid_from", ""),
+                    "source_status": meta.get("source_status", "unverified"),
+                    "version": meta.get("version", ""),
+                    "scope": meta.get("scope", ""),
                 })
 
         return items
@@ -190,7 +219,29 @@ class KnowledgeBase:
         top_k = params.get("top_k", 5)
         min_score = params.get("min_score", 0.25)
         domain = params.get("domain")  # Agent 可传当前领域做过滤
-        return self.search(query, top_k=top_k, min_score=min_score, domain=domain)
+        return await asyncio.to_thread(
+            self.search, query, top_k=top_k, min_score=min_score, domain=domain,
+        )
+
+    def _migrate_legacy_collection(self) -> None:
+        """将旧 L2 collection 的原始文本重写入 cosine v2 collection。
+
+        缓存不调用此逻辑（缓存语义随度量变化，直接冷启动更安全）。迁移可重复执行：
+        仅当 v2 为空时进行，失败不阻断服务启动。
+        """
+        if self._collection.count() != 0:
+            return
+        try:
+            legacy = self._client.get_collection(self.LEGACY_COLLECTION_NAME)
+            records = legacy.get(include=["documents", "metadatas"])
+            ids = records.get("ids") or []
+            docs = records.get("documents") or []
+            metas = records.get("metadatas") or []
+            if ids and docs:
+                self._collection.upsert(ids=ids, documents=docs, metadatas=metas)
+                logger.info("知识库已从 %s 重新索引 %d 个片段到 cosine v2", self.LEGACY_COLLECTION_NAME, len(ids))
+        except Exception as ex:
+            logger.debug("未迁移旧知识库（可忽略）: %s", ex)
 
     # ── 内部方法 ──────────────────────────────────────────────────────────────
 
@@ -296,3 +347,16 @@ class KnowledgeBase:
         ]
         self.add_documents(default_docs)
         logger.info(f"已导入默认知识库: {len(default_docs)} 篇文档")
+
+    def _load_public_docs(self) -> None:
+        """加载受版本控制、带来源的公开知识；重复启动不会制造重复切片。"""
+        default_dir = Path(__file__).resolve().parents[1] / "data" / "public"
+        public_dir = Path(os.getenv("ECHOGUIDE_PUBLIC_DATA_DIR", str(default_dir)))
+        source = public_dir / "academic_policies.json"
+        if not source.exists():
+            return
+        documents = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(documents, list):
+            raise ValueError("academic_policies.json 顶层必须为数组")
+        count = self.add_documents(documents)
+        logger.info("已同步版本化公开知识: %d 个片段", count)

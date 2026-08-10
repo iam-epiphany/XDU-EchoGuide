@@ -14,6 +14,7 @@ export function escapeHtml(text) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 /** 行内格式：`code` / **bold** / *italic* / [text](https://url)。输入必须是已转义文本。 */

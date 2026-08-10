@@ -26,6 +26,7 @@
   精确缓存要求参数完全相同；语义缓存容忍近义改写（"选课什么时候开始？" ≈
   "选课几时开始？"）。
 """
+import asyncio
 import hashlib
 import logging
 import time
@@ -36,8 +37,9 @@ import chromadb
 logger = logging.getLogger(__name__)
 
 # 语义缓存各 tier 的 collection 名
-COLLECTION_GLOBAL = "semantic_cache_global"
-COLLECTION_USER = "semantic_cache_user"
+COLLECTION_GLOBAL = "semantic_cache_global_v2"
+COLLECTION_USER = "semantic_cache_user_v2"
+_COSINE_METADATA = {"hnsw:space": "cosine", "description": "EchoGuide semantic cache (cosine)"}
 
 
 def cache_tier(domain: str, has_user_context: bool, user_id: Optional[str] = None) -> Optional[str]:
@@ -149,8 +151,9 @@ class SemanticCache:
                 settings=chromadb.Settings(anonymized_telemetry=False),
             )
 
-        self._global = client.get_or_create_collection(COLLECTION_GLOBAL)
-        self._user = client.get_or_create_collection(COLLECTION_USER)
+        # 缓存不迁移：旧缓存的相似度阈值基于 L2，冷启动可避免误命中。
+        self._global = client.get_or_create_collection(COLLECTION_GLOBAL, metadata=_COSINE_METADATA)
+        self._user = client.get_or_create_collection(COLLECTION_USER, metadata=_COSINE_METADATA)
 
     # ── 读写 ──────────────────────────────────────────────────────────────────
 
@@ -200,7 +203,7 @@ class SemanticCache:
                 self._misses += 1
                 return None
 
-            score = round(1.0 - results["distances"][0][0], 4)
+            score = round(max(0.0, min(1.0, 1.0 - float(results["distances"][0][0]))), 4)
             if score < self.threshold:
                 self._misses += 1
                 return None
@@ -219,6 +222,7 @@ class SemanticCache:
                 "agent_type": meta.get("agent_type", ""),
                 "score": score,
                 "tier": meta.get("tier", "global"),
+                "knowledge_used": bool(meta.get("knowledge_used", False)),
             }
         except Exception as ex:
             logger.warning(f"语义缓存查询失败: {ex}")
@@ -233,6 +237,7 @@ class SemanticCache:
         agent_type: str = "",
         user_id: Optional[str] = None,
         context_fp: str = "",
+        knowledge_used: bool = False,
     ) -> None:
         """
         写入缓存条目。
@@ -262,6 +267,7 @@ class SemanticCache:
                         "context_fp": context_fp,
                         "tier": "user",
                         "ts": str(time.time()),
+                        "knowledge_used": bool(knowledge_used),
                     }],
                 )
             elif not context_fp:
@@ -275,6 +281,7 @@ class SemanticCache:
                         "agent_type": str(agent_type),
                         "tier": "global",
                         "ts": str(time.time()),
+                        "knowledge_used": bool(knowledge_used),
                     }],
                 )
             else:
@@ -283,6 +290,14 @@ class SemanticCache:
                 logger.warning(f"上下文相关但身份不可用，跳过缓存写入: {query[:30]!r}")
         except Exception as ex:
             logger.warning(f"语义缓存写入失败: {ex}")
+
+    async def aget(self, query: str, user_id: Optional[str] = None, context_fp: str = "") -> Optional[Dict[str, Any]]:
+        """在线程池执行同步 Chroma 查询，避免阻塞 FastAPI 事件循环。"""
+        return await asyncio.to_thread(self.get, query, user_id, context_fp)
+
+    async def aput(self, query: str, response: str, **kwargs: Any) -> None:
+        """在线程池执行同步 Chroma 写入，避免阻塞 FastAPI 事件循环。"""
+        await asyncio.to_thread(self.put, query, response, **kwargs)
 
     # ── 统计 ──────────────────────────────────────────────────────────────────
 

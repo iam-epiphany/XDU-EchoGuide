@@ -6,12 +6,15 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "demo:capture": "node scripts/capture-demos.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "^6.0.2",
     "vite": "^7.2.7",
     "vue": "^3.5.25"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "playwright": "^1.55.0"
+  }
 }

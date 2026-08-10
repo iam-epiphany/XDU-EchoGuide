@@ -22,6 +22,9 @@ async def query_schedule_handler(params: Dict[str, Any], context: Any) -> Dict[s
     user_id = (context.get("user_id") or "").strip() or "anonymous"
     when = str(params.get("date", "今天")).strip() or "今天"
 
+    if user_id == "anonymous":
+        return {"available": False, "auth_required": True, "message": "请先登录后使用个人课表。"}
+
     if service is None:
         return {"available": False, "message": "个人数据中心不可用，请稍后重试。"}
 

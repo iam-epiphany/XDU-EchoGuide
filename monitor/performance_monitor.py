@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Any, Deque, Dict, List, Optional
 
 import httpx
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+from prometheus_client import Gauge, start_http_server
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +145,13 @@ class PerformanceMonitor:
     def _setup_prometheus(self, port: int) -> None:
         self._prom = {
             "agent_success_rate": Gauge("agent_success_rate", "Agent 成功率", ["agent"]),
-            "agent_latency_ms":   Histogram("agent_latency_ms", "Agent 延迟", ["agent"]),
+            "agent_avg_latency_ms": Gauge("agent_avg_latency_ms", "Agent 平均延迟", ["agent"]),
+            "agent_requests_total": Gauge("agent_requests_total", "Agent 请求总数", ["agent"]),
+            "agent_in_flight": Gauge("agent_in_flight", "Agent 当前并发", ["agent"]),
+            "agent_monitor_penalty": Gauge("agent_monitor_penalty", "Agent 路由惩罚", ["agent"]),
             "tool_success_rate":  Gauge("tool_success_rate", "工具成功率", ["tool"]),
-            "requests_total":     Counter("requests_total", "总请求数"),
+            "tool_avg_latency_ms": Gauge("tool_avg_latency_ms", "工具平均延迟", ["tool"]),
+            "tool_requests_total": Gauge("tool_requests_total", "工具请求总数", ["tool"]),
         }
         start_http_server(port)
         logger.info(f"Prometheus 已启动: :{port}")
@@ -209,7 +213,10 @@ class PerformanceMonitor:
             # Prometheus
             if "agent_success_rate" in self._prom:
                 self._prom["agent_success_rate"].labels(agent=agent_key).set(sr)
-                self._prom["agent_latency_ms"].labels(agent=agent_key).observe(ms)
+                self._prom["agent_avg_latency_ms"].labels(agent=agent_key).set(ms)
+                self._prom["agent_requests_total"].labels(agent=agent_key).set(s["total"])
+                self._prom["agent_in_flight"].labels(agent=agent_key).set(s.get("in_flight", 0))
+                self._prom["agent_monitor_penalty"].labels(agent=agent_key).set(s.get("monitor_penalty", 0.0))
 
             routing_penalties[agent_key] = self._routing_penalty(sr, ms)
 
@@ -224,6 +231,8 @@ class PerformanceMonitor:
 
             if "tool_success_rate" in self._prom:
                 self._prom["tool_success_rate"].labels(tool=tool_name).set(sr)
+                self._prom["tool_avg_latency_ms"].labels(tool=tool_name).set(ms)
+                self._prom["tool_requests_total"].labels(tool=tool_name).set(s.get("total_calls", 0))
 
             # 连续失败 → 生成具体建议
             if cf >= 3:

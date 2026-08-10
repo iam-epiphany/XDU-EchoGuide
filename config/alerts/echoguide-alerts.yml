@@ -1,0 +1,61 @@
+# EchoGuide 告警规则
+#
+# 指标来源：主应用 /metrics 端点（api/main.py）暴露的 prometheus_client 指标，
+# 由 monitor/performance_monitor.py 采集 Agent 成功率、延迟与在途请求后写入。
+# 指标名见 monitor/performance_monitor.py _setup_prometheus()。
+#
+# 阈值说明：Deep 路径长任务（RAG、多 Agent DAG）单次可达数十秒，
+# 延迟阈值取 60s 并叠加 5 分钟持续时间，避免正常长尾任务误报。
+
+groups:
+  - name: echoguide
+    rules:
+      # 主服务不可达：Prometheus 连续 1 分钟抓取失败
+      - alert: EchoGuideServiceDown
+        expr: up{job="echoguide-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "EchoGuide 主服务不可达"
+          description: "Prometheus 已连续 1 分钟无法抓取 echoguide-app 指标。"
+
+      # Agent 成功率低于 90% 持续 5 分钟
+      - alert: EchoGuideAgentSuccessRateLow
+        expr: agent_success_rate < 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent 成功率偏低（{{ $labels.agent }}）"
+          description: "{{ $labels.agent }} 成功率低于 90% 已持续 5 分钟。"
+
+      # 工具成功率低于 90% 持续 5 分钟
+      - alert: EchoGuideToolSuccessRateLow
+        expr: tool_success_rate < 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "工具成功率偏低（{{ $labels.tool }}）"
+          description: "{{ $labels.tool }} 成功率低于 90% 已持续 5 分钟。"
+
+      # 平均延迟超过 60 秒持续 5 分钟（阈值含 Deep 路径长任务余量）
+      - alert: EchoGuideAgentLatencyHigh
+        expr: agent_avg_latency_ms > 60000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent 平均延迟过高（{{ $labels.agent }}）"
+          description: "{{ $labels.agent }} 平均延迟超过 60 秒已持续 5 分钟。"
+
+      # 在途请求持续偏高：可能请求卡死，需排查 Trace
+      - alert: EchoGuideAgentsStuck
+        expr: agent_in_flight > 8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "在途请求持续偏高"
+          description: "Agent 在途请求超过 8 已持续 10 分钟，可能存在卡死请求，请通过 /traces 排查。"

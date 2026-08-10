@@ -1,4 +1,4 @@
-"""多 Agent 编排器测试：领域路由、领域关键词协作、降级、升级检测、追问路由。
+"""多 Agent 编排器测试：领域路由、领域关键词协作、降级、追问路由。
 
 所有测试只测确定性逻辑（路由表、关键词、统计），不触发真实 LLM 调用。
 """
@@ -6,8 +6,7 @@ from __future__ import annotations
 
 import asyncio
 
-from core.domains import IntentAction, IntentDomain
-from core.intent_recognizer import UrgencyLevel
+from core.domains import IntentDomain
 from agents.agent_orchestrator import (
     AgentOrchestrator,
     AgentResponse,
@@ -25,14 +24,13 @@ def _orchestrator() -> AgentOrchestrator:
     return AgentOrchestrator(api_key=FAKE_KEY)
 
 
-def _req(message: str, domain=None, action=None, urgency=None) -> Request:
+def _req(message: str, domain=None, action=None) -> Request:
     return Request(
         message=message,
         user_id="u1",
         conv_id="c1",
         domain=domain,
         action=action,
-        urgency=urgency,
     )
 
 
@@ -51,11 +49,11 @@ def test_pool_registers_five_campus_agents():
 
 def test_campus_domains_route_to_corresponding_agents():
     orch = _orchestrator()
-    assert orch._route(IntentDomain.ACADEMIC, None) == AgentType.ACADEMIC
-    assert orch._route(IntentDomain.CAMPUS_LIFE, None) == AgentType.CAMPUS_LIFE
-    assert orch._route(IntentDomain.AFFAIRS, None) == AgentType.AFFAIRS
-    assert orch._route(IntentDomain.IT_HELP, None) == AgentType.IT_HELP
-    assert orch._route(IntentDomain.PERSONAL, None) == AgentType.PERSONAL
+    assert orch._route(IntentDomain.ACADEMIC) == AgentType.ACADEMIC
+    assert orch._route(IntentDomain.CAMPUS_LIFE) == AgentType.CAMPUS_LIFE
+    assert orch._route(IntentDomain.AFFAIRS) == AgentType.AFFAIRS
+    assert orch._route(IntentDomain.IT_HELP) == AgentType.IT_HELP
+    assert orch._route(IntentDomain.PERSONAL) == AgentType.PERSONAL
 
 
 def test_personal_schedule_question_routes_to_personal_agent():
@@ -78,25 +76,8 @@ def test_collaboration_personal_prefers_over_academic():
 def test_request_form_domain_routes_to_domain_agent():
     """P0 回归：请求句式（帮我/我要）路由到领域 Agent，而不是统一兜底学业 Agent。"""
     orch = _orchestrator()
-    assert orch._route(IntentDomain.AFFAIRS, None) == AgentType.AFFAIRS
-    assert orch._route(IntentDomain.CAMPUS_LIFE, None) == AgentType.CAMPUS_LIFE
-
-
-def test_escalation_action_marks_result_escalated():
-    orch = _orchestrator()
-
-    async def fake_execute(req, agent_type, on_event=None):
-        return AgentResponse(agent_type=agent_type, content="已记录，请联系辅导员。", success=True)
-
-    orch._execute = fake_execute  # type: ignore[method-assign]
-
-    async def scenario():
-        return await orch.run(
-            _req("我要找辅导员", domain=IntentDomain.OTHER, action=IntentAction.ESCALATION)
-        )
-
-    result = asyncio.run(scenario())
-    assert result.escalated is True
+    assert orch._route(IntentDomain.AFFAIRS) == AgentType.AFFAIRS
+    assert orch._route(IntentDomain.CAMPUS_LIFE) == AgentType.CAMPUS_LIFE
 
 
 def test_legacy_intent_category_route_compat():
@@ -104,18 +85,13 @@ def test_legacy_intent_category_route_compat():
     from core.intent_recognizer import IntentCategory
 
     orch = _orchestrator()
-    assert orch._route(orch._CATEGORY_TO_DOMAIN[IntentCategory.ACADEMIC], None) == AgentType.ACADEMIC
+    assert orch._route(orch._CATEGORY_TO_DOMAIN[IntentCategory.ACADEMIC]) == AgentType.ACADEMIC
 
 
 def test_unclassified_domain_falls_back_to_academic():
     orch = _orchestrator()
-    assert orch._route(IntentDomain.OTHER, None) == AgentType.ACADEMIC
-    assert orch._route(None, None) == AgentType.ACADEMIC
-
-
-def test_critical_urgency_routes_to_escalation():
-    orch = _orchestrator()
-    assert orch._route(IntentDomain.ACADEMIC, UrgencyLevel.CRITICAL) == AgentType.ESCALATION
+    assert orch._route(IntentDomain.OTHER) == AgentType.ACADEMIC
+    assert orch._route(None) == AgentType.ACADEMIC
 
 
 def test_collaboration_detects_multi_domain_question():
@@ -150,12 +126,40 @@ def test_collaboration_followup_inherits_domain():
     assert targets == [AgentType.CAMPUS_LIFE]
 
 
-def test_escalation_keyword_detection_in_response():
+def test_complexity_gate_keeps_implicit_multi_keyword_request_single():
     orch = _orchestrator()
-    agent = orch._best_agent(AgentType.ACADEMIC)
-    assert agent._needs_escalation("这个问题需要转人工，联系辅导员处理")
-    assert agent._needs_escalation("建议直接找教务老师确认")
-    assert not agent._needs_escalation("选课时间以教务系统通知为准")
+    req = _req("教务系统打不开，没法选课了", domain=IntentDomain.IT_HELP)
+    decision = orch._complexity_decision(req)
+    assert decision.mode == "single"
+
+
+def test_complexity_gate_parallel_requires_explicit_connector():
+    orch = _orchestrator()
+    req = _req("教务系统登录不上，同时我还想了解选课规则", domain=IntentDomain.IT_HELP)
+    decision = orch._complexity_decision(req)
+    assert decision.mode == "parallel"
+    assert {AgentType.IT_HELP, AgentType.ACADEMIC} <= set(decision.targets)
+
+
+def test_complexity_gate_detects_dependent_errand():
+    orch = _orchestrator()
+    req = _req("看看我明天下午有没有课，有空就安排补办校园卡并记个待办", domain=IntentDomain.PERSONAL)
+    decision = orch._complexity_decision(req)
+    assert decision.mode == "dependent"
+    assert AgentType.AFFAIRS in decision.targets
+
+
+def test_profiles_are_real_flash_and_pro_configs():
+    orch = AgentOrchestrator(
+        api_key=FAKE_KEY,
+        fast_model="deepseek-v4-flash",
+        deep_model="deepseek-v4-pro",
+    )
+    profiles = {agent.profile.name.value: agent.profile for agent in orch._pool[AgentType.ACADEMIC]}
+    assert profiles["fast"].model == "deepseek-v4-flash"
+    assert profiles["fast"].thinking is False
+    assert profiles["deep"].model == "deepseek-v4-pro"
+    assert profiles["deep"].thinking is True
 
 
 def test_execute_falls_back_on_failed_agent():
@@ -323,7 +327,7 @@ def test_planner_rule_generates_dependency_chain():
     by_id = {t.task_id: t for t in tasks}
     assert set(by_id) == {"t1", "t2", "t3"}
     assert by_id["t1"].agent_type == AgentType.PERSONAL
-    assert by_id["t2"].agent_type == AgentType.CAMPUS_LIFE
+    assert by_id["t2"].agent_type == AgentType.AFFAIRS
     assert by_id["t3"].agent_type == AgentType.PERSONAL      # 同一 Agent 类型多任务
     assert by_id["t3"].depends_on == ["t1", "t2"]            # 依赖前序任务
     assert by_id["t1"].depends_on == [] and by_id["t2"].depends_on == []
@@ -366,13 +370,13 @@ def test_parallel_executor_runs_waves_and_injects_shared_state():
 
     # wave1：t1/t2 并行执行，无协作上下文
     first_wave = [c for c in calls if "协作上下文" not in c[1]]
-    assert [a for a, _ in first_wave] == ["personal", "campus_life"]
+    assert [a for a, _ in first_wave] == ["personal", "affairs"]
     # wave2：t3（personal）在依赖完成后执行，并看到前序结果
     dep_calls = [c for c in calls if "协作上下文" in c[1]]
     assert len(dep_calls) == 1
     assert dep_calls[0][0] == "personal"
     assert "personal 的结果" in dep_calls[0][1]
-    assert "campus_life 的结果" in dep_calls[0][1]
+    assert "affairs 的结果" in dep_calls[0][1]
     # 合成器降级拼接
     assert result.response
     assert result.tools_used == []
@@ -412,6 +416,9 @@ def _fake_tool_manager():
         "query_ddl":        {"type": "object", "properties": {"horizon_days": {"type": "integer"}}},
         "query_campus_info": {"type": "object", "properties": {"category": {"type": "string"}}, "required": ["category"]},
         "get_weather":      {"type": "object", "properties": {"place": {"type": "string"}}},
+        "calculate_weighted_score": {"type": "object", "properties": {"courses": {"type": "array"}}, "required": ["courses"]},
+        "query_affairs_process": {"type": "object", "properties": {"service": {"type": "string"}}, "required": ["service"]},
+        "diagnose_it_issue": {"type": "object", "properties": {"system": {"type": "string"}}},
     }.items():
         tm.register(Tool(name=name, description=f"{name} 工具", handler=noop, schema=schema))
     return tm

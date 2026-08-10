@@ -18,8 +18,8 @@ import json
 import logging
 import pathlib
 import re
+import subprocess
 import statistics
-import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -76,6 +76,8 @@ class EvalReport:
     recommendations:  List[str]
     results:          List[EvalResult]
     retrieval:        Optional[Dict[str, Any]] = None  # RAG 检索硬指标（HitRate@K/Recall@K/MRR）
+    provenance:       Dict[str, Any] = field(default_factory=dict)
+    judge:             Dict[str, Any] = field(default_factory=dict)
 
 
 # ── LLM-as-Judge ─────────────────────────────────────────────────────────────
@@ -128,6 +130,7 @@ Agent 响应: {response}
             try:
                 resp = await self._client.messages.create(
                     model=self._model, max_tokens=256, temperature=0.0,
+                    thinking={"type": "disabled"},
                     messages=[{"role": "user", "content": prompt}],
                 )
                 raw = resp.content[0].text
@@ -174,10 +177,10 @@ Agent 响应: {response}
         if not isinstance(data, dict):
             return None
         return {
-            "relevance": float(data.get("relevance", 0.5)),
-            "accuracy": float(data.get("accuracy", 0.5)),
-            "completeness": float(data.get("completeness", 0.5)),
-            "helpfulness": float(data.get("helpfulness", 0.5)),
+            "relevance": max(0.0, min(1.0, float(data.get("relevance", 0.5)))),
+            "accuracy": max(0.0, min(1.0, float(data.get("accuracy", 0.5)))),
+            "completeness": max(0.0, min(1.0, float(data.get("completeness", 0.5)))),
+            "helpfulness": max(0.0, min(1.0, float(data.get("helpfulness", 0.5)))),
         }
 
     @staticmethod
@@ -219,39 +222,44 @@ Agent 回答: {response}
 
 只返回 JSON，例如: {{"correctness": 0.85}}"""
 
-    async def judge_faithfulness(self, question: str, response: str, context: str) -> float:
-        """回答忠实性：回答是否被检索上下文支持（无幻觉）。失败兜底 0.5。"""
+    async def judge_faithfulness(self, question: str, response: str, context: str) -> tuple[float, bool]:
+        """回答忠实性：回答是否被检索上下文支持（无幻觉）。失败兜底 0.5 并标记。"""
         prompt = self.FAITHFULNESS_PROMPT.format(
             question=question, context=context[:3000], response=response
         )
         return await self._judge_scalar(prompt, "faithfulness")
 
-    async def judge_answer_correctness(self, question: str, response: str, golden: str) -> float:
+    async def judge_answer_correctness(self, question: str, response: str, golden: str) -> tuple[float, bool]:
         """答案正确性：与标准答案的一致性（需要用例提供 golden_answer）。"""
         prompt = self.ANSWER_CORRECTNESS_PROMPT.format(
             question=question, golden=golden[:2000], response=response
         )
         return await self._judge_scalar(prompt, "correctness")
 
-    async def _judge_scalar(self, prompt: str, key: str) -> float:
-        """单指标 Judge：输出 {"key": 0.0-1.0}，解析失败兜底 0.5。"""
+    async def _judge_scalar(self, prompt: str, key: str) -> tuple[float, bool]:
+        """单指标 Judge：输出 {"key": 0.0-1.0}。返回 (分数, 是否失败)。
+
+        失败兜底 0.5 并显式标记，与 judge() 的 judge_failed 语义一致，
+        避免失败样本静默混入平均分。
+        """
         prompt = self._clean_text(prompt)
         for attempt in range(2):
             try:
                 resp = await self._client.messages.create(
                     model=self._model, max_tokens=128, temperature=0.0,
+                    thinking={"type": "disabled"},
                     messages=[{"role": "user", "content": prompt}],
                 )
                 raw = resp.content[0].text
                 data = self._parse_raw_json(raw)
                 if data is None or key not in data:
                     raise ValueError(f"Judge 输出缺少 {key}")
-                return float(data[key])
+                return max(0.0, min(1.0, float(data[key]))), False
             except Exception as ex:
                 logger.warning(f"Judge({key}) 第 {attempt + 1} 次失败: {ex}")
                 if attempt == 0:
                     prompt = prompt + "\n\n注意：上次输出无法解析。请只输出一个 JSON 对象。"
-        return 0.5
+        return 0.5, True
 
     @staticmethod
     def _parse_raw_json(raw: str) -> Optional[Dict[str, Any]]:
@@ -280,7 +288,7 @@ class IntentEvaluator:
 
     expected_intent 取值约定：
       - 领域值（academic/campus_life/affairs/it_help/other）→ 比较预测的 domain
-      - 动作值（query/request/greeting/complaint/feedback/escalation）→ 比较预测的 action
+      - 动作值（query/request/greeting/complaint/feedback）→ 比较预测的 action
     用例可通过 context.history 提供多轮对话，评测追问继承能力。
     """
 
@@ -370,7 +378,9 @@ def compute_retrieval_metrics(
       - Recall@K:  相关文档被召回到 Top-K 的比例（逐用例平均）
       - MRR:       第一个相关文档排名的倒数（逐用例平均）
     """
-    assert len(results) == len(relevant), "results 与 relevant 用例数必须一致"
+    assert_len = len(results)
+    if assert_len != len(relevant):
+        raise ValueError(f"results({assert_len}) 与 relevant({len(relevant)}) 用例数必须一致")
     hits, recalls, mrrs = [], [], []
     cases: List[Dict[str, Any]] = []
 
@@ -410,14 +420,17 @@ def citation_correctness(answer: str, sources: List[Any]) -> Dict[str, Any]:
     sources: 检索到的来源列表（每项 dict 或 str）
     返回: {total, valid, invalid, score, has_citation}
     """
-    indices = sorted({int(m) for m in re.findall(r"\[(\d+)\]", answer)})
+    # 先剔除 Markdown 链接 [text](url) —— 其 [n] 是链接标签而非引用序号，
+    # 避免把链接标签数字误判为引用编号。
+    stripped = re.sub(r"\[[^\]]*\]\([^)]*\)", "", answer or "")
+    indices = sorted({int(m) for m in re.findall(r"\[(\d+)\]", stripped)})
     n_sources = len(sources)
     valid = [i for i in indices if 1 <= i <= n_sources]
     return {
         "total": len(indices),
         "valid": len(valid),
         "invalid": [i for i in indices if not (1 <= i <= n_sources)],
-        "score": round(len(valid) / len(indices), 4) if indices else 1.0,
+        "score": round(len(valid) / len(indices), 4) if indices else None,
         "has_citation": len(indices) > 0,
     }
 
@@ -490,6 +503,12 @@ class EndToEndEvaluator:
         self._orchestrator     = orchestrator
         self._judge            = LLMJudge(judge_client, judge_model or model)
         self._judge_model      = judge_model or model
+        # 独立 Judge：只有显式配置了不同的 API Key / 端点 / 模型才算独立
+        self._judge_independent = (
+            bool(judge_api_key and judge_api_key != api_key)
+            or bool(judge_base_url and judge_base_url != base_url)
+            or bool(judge_model and judge_model != model)
+        )
         self._intent_evaluator = IntentEvaluator(recognizer)
         self._retrieval_evaluator = RetrievalEvaluator(knowledge_base) if knowledge_base else None
         self._history:         List[EvalReport] = []
@@ -502,6 +521,8 @@ class EndToEndEvaluator:
         dialog_cases:    Optional[List[Dict[str, Any]]] = None,
         routing_cases:   Optional[List[Dict[str, Any]]] = None,
         retrieval_cases: Optional[List[RetrievalTestCase]] = None,
+        promote_baseline: bool = False,
+        dataset: str = "built_in_cases_v1",
     ) -> EvalReport:
         """
         运行完整评测。
@@ -514,6 +535,7 @@ class EndToEndEvaluator:
         routing_cases: 路由评测用例 [{"turns": [...], "expected_agent": "campus_life"}]
         retrieval_cases: RAG 检索硬指标用例 [{"query": ..., "relevant_titles": [...]}]
           需要 knowledge_base（检索端 HitRate@K/Recall@K/MRR）。
+        dataset: 用例来源标识（内置/自定义），写入 provenance。
         """
         results: List[EvalResult] = []
         all_scores: Dict[str, List[float]] = {
@@ -605,10 +627,30 @@ class EndToEndEvaluator:
             recommendations=recommendations,
             results=results,
             retrieval=retrieval_metrics,
+            provenance={
+                "dataset": dataset,
+                "dataset_counts": {"intent": len(intent_cases or []), "routing": len(routing_cases or []), "retrieval": len(retrieval_cases or []), "dialog": len(dialog_cases or [])},
+                "code_commit": self._git_commit(),
+                "generator_model": self._model,
+                "judge_model": self._judge_model,
+                "threshold": self.PASS_THRESHOLD,
+            },
+            judge={
+                "judge_independent": self._judge_independent,
+                "note": "独立 Judge 需单独配置并人工核验；失败样本不应解释为模型质量分数。",
+            },
         )
         self._history.append(report)
-        self._save_baseline(report)
+        if promote_baseline:
+            self._save_baseline(report)
         return report
+
+    @staticmethod
+    def _git_commit() -> str:
+        try:
+            return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=2).stdout.strip() or "unknown"
+        except Exception:
+            return "unknown"
 
     async def _evaluate_dialog_case(self, case: Dict[str, Any], case_idx: int) -> List[EvalResult]:
         """评测单轮或多轮对话用例。"""
@@ -658,12 +700,13 @@ class EndToEndEvaluator:
 
             # 生成端 RAG 硬指标：Citation Correctness（确定性）+ Faithfulness（Judge）
             if self._retrieval_evaluator is not None:
-                sources = await asyncio.to_thread(
-                    self._retrieval_evaluator._kb.search, question, top_k=5,
-                )
+                # 只用本次 Agent 真正调用 knowledge_search 获得的证据；禁止二次
+                # 检索替代，从而避免把未被模型使用的材料当作“引用依据”。
+                sources = list(getattr(orch_result, "tool_evidence", []) or [])
                 source_titles = [str(s.get("title", "")) for s in sources]
                 citation = citation_correctness(actual_answer, source_titles)
-                score_dict["citation_correctness"] = citation["score"]
+                if citation["score"] is not None:
+                    score_dict["citation_correctness"] = citation["score"]
                 metadata["citation"] = citation
                 metadata["sources"] = source_titles
 
@@ -672,19 +715,21 @@ class EndToEndEvaluator:
                         f"[{i + 1}] {s.get('title', '')}: {s.get('content', '')[:200]}"
                         for i, s in enumerate(sources)
                     )
-                    faithfulness = await self._judge.judge_faithfulness(
+                    faithfulness, faithfulness_failed = await self._judge.judge_faithfulness(
                         question, actual_answer, sources_text,
                     )
                     score_dict["faithfulness"] = faithfulness
                     metadata["faithfulness"] = faithfulness
+                    metadata["faithfulness_failed"] = faithfulness_failed
 
             # Answer Correctness：用例提供 golden_answer 时才评测
             if golden_answer:
-                correctness = await self._judge.judge_answer_correctness(
+                correctness, correctness_failed = await self._judge.judge_answer_correctness(
                     question, actual_answer, golden_answer,
                 )
                 score_dict["answer_correctness"] = correctness
                 metadata["answer_correctness"] = correctness
+                metadata["answer_correctness_failed"] = correctness_failed
 
             history.append({"role": "user", "content": question})
             history.append({"role": "assistant", "content": actual_answer})
@@ -863,6 +908,8 @@ class EndToEndEvaluator:
                 for r in data.get("results", [])
             ],
             retrieval=data.get("retrieval"),
+            provenance=dict(data.get("provenance", {})),
+            judge=dict(data.get("judge", {})),
         )
 
 
@@ -875,14 +922,14 @@ DEFAULT_INTENT_CASES: List[IntentTestCase] = [
     IntentTestCase("今天有什么课？",              "personal"),
     IntentTestCase("我最近的考试安排？",          "personal"),
     IntentTestCase("南校区食堂几点关门？",        "campus_life"),
-    IntentTestCase("校园卡丢了怎么补办？",        "campus_life"),
+    # 校园卡补办走事务/材料指引 → affairs（与 domains 0.95 规则、demo_cases 一致）
+    IntentTestCase("校园卡丢了怎么补办？",        "affairs"),
     IntentTestCase("帮我查一下校园卡余额",        "campus_life"),
     IntentTestCase("奖学金什么时候评定？",        "affairs"),
     IntentTestCase("我要请假怎么走流程",          "affairs"),
     IntentTestCase("教务系统登录不上怎么办？",    "it_help"),
     IntentTestCase("校园网连不上",                "it_help"),
     # 动作维度（行为依据）
-    IntentTestCase("我要找辅导员",                "escalation"),
     IntentTestCase("你好",                        "greeting"),
     IntentTestCase("这个助手很实用！",            "feedback"),
     IntentTestCase("宿舍热水一直不来！",          "complaint"),
@@ -917,7 +964,8 @@ DEFAULT_DIALOG_CASES: List[Dict[str, Any]] = [
 # 路由评测用例：验证请求句式与追问继承的路由正确性
 DEFAULT_ROUTING_CASES: List[Dict[str, Any]] = [
     {"turns": ["我要请假怎么走流程"], "expected_agent": "affairs"},
-    {"turns": ["校园卡丢了怎么补办"], "expected_agent": "campus_life"},
+    # 校园卡补办 → affairs（与 intent 用例、demo_cases 口径一致）
+    {"turns": ["校园卡丢了怎么补办"], "expected_agent": "affairs"},
     {"turns": ["帮我查一下校园卡余额"], "expected_agent": "campus_life"},
     {"turns": ["南校区食堂几点关门？", "那几点开门呢？"], "expected_agent": "campus_life"},
     {"turns": ["教务系统登录不上怎么办？", "怎么重置密码？"], "expected_agent": "it_help"},

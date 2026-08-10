@@ -2,7 +2,7 @@
 EchoGuard 真实接入 —— FastAPI HTTP 中间件
 
 把安全能力以中间件形式接入 EchoGuide 真实请求链（/chat、/chat/stream、
-/eval/run、/knowledge/*、/skills/reload、/personal/*、/mcp），默认启用。
+/eval/run、/knowledge/*、/skills/reload、/personal/*、/mcp、/auth），默认启用。
 
 场景定位（面向开放的校园助手）：
   - Prompt 注入检测 —— LLM 系统真实威胁：防"忽略之前指令"类注入
@@ -10,12 +10,12 @@ EchoGuard 真实接入 —— FastAPI HTTP 中间件
   - 脱敏审计 —— 个人数据（课表/待办）操作留痕（只记哈希与脱敏摘要）
   - 身份认证（可选）—— 配置 ECHOGUIDE_GUARD_TOKEN 后要求 Bearer Token
 
-容错原则：中间件自身异常时放行并告警 —— 安全组件不能成为可用性故障源。
+容错原则：受保护路径中间件异常时失败关闭；健康检查和静态资源不受影响。
 
 启用：ECHOGUIDE_GUARD_ENABLED 默认 1（注入检测/限流/审计开箱即用）。
 """
-import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -25,8 +25,6 @@ from collections import defaultdict, deque
 from typing import Any, Deque, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-
-REDACTED = "[REDACTED]"
 
 # ── 注入标记模式（与 Sidecar app.py 的 _has_injection_marker 保持一致）──────
 _INJECTION_PATTERNS = (
@@ -51,20 +49,26 @@ class GuardSettings:
         self.user_rate_per_min  = int(kwargs.get("user_rate_per_min", os.getenv("ECHOGUIDE_GUARD_USER_RATE", "30")))
         self.ip_rate_per_min    = int(kwargs.get("ip_rate_per_min", os.getenv("ECHOGUIDE_GUARD_IP_RATE", "120")))
 
-    # 需要保护的端点前缀
-    PROTECTED_PREFIXES = ("/chat", "/eval/run", "/knowledge/", "/skills/reload", "/personal/", "/mcp")
+    # 需要保护的端点前缀（/auth 登录/注册同样限流，但豁免身份认证）
+    PROTECTED_PREFIXES = ("/chat", "/auth", "/eval/run", "/knowledge", "/skills/reload", "/personal", "/mcp", "/traces", "/monitor", "/campus/reload")
 
 
 class _RateLimiter:
     """用户/IP 维度滑动窗口限流。"""
 
+    _CLEANUP_INTERVAL_S = 60.0
+
     def __init__(self, user_limit: int, ip_limit: int):
         self.user_limit = user_limit
         self.ip_limit   = ip_limit
         self._hits: Dict[str, Deque[float]] = defaultdict(lambda: deque())
+        self._last_cleanup = 0.0
 
     def allow(self, key: str, limit: int, window_s: float = 60.0) -> bool:
         now = time.monotonic()
+        if now - self._last_cleanup >= self._CLEANUP_INTERVAL_S:
+            self._cleanup(now)
+            self._last_cleanup = now
         q = self._hits[key]
         while q and now - q[0] > window_s:
             q.popleft()
@@ -72,6 +76,15 @@ class _RateLimiter:
             return False
         q.append(now)
         return True
+
+    def _cleanup(self, now: float) -> None:
+        """周期性清理空桶与长时间未访问的桶，避免键无限累积。"""
+        stale = [
+            k for k, q in self._hits.items()
+            if not q or now - q[-1] > self._CLEANUP_INTERVAL_S
+        ]
+        for k in stale:
+            del self._hits[k]
 
 
 class EchoGuardMiddleware:
@@ -90,66 +103,87 @@ class EchoGuardMiddleware:
             await self.app(scope, receive, send)
             return
 
-        body: Optional[bytes] = None
+        path = scope.get("path", "")
+        protected = path.startswith(self.settings.PROTECTED_PREFIXES)
         try:
-            await self._guard(scope, receive, send)
+            await self._guard(scope, receive, send, protected)
         except Exception as ex:
-            # 容错原则：安全组件自身异常时放行并告警，不能成为可用性故障源。
-            # 请求体若已读取则重放，否则透传原始 receive。
-            logger.exception(f"[EchoGuard] 中间件异常，本次放行: {ex}")
-            if body is not None:
-                await self.app(scope, self._replay_body(body, receive), send)
+            logger.exception(f"[EchoGuard] 中间件异常: {ex}")
+            if protected:
+                await self._reject(send, 503, "安全检查暂不可用，请稍后重试")
             else:
                 await self.app(scope, receive, send)
 
-    async def _guard(self, scope: Dict[str, Any], receive: Any, send: Any) -> None:
+    async def _guard(self, scope: Dict[str, Any], receive: Any, send: Any, protected: bool) -> None:
         path = scope.get("path", "")
         method = scope.get("method", "GET")
 
         # 只保护敏感端点；静态/健康检查放行
-        if method != "POST" or not path.startswith(self.settings.PROTECTED_PREFIXES):
+        if not protected:
             await self.app(scope, receive, send)
             return
 
-        # 1. 身份认证（配置 token 后生效）
+        # /auth/*（登录/注册）是未登录状态的必经入口，豁免身份认证，
+        # 但照常执行限流、注入检测与长度约束（防暴破与注入投递）。
+        needs_auth = not path.startswith("/auth")
+
+        # 1. 解析可信登录身份。配置服务 token 时，浏览器会话或 Bearer Token
+        # 任一有效即可；服务 token 无需进入前端代码。
+        from auth.service import user_from_scope
+
+        auth_user = user_from_scope(scope) if needs_auth else None
+        bearer_ok = False
+        auth_header = b""
         if self.settings.token:
             headers = dict(scope.get("headers", []))
-            auth = headers.get(b"authorization", b"")
+            auth_header = headers.get(b"authorization", b"")
             expected = f"Bearer {self.settings.token}".encode()
-            if auth != expected:
-                await self._reject(send, 401, "未授权：缺少或错误的访问令牌")
+            bearer_ok = hmac.compare_digest(auth_header, expected)
+            if needs_auth and auth_user is None and not bearer_ok:
+                await self._reject(send, 401, "未授权：请先登录或提供有效访问令牌")
                 return
 
-        # 2. 读取并缓存请求体（供注入检测 / 限流 / 输入约束）
-        body = await self._read_body(receive)
-        if body is None:
-            await self.app(scope, receive, send)
-            return
+        # 2. 仅为带请求体的方法读取并缓存，再将同一 body 重放给下游。
+        # GET/DELETE 也接受服务级 token 和限流，但不因无 body 消耗 receive。
+        body = b""
+        if method in {"POST", "PUT", "PATCH"}:
+            body = await self._read_body(receive)
+            if body is None:
+                return
 
-        user_id = self._extract_user_id(body)
         client = scope.get("client", ("", 0))[0] or "unknown"
 
-        # 3. 限流（用户维度优先，IP 维度兜底）
-        if not self._limiter.allow(f"user:{user_id}", self.settings.user_rate_per_min):
+        # 3. 限流：登录用户按 user 桶；有效服务 token 独立 token 桶；
+        # 匿名调用按 IP 隔离（避免全体匿名共享一个桶被集体限流）。
+        if auth_user is not None:
+            rate_key = f"user:{auth_user.id}"
+        elif bearer_ok and self.settings.token:
+            rate_key = f"token:{hashlib.sha256(auth_header).hexdigest()[:32]}"
+        else:
+            rate_key = f"anon:{client}"
+        if not self._limiter.allow(rate_key, self.settings.user_rate_per_min):
             await self._reject(send, 429, "请求过于频繁，请稍后再试")
             return
         if not self._limiter.allow(f"ip:{client}", self.settings.ip_rate_per_min):
             await self._reject(send, 429, "请求过于频繁，请稍后再试")
             return
 
-        # 4. 注入检测 + 输入约束
-        message = self._extract_message(body)
-        if len(message) > self.settings.max_message_chars:
-            await self._reject(send, 413, f"消息过长：上限 {self.settings.max_message_chars} 字")
+        # 4. 注入检测 + 输入约束（递归扫描所有字符串字段，覆盖
+        # /chat 的 message、/mcp 的 params、/knowledge 的 documents 等）
+        texts = self._collect_strings(body)
+        if any(len(t) > self.settings.max_message_chars for t in texts):
+            await self._reject(send, 413, f"请求内容过长：上限 {self.settings.max_message_chars} 字")
             return
-        if _INJECTION_RE.search(message or ""):
+        if any(_INJECTION_RE.search(t or "") for t in texts):
             await self._reject(send, 403, "检测到疑似注入内容，请求已拦截")
             return
 
         # 5. 放行：重放请求体给下游，并输出脱敏审计日志
-        await self._audit(path, user_id, message)
-        buffered = self._replay_body(body, receive)
-        await self.app(scope, buffered, send)
+        await self._audit(path, rate_key, texts)
+        if method in {"POST", "PUT", "PATCH"}:
+            await self.app(scope, self._replay_body(body, receive), send)
+        else:
+            await self.app(scope, receive, send)
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
 
@@ -188,21 +222,33 @@ class EchoGuardMiddleware:
         return receive
 
     @staticmethod
-    def _extract_message(body: bytes) -> str:
-        try:
-            data = json.loads(body.decode("utf-8", errors="ignore"))
-            return str(data.get("message", "")) if isinstance(data, dict) else ""
-        except Exception:
-            return ""
+    def _collect_strings(body: bytes, max_depth: int = 5, max_items: int = 200) -> List[str]:
+        """递归收集 JSON body 中的所有字符串字段（供注入检测 / 长度约束）。
 
-    @staticmethod
-    def _extract_user_id(body: bytes) -> str:
+        覆盖 /chat 的 message、/mcp 的 params.arguments、/knowledge/add 的
+        documents[].content、/eval/run 的用例文本等，避免只查顶层 message
+        造成覆盖盲区。限制深度与条数，防止恶意嵌套放大收集成本。
+        """
         try:
             data = json.loads(body.decode("utf-8", errors="ignore"))
-            uid = data.get("user_id", "anonymous") if isinstance(data, dict) else "anonymous"
-            return str(uid)[:64]
         except Exception:
-            return "anonymous"
+            return []
+        texts: List[str] = []
+
+        def walk(node: Any, depth: int) -> None:
+            if len(texts) >= max_items or depth > max_depth:
+                return
+            if isinstance(node, str):
+                texts.append(node)
+            elif isinstance(node, dict):
+                for value in node.values():
+                    walk(value, depth + 1)
+            elif isinstance(node, (list, tuple)):
+                for item in node:
+                    walk(item, depth + 1)
+
+        walk(data, 0)
+        return texts
 
     async def _reject(self, send: Any, status: int, message: str) -> None:
         payload = json.dumps({"detail": message}, ensure_ascii=False).encode()
@@ -214,12 +260,13 @@ class EchoGuardMiddleware:
         await send({"type": "http.response.body", "body": payload})
         logger.warning(f"[EchoGuard] 拦截 {status}: {message}")
 
-    async def _audit(self, path: str, user_id: str, message: str) -> None:
+    async def _audit(self, path: str, subject: str, texts: List[str]) -> None:
         """脱敏审计日志：不落原始敏感内容，只记录哈希与脱敏摘要。"""
         from echoguide_guard.redaction import redact_text
 
-        digest = hashlib.sha256((message or "").encode("utf-8")).hexdigest()[:16]
-        summary = redact_text((message or "")[:120])
+        sample = " ".join(texts)[:120]
+        digest = hashlib.sha256(sample.encode("utf-8")).hexdigest()[:16]
+        summary = redact_text(sample)
         logger.info(
-            f"[EchoGuard] 放行 path={path} user={user_id} sha256={digest} msg={summary!r}"
+            f"[EchoGuard] 放行 path={path} subject={subject} sha256={digest} msg={summary!r}"
         )

@@ -3,7 +3,7 @@ MCP（Model Context Protocol）JSON-RPC 协议层。
 
 把内部 MCPToolManager 以标准 MCP 协议暴露出去：
   - 支持 initialize / tools/list / tools/call 等核心方法
-  - HTTP Streamable transport（POST /mcp 单端点）
+  - Streamable HTTP 的工具子集（POST /mcp 单端点）
   - 协议格式遵循 MCP 规范：jsonrpc 2.0，方法名 tools/list、tools/call
 
 这样 EchoGuide 的工具不仅能被 Agent 内部调用，也能被任何 MCP 客户端
@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 # MCP 协议常量
 JSONRPC_VERSION = "2.0"
 SERVER_NAME = "echoguide-mcp"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
+PROTOCOL_VERSION = "2025-11-25"
+SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 
 # JSON-RPC 错误码
 PARSE_ERROR        = -32700
@@ -41,9 +43,10 @@ class MCPServer:
 
     # ── 协议入口 ──────────────────────────────────────────────────────────────
 
-    async def handle(self, raw_body: str) -> Dict[str, Any]:
+    async def handle(self, raw_body: str) -> Optional[Dict[str, Any]]:
         """
-        处理单个 JSON-RPC 请求（含批量请求）。
+        处理一个 JSON-RPC 请求。Streamable HTTP 不接受批量请求；通知返回 None，
+        由 HTTP transport 转为 202 Accepted。
         返回标准 JSON-RPC 响应。
         """
         try:
@@ -52,8 +55,7 @@ class MCPServer:
             return self._error(None, PARSE_ERROR, "Parse error: 非法 JSON")
 
         if isinstance(payload, list):
-            results = [await self._dispatch(item) for item in payload]
-            return [r for r in results if r is not None]
+            return self._error(None, INVALID_REQUEST, "Invalid Request: Streamable HTTP 不支持批量请求")
         return await self._dispatch(payload)
 
     async def _dispatch(self, req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -109,7 +111,7 @@ class MCPServer:
         self._initialized = True
         logger.info(f"MCP 客户端初始化: {self._client_info}")
         return {
-            "protocolVersion": "2025-03-26",
+            "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             "instructions": (
@@ -125,14 +127,19 @@ class MCPServer:
                 "name": name,
                 "description": tool.description,
                 "inputSchema": tool.schema,
+                "annotations": _tool_annotations(name),
             })
         return {"tools": tools}
 
     async def _tools_call(self, params: Dict[str, Any], request_id: Any) -> Dict[str, Any]:
         name = params.get("name")
         arguments = params.get("arguments", {}) or {}
-        if not name:
+        if not isinstance(name, str) or not name:
             raise MCPError(INVALID_PARAMS, "tools/call 缺少 name")
+        if name not in self._tool_manager._tools:
+            raise MCPError(INVALID_PARAMS, f"未知工具: {name}")
+        if not isinstance(arguments, dict):
+            raise MCPError(INVALID_PARAMS, "tools/call arguments 必须是对象")
 
         # 透传调用方注入的 user_id：个人工具（课表/待办/DDL）在 MCP 路径下按身份生效。
         # 信任模型与前端一致（HTTP 层通过 X-User-Id 请求头传入，同 user_id 软身份）。
@@ -140,16 +147,15 @@ class MCPServer:
             name, arguments,
             context={"mcp": True, "user_id": self._user_id},
         )
-        if not result.success:
-            raise MCPError(INTERNAL_ERROR, f"工具执行失败: {result.error}")
-
-        # 内容序列化为 MCP 规范的 text content
-        text = json.dumps(result.data, ensure_ascii=False)
-        return {
-            "content": [{"type": "text", "text": text}],
-            "isError": False,
-            "structuredContent": result.data if _jsonable(result.data) else None,
+        # 工具业务失败是 tools/call 的正常结果，必须使用 isError 而不是 JSON-RPC
+        # INTERNAL_ERROR，方便 MCP 客户端展示并继续会话。
+        payload: Dict[str, Any] = {
+            "content": [{"type": "text", "text": json.dumps(result.data if result.success else {"error": result.error}, ensure_ascii=False)}],
+            "isError": not result.success,
         }
+        if result.success and isinstance(result.data, dict) and _jsonable(result.data):
+            payload["structuredContent"] = result.data
+        return payload
 
     async def _ping(self, params: Dict[str, Any], request_id: Any) -> Dict[str, Any]:
         return {}
@@ -183,3 +189,12 @@ def _jsonable(value: Any) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+
+
+def _tool_annotations(name: str) -> Dict[str, bool]:
+    """保守声明 MCP 工具副作用，避免客户端把写操作当只读调用。"""
+    if name in {"add_todo", "complete_todo"}:
+        return {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
+    if name == "get_weather":
+        return {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    return {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}

@@ -127,7 +127,8 @@ def test_chat_semantic_cache_hit_skips_llm():
     resp = asyncio.run(m.chat(req, Response()))
     assert resp.response == "缓存中的回答"
     assert resp.domain == "academic"
-    assert resp.latency_ms == 0.0
+    assert resp.latency_ms >= 0.0
+    assert resp.cached is True
 
 
 def test_chat_semantic_cache_miss_runs_orchestrator():

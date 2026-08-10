@@ -1,0 +1,2752 @@
+{
+  "generated_at": "2026-08-09 16:56:50 +0800",
+  "commit": "7b3f406-dirty",
+  "repeat": 3,
+  "models": {
+    "fast": "deepseek-v4-flash",
+    "deep": "deepseek-v4-pro"
+  },
+  "rag": {
+    "query": "西电转专业报名审核考核流程",
+    "hit_rate_at_5": 1.0,
+    "recall_at_5": 1.0,
+    "mrr": 1.0,
+    "rank": 1,
+    "returned": 5
+  },
+  "summary": {
+    "adaptive": {
+      "cases": 33,
+      "pass_rate": 1.0,
+      "domain_accuracy": 1.0,
+      "domain_macro_f1": 1.0,
+      "profile_accuracy": 1.0,
+      "complexity_accuracy": 1.0,
+      "complexity_precision": 1.0,
+      "complexity_recall": 1.0,
+      "tool_success_rate": 1.0,
+      "specialized_tool_success_rate": 1.0,
+      "dag_success_rate": 1.0,
+      "citation_correctness": 1.0,
+      "llm_classifier_rate": 0.0909,
+      "p50_latency_ms": 4640.8,
+      "p95_latency_ms": 55040.3,
+      "input_tokens": 84501,
+      "output_tokens": 30436
+    },
+    "always_llm_deep": {
+      "cases": 33,
+      "pass_rate": 0.6364,
+      "domain_accuracy": 0.8182,
+      "domain_macro_f1": 0.7333,
+      "profile_accuracy": 0.8182,
+      "complexity_accuracy": 1.0,
+      "complexity_precision": 1.0,
+      "complexity_recall": 1.0,
+      "tool_success_rate": 0.8182,
+      "specialized_tool_success_rate": 0.6667,
+      "dag_success_rate": 1.0,
+      "citation_correctness": 1.0,
+      "llm_classifier_rate": 1.0,
+      "p50_latency_ms": 6700.4,
+      "p95_latency_ms": 47197.5,
+      "input_tokens": 81476,
+      "output_tokens": 28917
+    },
+    "generic_rag": {
+      "cases": 3,
+      "pass_rate": 0.0,
+      "domain_accuracy": 1.0,
+      "domain_macro_f1": 1.0,
+      "profile_accuracy": 1.0,
+      "complexity_accuracy": 1.0,
+      "complexity_precision": 0.0,
+      "complexity_recall": 0.0,
+      "tool_success_rate": 0.0,
+      "specialized_tool_success_rate": 0.0,
+      "dag_success_rate": 0.0,
+      "citation_correctness": 0.0,
+      "llm_classifier_rate": 0.0,
+      "p50_latency_ms": 7379.0,
+      "p95_latency_ms": 9453.3,
+      "input_tokens": 3678,
+      "output_tokens": 2014
+    },
+    "single_agent": {
+      "cases": 1,
+      "pass_rate": 0.0,
+      "domain_accuracy": 1.0,
+      "domain_macro_f1": 1.0,
+      "profile_accuracy": 0.0,
+      "complexity_accuracy": 0.0,
+      "complexity_precision": 0.0,
+      "complexity_recall": 0.0,
+      "tool_success_rate": 0.0,
+      "specialized_tool_success_rate": 0.0,
+      "dag_success_rate": 0.0,
+      "citation_correctness": 0.0,
+      "llm_classifier_rate": 0.0,
+      "p50_latency_ms": 5077.5,
+      "p95_latency_ms": 5077.5,
+      "input_tokens": 1857,
+      "output_tokens": 422
+    }
+  },
+  "records": [
+    {
+      "case_id": "personal_schedule",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_schedule"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1363,
+        "output_tokens": 151,
+        "trace_id": "c0b4b0e579c5"
+      },
+      "latency_ms": 2613.6,
+      "knowledge_used": false,
+      "answer_preview": "今天是 **2026年8月9日（周日）**，教学周第 0 周。你今天有 **1 节课**：\n\n📚 **智能系统导论**\n- 🕙 时间：10:10 – 11:55\n- 📍 地点：南校区 B 楼 203\n\n这节课已经上完啦（现在 16:40）。需要我帮你看看其他安排，比如明天的课或者待办/考试 DDL 吗？"
+    },
+    {
+      "case_id": "personal_todo",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_todo"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1247,
+        "output_tokens": 225,
+        "trace_id": "80a72256bb70"
+      },
+      "latency_ms": 3075.9,
+      "knowledge_used": false,
+      "answer_preview": "我查到你目前有 **1 项未完成**的待办事项：\n\n### 待办清单（未完成）\n\n| # | 内容 | 类型 | 截止时间 | 剩余天数 |\n|---|------|------|----------|----------|\n| 1 | 提交 Agent 实验报告 | 📌 DDL | 2026-08-14 | **还剩 5 天** |\n\n这周你就这一项未完成的安排，实验报告是 8 月 14 日（周五）截止，还有 5 天时间，记得提前准备哦！\n\n需要我帮你**新增**其他待办，"
+    },
+    {
+      "case_id": "weighted_score",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "calculate_weighted_score"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1158,
+        "output_tokens": 297,
+        "trace_id": "dd7d69212ff8"
+      },
+      "latency_ms": 3131.5,
+      "knowledge_used": false,
+      "answer_preview": "根据你提供的课程成绩，计算如下：\n\n**加权学分成绩 = Σ(成绩×学分) ÷ Σ学分 = (90×4 + 84×3 + 92×2) ÷ (4+3+2) = 796 ÷ 9 ≈ 88.44 分**\n\n| 课程 | 学分 | 成绩 | 加权贡献 |\n|------|------|------|----------|\n| 高等数学 | 4 | 90 | 360 |\n| 大学物理 | 3 | 84 | 252 |\n| 英语 | 2 | 92 | 184 |\n| **合计** | *"
+    },
+    {
+      "case_id": "affairs_card",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "affairs",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "affairs"
+        ],
+        "tools": [
+          "query_affairs_process",
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1152,
+        "output_tokens": 382,
+        "trace_id": "befdf2088ef5"
+      },
+      "latency_ms": 4875.0,
+      "knowledge_used": true,
+      "answer_preview": "为你查询到校园卡补办的相关流程，以下是具体指引：\n\n## 校园卡补办流程\n\n**⚠️ 第一步：先挂失**\n补办前请**务必先在校园卡服务渠道完成挂失**（如校园卡 APP、自助终端或一卡通网站），避免旧卡被他人盗刷。\n\n**📋 所需材料**\n- 本人有效身份证件（学生证或身份证）\n- 可验证的校园身份信息\n\n**📍 办理步骤**\n1. 在校园卡服务渠道完成挂失（可立即冻结，保护资金）\n2. 通过**一网通办（ehall.xidian.edu.cn）**或校园卡服务入口查询当前"
+    },
+    {
+      "case_id": "it_network",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "it_help"
+        ],
+        "tools": [
+          "diagnose_it_issue",
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 953,
+        "output_tokens": 778,
+        "trace_id": "776b0a8810c6"
+      },
+      "latency_ms": 7713.5,
+      "knowledge_used": true,
+      "answer_preview": "我来帮您排查。认证成功但网页打不开，有几种常见原因，我们按从简单到复杂的顺序逐步排查。\n\n## 排查步骤\n\n### 第 1 步：关闭代理、VPN 和私人 DNS\n这是最常见的原因。之前可能开过科学上网工具、系统代理或自定义 DNS，认证通过后数据流量走了代理导致网页打不开。\n- **Windows**：设置 → 网络和 Internet → 代理 → 关闭\"使用代理服务器\"\n- **macOS**：系统设置 → 网络 → 详细信息 → 代理 → 全部关闭\n- **手机**：关"
+    },
+    {
+      "case_id": "academic_policy",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "citation": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 3423,
+        "output_tokens": 614,
+        "trace_id": "5095e373b6b2"
+      },
+      "latency_ms": 14812.7,
+      "knowledge_used": true,
+      "answer_preview": "根据西电教务公开信息，转专业**没有全校统一的固定条件**，具体门槛是由各学院每年自行制定的。把某个学院某年级的方案当作全校规则来看是不可靠的。\n\n目前我能查到的公开示例仅来自集成电路学部，已整理如下供你参考流程框架：\n\n| 项目 | 内容 |\n|---|---|\n| **政策依据** | 学校《大类招生学生分流转专业实施办法（试行）》及当年通知 |\n| **申请方式** | 在规定时间内通过教务系统或一站式服务平台的「转专业模块」报名 |\n| **审核流程** | 转出学院"
+    },
+    {
+      "case_id": "campus_shuttle",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "query_campus_info"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1069,
+        "output_tokens": 283,
+        "trace_id": "d216fb842082"
+      },
+      "latency_ms": 3061.4,
+      "knowledge_used": false,
+      "answer_preview": "我帮你查到了今天（8月9日，周日）南校区→北校区的校车班次信息：\n\n## 🚌 南校区 → 北校区 下一班校车\n\n- **发车时间**：**18:00**\n- **距现在**：约79分钟\n- **乘车点**：南校区乘车点\n- **车程**：约60分钟\n- **班次类型**：教工班车（**双休日/节假日**班次）\n- **当日末班车**：就是这一班（18:00）\n\n### 温馨提示\n- 今天正好是**周日**，开的是双休/节假日班次，班次比工作日少，末班车就在18:00，**建议"
+    },
+    {
+      "case_id": "campus_weather",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "get_weather"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 284,
+        "output_tokens": 336,
+        "trace_id": "7728a980f898"
+      },
+      "latency_ms": 5039.4,
+      "knowledge_used": false,
+      "answer_preview": "为您查询到明天（8月10日，周一）南校区的天气情况：\n\n## 🌦️ 明日天气（南校区）\n\n| 项目 | 详情 |\n|------|------|\n| **天气** | 雷阵雨 |\n| **温度** | 22°C ~ 31°C |\n| **降水概率** | 43% |\n| **最大风速** | 7.0 km/h |\n\n明天南校区有**雷阵雨**的可能，而且最高温仍在 31°C 左右，比较闷热。给您几点小建议：\n\n- 🧥 **备好雨具**：降水概率不低，建议随身带伞，出门前留意实"
+    },
+    {
+      "case_id": "library_followup",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "classifier_stage": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "history",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 389,
+        "output_tokens": 197,
+        "trace_id": "5b781ddbb800"
+      },
+      "latency_ms": 2076.0,
+      "knowledge_used": false,
+      "answer_preview": "您问的是南校区图书馆的几点关门。根据刚才的信息，南校区图书馆（逸夫图书馆）不同区域关门时间不一样：\n\n- **主阅览区**：**22:30** 关门\n- **图书借还处**：工作日（周一至周五）**22:30**；周末 **22:30**\n- **A区 2-3 层自习室**：**23:00**\n- **研修间**：**22:00**\n- **24 小时自习室（B1 层）**：**全天开放**（凭校园卡刷卡进入）\n\n今天是**周日**，您如果去的话，主阅览区和借还处都是 **2"
+    },
+    {
+      "case_id": "parallel_request",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "parallel",
+        "profile": "deep",
+        "classifier_stage": "pattern",
+        "complexity_reason": "显式复合语义涉及多个校园领域",
+        "agents": [
+          "academic",
+          "it_help"
+        ],
+        "tools": [
+          "knowledge_search",
+          "diagnose_it_issue"
+        ],
+        "tasks": [
+          {
+            "id": "t0",
+            "agent": "academic",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 33900.5
+          },
+          {
+            "id": "t1",
+            "agent": "it_help",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 33900.5
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 10247,
+        "output_tokens": 3081,
+        "trace_id": "4b4d12a7e271"
+      },
+      "latency_ms": 53583.2,
+      "knowledge_used": true,
+      "answer_preview": "你的教务系统登录和选课规则问题，下面一起为你梳理清楚。教务系统登录不上的排查步骤综合了两个方向的信息，选课规则的部分也补充了获取官方通知的建议。\n\n---\n\n## 🔐 教务系统登录不上\n\n教务系统使用学校的统一身份认证，登录不上可以从下面几个方向逐一排查，顺序由易到难：\n\n**1. 先确认统一身份认证是否正常**  \n直接访问[统一身份认证平台](https://ids.xidian.edu.cn/)试一下能否登录。  \n- ✅ **能登录**：账号密码没问题，说明是教务系统"
+    },
+    {
+      "case_id": "dependent_dag",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "dag": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "dependent",
+        "profile": "deep",
+        "classifier_stage": "pattern",
+        "complexity_reason": "日程、办事与待办存在前后依赖",
+        "agents": [
+          "personal",
+          "affairs"
+        ],
+        "tools": [
+          "query_schedule",
+          "knowledge_search",
+          "query_affairs_process",
+          "query_todo",
+          "add_todo"
+        ],
+        "tasks": [
+          {
+            "id": "t1",
+            "agent": "personal",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 21916.1
+          },
+          {
+            "id": "t2",
+            "agent": "affairs",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 21916.1
+          },
+          {
+            "id": "t3",
+            "agent": "personal",
+            "depends_on": [
+              "t1",
+              "t2"
+            ],
+            "status": "success",
+            "duration_ms": 19633.3
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 9220,
+        "output_tokens": 3318,
+        "trace_id": "bc866e99dc06"
+      },
+      "latency_ms": 55661.1,
+      "knowledge_used": true,
+      "answer_preview": "好的，帮你整合一下：\n\n---\n\n## 📅 明天下午没课\n\n| 时间 | 课程 | 地点 |\n|------|------|------|\n| 08:30 - 10:05 | 计算机网络 | 南校区 A楼-101 |\n| 下午 | **无课** ✅ | — |\n\n上午 10:05 就下课了，下午整段空闲。不过当前是暑假（第 0 周），9 月 7 日才正式开学，明天去办业务要留意暑假期间的窗口安排。\n\n---\n\n## 🪪 校园卡补办指南\n\n根据最新办事流程，补办分三步 [1]："
+    },
+    {
+      "case_id": "guard_injection",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 403,
+      "latency_ms": 4.21359995380044
+    },
+    {
+      "case_id": "personal_schedule",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_schedule"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1363,
+        "output_tokens": 153,
+        "trace_id": "9b68e4f28d5d"
+      },
+      "latency_ms": 2606.4,
+      "knowledge_used": false,
+      "answer_preview": "今天是 **8月9日（周日）**，你有一门课：\n\n**📚 智能系统导论**\n- 🕙 时间：10:10 - 11:55\n- 📍 地点：南校区 B楼-203\n\n不过需要注意，当前显示的是**第 0 周**（学期开始日为 9月7日），这可能是预导入或补录的课程。需要我帮你确认课表内容，或者查询接下来的其他安排吗？"
+    },
+    {
+      "case_id": "personal_todo",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_todo"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1345,
+        "output_tokens": 224,
+        "trace_id": "8fe8aed48dce"
+      },
+      "latency_ms": 2486.9,
+      "knowledge_used": false,
+      "answer_preview": "您目前还有 **2 项**未完成的待办：\n\n**🗓️ 待办**\n1. **补办校园卡**\n   - 📌 流程：①先在一网通办（ehall.xidian.edu.cn）挂失 ②带身份证+学号去一卡通服务中心办理\n   - ⏰ 截止：2026-08-10（明天）\n\n**📝 DDL 截止任务**\n2. **提交 Agent 实验报告**\n   - ⏰ 截止：2026-08-14（还剩 5 天）\n\n---\n\n其中 **补办校园卡** 明天就到期了，建议优先处理；实验报告还有 5 天，"
+    },
+    {
+      "case_id": "weighted_score",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "calculate_weighted_score"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1042,
+        "output_tokens": 291,
+        "trace_id": "763c9c99de1b"
+      },
+      "latency_ms": 3158.7,
+      "knowledge_used": false,
+      "answer_preview": "根据你提供的三门课程，计算如下：\n\n| 课程 | 学分 | 成绩 | 加权贡献（成绩×学分） |\n|------|------|------|------|\n| 高等数学 | 4 | 90 | 360 |\n| 大学物理 | 3 | 84 | 252 |\n| 英语 | 2 | 92 | 184 |\n| **合计** | **9** | — | **796** |\n\n**加权学分成绩 = 796 ÷ 9 ≈ 88.44**\n\n⚠️ 请注意：这是**加权学分成绩**（Σ成绩×学分 "
+    },
+    {
+      "case_id": "affairs_card",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "affairs",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "affairs"
+        ],
+        "tools": [
+          "query_affairs_process",
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1713,
+        "output_tokens": 402,
+        "trace_id": "efba51f7e9fd"
+      },
+      "latency_ms": 4650.6,
+      "knowledge_used": true,
+      "answer_preview": "我根据校园办事流程知识库为您查询到了校园卡补办的相关指引。\n\n## 校园卡补办办事指引\n\n**办理材料：**\n1. 本人有效身份证件（学生证或身份证）\n2. 可验证的校园身份信息（学号等）\n\n**办理步骤：**\n1. **先挂失**——在校园卡服务渠道完成挂失，防止卡被他人盗刷\n2. **查询补卡窗口**——确认当前校区的补卡办理地点和开放时间（可通过学校一网通办或校园卡服务入口查询）\n3. **携带材料办理**——到办理点提交材料，确认旧卡失效\n\n**温馨提示：**\n- 补"
+    },
+    {
+      "case_id": "it_network",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "it_help"
+        ],
+        "tools": [
+          "diagnose_it_issue"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 997,
+        "output_tokens": 644,
+        "trace_id": "e6dabf2216c1"
+      },
+      "latency_ms": 6306.0,
+      "knowledge_used": false,
+      "answer_preview": "根据诊断结果，我来给你一个从易到难的排查步骤。**认证成功却打不开网页**，通常问题出在电脑的网络配置上，而不是账号本身。\n\n## 排查步骤（由易到难）\n\n### 第 1 步：关闭代理 / VPN / 私人 DNS\n这是最常见的原因。\n- 如果之前用过科学上网工具、VPN 或设置了自定义 DNS，代理残留会导致数据走了错误的通道，即使校园网认证成功也无法上网。\n- 操作：在 Windows 设置 →「网络和 Internet」→「代理」，把「使用代理服务器」全部关掉；若用的第"
+    },
+    {
+      "case_id": "academic_policy",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "citation": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 2939,
+        "output_tokens": 855,
+        "trace_id": "331ed19fc009"
+      },
+      "latency_ms": 18851.2,
+      "knowledge_used": true,
+      "answer_preview": "转专业的具体条件是由学校和学院每年根据实际情况制定的，**无法将某个学院的规则泛化为全校统一标准**。下面是根据学校公开规定整理的通用原则与流程，供你参考：\n\n## 一、基本资格与政策框架\n\n转专业主要依据学校《大类招生学生分流转专业实施办法（试行）》及各学院年度实施方案执行。通常涉及以下几点：\n\n1. **申请时间**：一般在每学年的特定时间段集中办理（如大一或大二学年），具体时间以当年学校教务处的转专业通知为准。\n2. **报名渠道**：通过教务系统或一站式服务平台的转专"
+    },
+    {
+      "case_id": "campus_shuttle",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "query_campus_info"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1111,
+        "output_tokens": 405,
+        "trace_id": "2f5d191330f4"
+      },
+      "latency_ms": 3799.5,
+      "knowledge_used": false,
+      "answer_preview": "我为您查询到了校车信息，以下是结果：\n\n## 🚌 南校区 → 北校区 校车班次\n\n今天是 **2026年8月9日（周日）**，属于双休日时段，班次信息如下：\n\n| 项目 | 信息 |\n|------|------|\n| **线路** | 南校区 → 北校区（教工班车·双休/节假日） |\n| **下一班发车** | **18:00**（距现在约 76 分钟） |\n| **乘车点** | 南校区乘车点 |\n| **行程约需** | 约 60 分钟 |\n| **当日末班车** | "
+    },
+    {
+      "case_id": "campus_weather",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "get_weather"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 284,
+        "output_tokens": 265,
+        "trace_id": "c7b5d5bcc8f1"
+      },
+      "latency_ms": 3270.4,
+      "knowledge_used": false,
+      "answer_preview": "根据天气数据，我来为您播报明天（8月10日，周一）南校区的天气情况：\n\n### 🌦️ 明天南校区天气\n- **天气状况**：**雷阵雨**\n- **气温**：最高约 **31℃**，最低约 **22℃**\n- **降水概率**：约 **43%**\n- **最大风速**：约 7.0 km/h\n\n### 💡 温馨提示\n- 明天有雷阵雨，且降水概率不低（43%），建议**出门随身带伞**。\n- 温度在 22~31℃ 之间，比较闷热潮湿，可穿轻薄透气的衣物。\n- 明天是周一，往返教学"
+    },
+    {
+      "case_id": "library_followup",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "classifier_stage": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "history",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 282,
+        "output_tokens": 235,
+        "trace_id": "129d4a0d34b2"
+      },
+      "latency_ms": 2340.7,
+      "knowledge_used": false,
+      "answer_preview": "您是想问图书馆的关门时间吧。考虑到您刚才问的是南校区（逸夫图书馆），这里给您梳理一下不同区域的关闭时段：\n\n- **主阅览区**：周一至周日 **22:30** 闭馆\n- **图书借还处**：工作日 22:30，周末 22:30\n- **A 区 2-3 层自习室**：**23:00** 关闭（需小程序预约座位）\n- **B1 层自习室**：**24 小时开放**（凭校园卡进入）\n- **研修间**：**22:00** 关闭\n\n一句话总结：**如果您是去普通自习，一般晚上 22"
+    },
+    {
+      "case_id": "parallel_request",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "parallel",
+        "profile": "deep",
+        "classifier_stage": "pattern",
+        "complexity_reason": "显式复合语义涉及多个校园领域",
+        "agents": [
+          "academic",
+          "it_help"
+        ],
+        "tools": [
+          "knowledge_search",
+          "diagnose_it_issue"
+        ],
+        "tasks": [
+          {
+            "id": "t0",
+            "agent": "academic",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 29347.4
+          },
+          {
+            "id": "t1",
+            "agent": "it_help",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 29347.4
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 7354,
+        "output_tokens": 2562,
+        "trace_id": "9f6a833f41c9"
+      },
+      "latency_ms": 48550.3,
+      "knowledge_used": true,
+      "answer_preview": "关于你的两个问题，我帮你整合梳理如下。\n\n---\n\n## 一、教务系统登录不上 🔧\n\n目前是暑假期间（距 9 月 7 日开学还有一段时间），教务系统可能处于维护或访问高峰，建议从以下几个方面逐项排查：\n\n1. **先确认是不是统一身份认证的问题**  \n   用学号登录其他校内系统（如一网通办、校园网自助服务）看是否正常。  \n   - 如果多个系统都登不上 → 很可能是统一身份认证的密码或账号状态异常，去认证页面点「忘记密码」通过手机号/邮箱重置。  \n   - 如果只有教"
+    },
+    {
+      "case_id": "dependent_dag",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "dag": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "dependent",
+        "profile": "deep",
+        "classifier_stage": "pattern",
+        "complexity_reason": "日程、办事与待办存在前后依赖",
+        "agents": [
+          "personal",
+          "affairs"
+        ],
+        "tools": [
+          "query_schedule",
+          "knowledge_search",
+          "query_affairs_process",
+          "query_todo",
+          "add_todo"
+        ],
+        "tasks": [
+          {
+            "id": "t1",
+            "agent": "personal",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 21694.0
+          },
+          {
+            "id": "t2",
+            "agent": "affairs",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 21694.0
+          },
+          {
+            "id": "t3",
+            "agent": "personal",
+            "depends_on": [
+              "t1",
+              "t2"
+            ],
+            "status": "success",
+            "duration_ms": 16983.6
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 6709,
+        "output_tokens": 3230,
+        "trace_id": "224e8d77b2f7"
+      },
+      "latency_ms": 54626.5,
+      "knowledge_used": true,
+      "answer_preview": "好的，帮你整理好了，明天是个很合适的补办时机 ✨\n\n---\n\n## 📅 明天下午有空吗？\n\n**有空，下午完全空闲。** 明天（8 月 10 日周一）处于暑假期间，没有正式课程安排[affairs]，而根据你的课表，上午 08:30–10:05 有一节《计算机网络》，10:05 之后全天无课[personal]，下午时间很充裕。\n\n---\n\n## 🪪 校园卡补办行动指南\n\n### 🔹 所需材料\n- 本人有效身份证件\n- 可验证的校园身份信息（如学号）[affairs]\n\n##"
+    },
+    {
+      "case_id": "guard_injection",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 403,
+      "latency_ms": 3.1519000185653567
+    },
+    {
+      "case_id": "personal_schedule",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_schedule",
+          "query_todo"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1542,
+        "output_tokens": 320,
+        "trace_id": "83148a1c859f"
+      },
+      "latency_ms": 3419.8,
+      "knowledge_used": false,
+      "answer_preview": "今天是 **2026年8月9日（周日）**，我帮你查到了当天的课程安排：\n\n## 📅 今日课程（第 0 周·周日）\n\n| 课程 | 时间 | 地点 |\n|------|------|------|\n| **智能系统导论** | 10:10 – 11:55 | 南校区B楼-203 |\n\n这门课目前已经结束了（现在16:45，上课中）。今天是周日，课程安排比较轻松。\n\n---\n\n顺便帮你梳理一下近期的**待办和DDL**（供参考）：\n\n- 📌 **补办校园卡**（待办）— 截止明"
+    },
+    {
+      "case_id": "personal_todo",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_todo"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1406,
+        "output_tokens": 233,
+        "trace_id": "72517b9e41a5"
+      },
+      "latency_ms": 2630.9,
+      "knowledge_used": false,
+      "answer_preview": "我查到了你目前 **3 项未完成**的待办👇\n\n**📅 待办任务**\n1. **补办校园卡**（待办）\n   - 截止：明天（8月10日）\n   - 步骤：① 先在一网通办 (ehall.xidian.edu.cn) 挂失 ② 带身份证+学号去一卡通服务中心办理\n   *(另有 id=24 的一条重复「补办校园卡」待办无截止时间，建议合并)*\n\n**📌 截止任务（DDL）**\n2. **提交 Agent 实验报告**（ddl）\n   - 截止：2026-08-14，**还剩 "
+    },
+    {
+      "case_id": "weighted_score",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "calculate_weighted_score"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1036,
+        "output_tokens": 346,
+        "trace_id": "e259130b196a"
+      },
+      "latency_ms": 3552.2,
+      "knowledge_used": false,
+      "answer_preview": "你这三门课的加权学分成绩如下：\n\n| 课程 | 学分 | 成绩 | 加权贡献 |\n|------|------|------|----------|\n| 高等数学 | 4 | 90 | 360 |\n| 大学物理 | 3 | 84 | 252 |\n| 英语 | 2 | 92 | 184 |\n| **合计** | **9** | — | **796** |\n\n**加权成绩 = 796 ÷ 9 ≈ 88.44 分**\n\n几点提醒：\n- 这是按 **Σ(课程成绩×课程学分)/Σ课程学"
+    },
+    {
+      "case_id": "affairs_card",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "affairs",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "affairs"
+        ],
+        "tools": [
+          "query_affairs_process",
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1909,
+        "output_tokens": 357,
+        "trace_id": "65618bd545a4"
+      },
+      "latency_ms": 4640.8,
+      "knowledge_used": true,
+      "answer_preview": "根据检索到的信息，以下是校园卡补办的具体指引：\n\n## 校园卡挂失与补办流程\n\n**所需材料：**\n1. 本人有效身份证件\n2. 可验证的校园身份信息\n\n**办理步骤：**\n1. **先挂失**：在校园卡服务渠道（手机端 App、圈存机或一网通办等）先完成挂失，防止卡内余额被盗刷。\n2. **查询办理点**：通过学校一网通办（ehall.xidian.edu.cn）或校园卡服务入口确认当前校区补卡窗口及开放时间。\n3. **现场办理**：携带材料到指定窗口办理，确认旧卡失效。"
+    },
+    {
+      "case_id": "it_network",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "it_help"
+        ],
+        "tools": [
+          "diagnose_it_issue"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 877,
+        "output_tokens": 499,
+        "trace_id": "06716997a6ee"
+      },
+      "latency_ms": 4888.7,
+      "knowledge_used": false,
+      "answer_preview": "诊断树已经给出了排查方向。结合诊断结果，你的情况是\"校园网已认证但无法访问网页\"，我从易到难帮你梳理一下排查步骤：\n\n## 排查步骤（从易到难）\n\n**第 1 步：关闭代理、VPN 和私人 DNS**\n- 很多同学电脑上装了代理软件（如流量转发工具）或私人 DNS，可能影响上网。\n- 检查并关闭系统代理、VPN类软件，将 DNS 改回\"自动获取\"，再重新打开网页测试。\n\n**第 2 步：确认系统时间与时区正确**\n- 如果你的电脑时间不对（差得太多），会影响 HTTPS 证书"
+    },
+    {
+      "case_id": "academic_policy",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "citation": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 2964,
+        "output_tokens": 1493,
+        "trace_id": "3b2f94557ecf"
+      },
+      "latency_ms": 29898.4,
+      "knowledge_used": true,
+      "answer_preview": "关于西电转专业，并没有一个放之四海而皆准的\"标准条件清单\"。学校层面有一个总体的《大类招生学生分流转专业实施办法（试行）》，但具体的接收条件、名额、考试方式、成绩要求等，**完全由各学院在每年发布的实施方案中自行规定**。所以，**千万不能把某个学院的经验当作全校规则**。\n\n下面我结合学校公开的流程和一般性常识，为你梳理一下转专业通常需要关注的几个核心要点。\n\n### 📋 转专业的一般流程\n\n根据已公开的学院方案示例，转专业通常遵循以下流程：\n\n1.  **关注通知，找准目"
+    },
+    {
+      "case_id": "campus_shuttle",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "query_campus_info"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1083,
+        "output_tokens": 322,
+        "trace_id": "27645433eb62"
+      },
+      "latency_ms": 3427.3,
+      "knowledge_used": false,
+      "answer_preview": "根据查询，今天（2026-08-09，周日，属于双休日/节假日班次），从南校区到北校区方向的校车信息如下：\n\n## 🚌 南校区 → 北校区 下一班校车\n\n- **发车时间：18:00**\n- 距现在还有 **约 73 分钟**（当前 16:46）\n- **乘车点**：南校区乘车点\n- **车程**：约 60 分钟\n- **班次类型**：双休日/节假日教工班车（今日适用）\n\n**温馨提示：**\n- 今天适逢周日（非工作日），校车按**双休/节假日班次**运行，班次比工作日少，需"
+    },
+    {
+      "case_id": "campus_weather",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "get_weather"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 346,
+        "output_tokens": 314,
+        "trace_id": "7fa31e4a4b20"
+      },
+      "latency_ms": 4948.5,
+      "knowledge_used": false,
+      "answer_preview": "根据天气数据，为您查询到明天（8月10日，周一）南校区的天气情况：\n\n**明天南校区天气（8月10日）**\n- 🌦️ 天气：**雷阵雨**\n- 🌡️ 温度：最高 **31.3℃**，最低 **22.3℃**\n- ☔ 降水概率：**43%**\n- 💨 最大风速：7.0 km/h\n\n**温馨提示：**\n- 明天有雷阵雨且降水概率较高，建议出门**随身携带雨伞**。\n- 早晚温差约9℃，午间较热，可穿轻薄衣物，早晚可加件薄外套。\n- 雨天路滑，南校区出行注意安全，露天场馆活动可能受"
+    },
+    {
+      "case_id": "library_followup",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "classifier_stage": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "history",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "query_campus_info"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 837,
+        "output_tokens": 316,
+        "trace_id": "eb4014f45147"
+      },
+      "latency_ms": 3495.2,
+      "knowledge_used": false,
+      "answer_preview": "您问的是咱们南校区图书馆各区域的闭馆时间吧？帮您核对如下：\n\n## 🕐 南校区图书馆（逸夫图书馆）各区域关门时间\n\n| 区域 | 关门时间 |\n|------|---------|\n| **主阅览区** | 22:30 |\n| **图书借还处** | 22:30 |\n| **A区2-3层自习室** | 23:00（需预约座位） |\n| **研修间** | 22:00（需预约） |\n| **B1层自习室** | **24小时**全天开放（凭校园卡进入） |\n| **特藏文献中心"
+    },
+    {
+      "case_id": "parallel_request",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "parallel",
+        "profile": "deep",
+        "classifier_stage": "pattern",
+        "complexity_reason": "显式复合语义涉及多个校园领域",
+        "agents": [
+          "academic",
+          "it_help"
+        ],
+        "tools": [
+          "knowledge_search",
+          "diagnose_it_issue"
+        ],
+        "tasks": [
+          {
+            "id": "t0",
+            "agent": "academic",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 35512.4
+          },
+          {
+            "id": "t1",
+            "agent": "it_help",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 35512.4
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 8518,
+        "output_tokens": 3046,
+        "trace_id": "c14d2d4275bd"
+      },
+      "latency_ms": 50937.0,
+      "knowledge_used": true,
+      "answer_preview": "好的，我帮你把登录排查和选课规则合并成一份连贯的回复：\n\n---\n\n## 一、教务系统登录不上\n\n这个问题比较常见，建议按以下顺序逐一排查：\n\n1. **先确认统一身份认证是否正常**  \n   教务系统使用学校的**统一身份认证**（账号通常是学号，密码与校园网/WiFi 一致）[1]。可以先试试访问一网通办、校园网自助服务等其他系统：  \n   - 其他系统也登不上 → 说明是**统一身份认证本身有问题**，可能是密码错误或账号锁定。在一站式门户登录页面点「忘记密码」，按"
+    },
+    {
+      "case_id": "dependent_dag",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "dag": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "dependent",
+        "profile": "deep",
+        "classifier_stage": "pattern",
+        "complexity_reason": "日程、办事与待办存在前后依赖",
+        "agents": [
+          "personal",
+          "affairs"
+        ],
+        "tools": [
+          "query_schedule",
+          "query_todo",
+          "knowledge_search",
+          "query_affairs_process",
+          "complete_todo",
+          "add_todo"
+        ],
+        "tasks": [
+          {
+            "id": "t1",
+            "agent": "personal",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 25263.2
+          },
+          {
+            "id": "t2",
+            "agent": "affairs",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 25263.2
+          },
+          {
+            "id": "t3",
+            "agent": "personal",
+            "depends_on": [
+              "t1",
+              "t2"
+            ],
+            "status": "success",
+            "duration_ms": 28233.5
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 8339,
+        "output_tokens": 4262,
+        "trace_id": "fbfe999f2a85"
+      },
+      "latency_ms": 62889.8,
+      "knowledge_used": true,
+      "answer_preview": "明天下午没有课，时间很充裕，正好可以去补办校园卡。\n\n📋 你的课程和待办整理如下：\n\n- **上午 08:30–10:05** 有计算机网络课（南校区A楼-101），10:05 后就是自由时间。\n- 待办清单里已有一条整理好流程的 **#23**（① 先在一网通办挂失 ② 带身份证+学号去一卡通服务中心），明天截止，也为你新增了 **#25** 🆕，安排在 **明天 14:00** 出发办理，并带好身份证+学号，提前挂失。\n\n> ⚠️ **暑假提醒**：当前是暑假期间（教学周"
+    },
+    {
+      "case_id": "guard_injection",
+      "strategy": "adaptive",
+      "ok": true,
+      "status": 403,
+      "latency_ms": 2.5825999910011888
+    },
+    {
+      "case_id": "personal_schedule",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": false,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_schedule"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 1416,
+        "output_tokens": 374,
+        "trace_id": "81b890e0d13f"
+      },
+      "latency_ms": 8486.3,
+      "knowledge_used": false,
+      "answer_preview": "今天（2026年8月9日，周日）你有一门课，不过已经上完啦：\n\n| 课程 | 时间 | 地点 | 教学周 |\n|------|------|------|--------|\n| **智能系统导论** | 10:10 - 11:55 | 南校区B楼-203 | 第 0 周 |\n\n现在是下午 16:48，这门课上午就结束了，今天剩下的时间没有其他课程安排。\n\n> 📌 提醒一下，目前是第 0 周，新学期正式开学日是 **2026年9月7日**，暑假期间课表比较轻松。需要我帮你查查明"
+    },
+    {
+      "case_id": "personal_todo",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_todo"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1440,
+        "output_tokens": 337,
+        "trace_id": "bad1c6723a5c"
+      },
+      "latency_ms": 3996.0,
+      "knowledge_used": false,
+      "answer_preview": "您目前有 **3 项**未完成的待办事项：\n\n### 📋 待办（Todo）\n1. **补办校园卡**（今天记的）\n   - 内容：①先在一网通办(ehall.xidian.edu.cn)挂失 ②带身份证+学号去一卡通服务中心办理\n   - 截止：明晚 **2026-08-10**（还剩 **1 天**）\n\n2. **【下午】去一卡通服务中心补办校园卡**\n   - 内容：带身份证+学号，提前在一网通办挂失\n   - 时间：明天下午 **14:00（2026-08-10）**\n"
+    },
+    {
+      "case_id": "weighted_score",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "calculate_weighted_score"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1158,
+        "output_tokens": 288,
+        "trace_id": "7a970e7faa9e"
+      },
+      "latency_ms": 4071.6,
+      "knowledge_used": false,
+      "answer_preview": "根据你提供的三门课程成绩，加权学分成绩计算结果如下：\n\n| 课程 | 学分 | 成绩 | 加权贡献 |\n|------|------|------|----------|\n| 高等数学 | 4 | 90 | 360 |\n| 大学物理 | 3 | 84 | 252 |\n| 英语 | 2 | 92 | 184 |\n\n**加权学分成绩 = (360+252+184) / 9 = 88.44 分**\n\n需要注意：\n\n- 这是按 **Σ(成绩×学分)/Σ学分** 计算的加权学分成绩，*"
+    },
+    {
+      "case_id": "affairs_card",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": false,
+        "profile": true,
+        "mode": true,
+        "tools": false
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1918,
+        "output_tokens": 377,
+        "trace_id": "ec14bd0b3124"
+      },
+      "latency_ms": 6209.1,
+      "knowledge_used": true,
+      "answer_preview": "根据检索到的信息，结合校园生活向导的规范，给你完整的补办指引：\n\n## 校园卡补办指引\n\n**建议先挂失，再补办**，以防卡被盗刷。\n\n**第一步：挂失（建议尽快）**\n- 手机端：登录校园卡相关小程序/App，进入「挂失」\n- 圈存机：在校内圈存机自助操作挂失\n\n**第二步：补办所需材料**\n- **本人学生证**或**身份证**（原件）\n- 如代办，一般需双方证件，具体以服务点要求为准\n\n**第三步：去校园卡服务点办理**\n- 地点：南北校区均有校园卡服务点（具体位置可留"
+    },
+    {
+      "case_id": "it_network",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "it_help"
+        ],
+        "tools": [
+          "diagnose_it_issue",
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 938,
+        "output_tokens": 569,
+        "trace_id": "c3469a93e08f"
+      },
+      "latency_ms": 6700.4,
+      "knowledge_used": true,
+      "answer_preview": "我已经拿到诊断结果了，以下是你可操作的排查步骤。\n\n## 排查步骤（从易到难）\n\n### 1. 关闭代理、VPN 和私人 DNS\n这是最常见的原因。如果你电脑上开过代理软件（如 Clash、V2Ray）或 VPN、自定义 DNS，它们会干扰网络。请：\n- 关闭所有代理/VPN 软件\n- 将 DNS 改为\"自动获取\"（或 223.5.5.5）\n- 重启浏览器再试\n\n### 2. 确认系统时间与时区是否正确\n认证协议依赖时间戳。如果时间不对会导致认证通过却无法上网。确认系统时间、"
+    },
+    {
+      "case_id": "academic_policy",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "citation": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 2646,
+        "output_tokens": 807,
+        "trace_id": "e27d57c0272f"
+      },
+      "latency_ms": 18573.6,
+      "knowledge_used": true,
+      "answer_preview": "根据检索结果，西电转专业的条件**不是全校统一的**，而是由各个学院分别制定实施方案，每年也可能有所调整。以下是基于公开资料的说明：\n\n---\n\n## 西电转专业基本框架\n\n### 📋 政策依据\n转专业工作依据学校 **《大类招生学生分流转专业实施办法（试行）》** 及当年的学校通知执行，各学院在此基础上制定本学院的接收方案。\n\n### 🔄 一般流程\n\n1. **关注通知**：留意学校和目标学院在教务系统或一站式服务平台发布的转专业通知。\n2. **系统报名**：在规定时间内"
+    },
+    {
+      "case_id": "campus_shuttle",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "query_campus_info"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1083,
+        "output_tokens": 300,
+        "trace_id": "b0be882b05fe"
+      },
+      "latency_ms": 4228.9,
+      "knowledge_used": false,
+      "answer_preview": "我为您查询到南校区到北校区的校车信息如下：\n\n### 🚌 南校区 → 北校区 下一班校车\n\n- **发车时间**：**18:00**（今天 2026-08-09）\n- **距离现在**：约 **70 分钟**后发车\n- **乘车地点**：南校区乘车点\n- **预计车程**：约 60 分钟\n\n> 📌 今天是周日，属于**双休日班次**。该班次为**今天末班车**（18:00 是当天最后一班，原 19:30 班次自 2025.2.15 起已调整为 18:00）。\n\n由于周末/节假"
+    },
+    {
+      "case_id": "campus_weather",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": false,
+        "profile": true,
+        "mode": true,
+        "tools": false
+      },
+      "domain": "other",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 815,
+        "output_tokens": 144,
+        "trace_id": "e50d2a87c88e"
+      },
+      "latency_ms": 3024.2,
+      "knowledge_used": false,
+      "answer_preview": "我需要先说明一下：我主要是学业支持助手，用于解答选课、考试、重修、保研等学业问题，并没有查询实时天气的功能或数据来源。\n\n不过我可以帮你看看明天是什么日子，方便你做规划：\n\n- **今天**是 2026年8月9日（周日）\n- **明天**是 2026年8月10日（周一）\n\n目前正处于暑假期间（下学期 9月7日 才开学）。关于南校区的具体天气，建议你通过手机自带的天气应用，或“西安天气”等气象服务渠道查询，那会更准确。\n\n如果你有选课、成绩、保研等学业方面的问题，我非常乐意帮你"
+    },
+    {
+      "case_id": "library_followup",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": false,
+        "mode": true,
+        "tools": true,
+        "classifier_stage": false
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "query_campus_info"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 1815,
+        "output_tokens": 652,
+        "trace_id": "c400157933b1"
+      },
+      "latency_ms": 11547.8,
+      "knowledge_used": false,
+      "answer_preview": "南校区图书馆各区域的关门时间不太一样，帮你按区域列一下：\n\n| 区域 | 关门时间 | 备注 |\n|------|----------|------|\n| **主阅览区** | **22:30** | 每天一样，含周末 |\n| **图书借还处** | **22:30** | 周末时段（8:30 开门） |\n| **A区 2-3 层自习室** | **23:00** | 最晚关门的常规区域 |\n| **研修间** | **22:00** | 需提前预约 |\n| **B1 层 2"
+    },
+    {
+      "case_id": "parallel_request",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "parallel",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "显式复合语义涉及多个校园领域",
+        "agents": [
+          "academic",
+          "it_help"
+        ],
+        "tools": [
+          "knowledge_search",
+          "diagnose_it_issue"
+        ],
+        "tasks": [
+          {
+            "id": "t0",
+            "agent": "academic",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 31924.1
+          },
+          {
+            "id": "t1",
+            "agent": "it_help",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 31924.1
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 9306,
+        "output_tokens": 2814,
+        "trace_id": "b33ab6d6a724"
+      },
+      "latency_ms": 45622.5,
+      "knowledge_used": true,
+      "answer_preview": "好的，你的问题包含两个部分，我整合了教务系统和信息技术两个角度的信息，一起回复你。\n\n---\n\n## 一、教务系统登录不上\n\n可以从以下几个方向排查（按推荐顺序尝试）：\n\n1. **验证账号密码** — 西电教务系统使用**统一身份认证**，账号一般是学号，密码和校园网、一网通办一致。你可以先尝试登录其他校内系统（如一网通办）确认账号是否正常。如果认证系统也登不上，说明需要重置密码。[academic][it_help]\n\n2. **重置密码** — 在统一身份认证页面使用「"
+    },
+    {
+      "case_id": "dependent_dag",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "dag": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "dependent",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "日程、办事与待办存在前后依赖",
+        "agents": [
+          "personal",
+          "affairs"
+        ],
+        "tools": [
+          "query_schedule",
+          "knowledge_search",
+          "query_affairs_process",
+          "query_todo",
+          "add_todo"
+        ],
+        "tasks": [
+          {
+            "id": "t1",
+            "agent": "personal",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 18780.6
+          },
+          {
+            "id": "t2",
+            "agent": "affairs",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 18780.6
+          },
+          {
+            "id": "t3",
+            "agent": "personal",
+            "depends_on": [
+              "t1",
+              "t2"
+            ],
+            "status": "success",
+            "duration_ms": 16470.1
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 5458,
+        "output_tokens": 2948,
+        "trace_id": "4bc21e8451f3"
+      },
+      "latency_ms": 48399.4,
+      "knowledge_used": true,
+      "answer_preview": "好，帮你把情况合并清楚。\n\n---\n\n## 📅 明天（8月10日·周一）课程安排\n\n上午有一节课，**下午无课，完全空闲**。\n\n| 时间 | 课程 | 地点 |\n|------|------|------|\n| **08:30 - 10:05** | 计算机网络 | 南校区A楼-101 |\n| **下午** | ✅ 无课，完全空闲 | — |\n\n10:05 就下课了，下午整段空白，安排补办校园卡很合适。[personal]\n\n---\n\n## 🪪 补办校园卡所需信息\n\n| 项"
+    },
+    {
+      "case_id": "guard_injection",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 403,
+      "latency_ms": 2.8836000710725784
+    },
+    {
+      "case_id": "personal_schedule",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": false,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_schedule"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 1396,
+        "output_tokens": 346,
+        "trace_id": "0b93e456f293"
+      },
+      "latency_ms": 7013.7,
+      "knowledge_used": false,
+      "answer_preview": "根据你的课表，今天（2026年8月9日，周日）只有 **一门课**：\n\n| 课程 | 时间 | 地点 | 教学周 |\n|------|------|------|--------|\n| 📘 **智能系统导论** | 10:10 - 11:55 | 南校区B楼-203 | 第 0 周 |\n\n不过现在是下午 16:51，这门课已经在上午结束了。今天接下来没有其他课程安排，可以自由安排时间~\n\n> 💡 目前还处于 **第 0 周**（正式学期从 9 月 7 日开始），这可能是暑期或"
+    },
+    {
+      "case_id": "personal_todo",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_todo",
+          "query_ddl"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1599,
+        "output_tokens": 361,
+        "trace_id": "b262ab87b5b1"
+      },
+      "latency_ms": 3895.0,
+      "knowledge_used": false,
+      "answer_preview": "为您查询到以下**未完成待办**（共 4 项）：\n\n### 📝 补办校园卡相关（3 项）\n| 事项 | 截止时间 | 说明 |\n|------|---------|------|\n| ① 一网通办挂失 + 带证件办理 | **明日 8-10** | 需先挂失，再带**身份证+学号**去一卡通服务中心 |\n| ② 下午去一卡通服务中心补办 | **明日 14:00** | 同上 |\n| 补办校园卡（时间未定） | — | 待补充具体时间 |\n\n> 💡 这两条补办待办内容相似，看"
+    },
+    {
+      "case_id": "weighted_score",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "calculate_weighted_score"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1030,
+        "output_tokens": 292,
+        "trace_id": "e17cded1dfb7"
+      },
+      "latency_ms": 2995.2,
+      "knowledge_used": false,
+      "answer_preview": "根据你提供的三门课程，加权学分成绩计算结果如下：\n\n| 课程 | 学分 | 成绩 | 加权贡献 |\n|------|------|------|----------|\n| 高等数学 | 4 | 90 | 360 |\n| 大学物理 | 3 | 84 | 252 |\n| 英语 | 2 | 92 | 184 |\n| **合计** | **9** | — | **796** |\n\n**加权学分成绩 = 796 ÷ 9 ≈ 88.44 分**\n\n需要说明的是，这是按公式 Σ(成绩×学分"
+    },
+    {
+      "case_id": "affairs_card",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": false,
+        "profile": true,
+        "mode": true,
+        "tools": false
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 2672,
+        "output_tokens": 399,
+        "trace_id": "90768286c835"
+      },
+      "latency_ms": 4995.7,
+      "knowledge_used": true,
+      "answer_preview": "我没有检索到校园卡补办材料的具体细节，下面结合通用指引给你一份可执行的说明（具体以校园卡服务点现场为准）。\n\n---\n\n## 校园卡补办指引\n\n**第一步：先挂失**\n校园卡丢失后应尽快挂失，防止被盗刷。挂失方式一般有：\n- **手机端/小程序**：登录校园卡相关应用自助挂失；\n- **圈存机**：在校内圈存机上操作挂失。\n\n**第二步：准备材料后到服务点补办**\n- 所需材料通常为 **学生证**（或身份证/一卡通证明本人身份的证件）；\n- 前往**校园卡服务点**办理（南"
+    },
+    {
+      "case_id": "it_network",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "it_help"
+        ],
+        "tools": [
+          "diagnose_it_issue"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 998,
+        "output_tokens": 524,
+        "trace_id": "bb58c9ed9733"
+      },
+      "latency_ms": 5204.4,
+      "knowledge_used": false,
+      "answer_preview": "根据诊断结果，我帮你梳理一下排查步骤。\n\n## 校园网已认证但网页打不开的排查\n\n认证成功但上不了网，通常是**本地网络配置问题**，先按从易到难的顺序排查：\n\n**① 关闭代理 / VPN / 私人 DNS**\n- 检查浏览器是否设置了代理，或是否开着 VPN、加速器（如 Clash、Watt Toolkit 等）\n- 检查系统是否设置了自定义 DNS（如 8.8.8.8 等）\n- 建议全部改回默认、直连后再试\n\n**② 确认系统时间与时区正确**\n- 打开系统设置，确认日"
+    },
+    {
+      "case_id": "academic_policy",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "citation": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 4587,
+        "output_tokens": 999,
+        "trace_id": "32c22ad38e68"
+      },
+      "latency_ms": 19585.3,
+      "knowledge_used": true,
+      "answer_preview": "关于西电转专业的条件，核心结论是：**没有全校统一的硬性条件，具体接收条件、名额、考核方式由各学院在年度实施方案中自行规定。**\n\n---\n\n## 📋 政策依据\n\n西电转专业主要依据学校层面的 **《大类招生学生分流转专业实施办法（试行）》** 及各学院每年制定的实施方案执行。\n\n## 🔄 一般流程\n\n根据公开的实施方案示例，转专业大致分为以下几步：\n\n1. **报名**：学生在学校规定时间内，通过**教务系统**或**一站式服务平台**的转专业模块进行报名。\n2. **资格"
+    },
+    {
+      "case_id": "campus_shuttle",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "query_campus_info"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 309,
+        "output_tokens": 289,
+        "trace_id": "7375cfa2e18c"
+      },
+      "latency_ms": 3423.7,
+      "knowledge_used": false,
+      "answer_preview": "为您查询到南校区到北校区下一班校车信息如下：\n\n🚌 **南校区→北校区校车**\n\n- **下一班发车时间：18:00**\n- **距离发车：约 68 分钟**\n- **乘车地点：南校区乘车点**\n- **行车时长：约 60 分钟**\n- **班次类型：双休/节假日班车（教工班车）**\n\n需要特别提醒您的是：今天是**周日（2026-08-09）**，且处于寒暑假期间，校车属于**双休日/节假日/寒暑假班次**，班次相对较少。此趟 18:00 的发车是当天**末班车**。\n\n>"
+    },
+    {
+      "case_id": "campus_weather",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": false,
+        "profile": true,
+        "mode": true,
+        "tools": false
+      },
+      "domain": "other",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 939,
+        "output_tokens": 178,
+        "trace_id": "674c71d5be36"
+      },
+      "latency_ms": 2548.8,
+      "knowledge_used": true,
+      "answer_preview": "我检索了校园知识库，没有找到关于南校区天气的相关信息，所以无法给出明天的天气预报。\n\n建议你通过以下方式获取实时天气信息：\n- 手机自带天气应用，添加\"西安\"或\"西安电子科技大学南校区\"（位于西安市长安区）查看\n- 中国天气网、墨迹天气等天气应用\n\n当前日期是 2026年8月9日（周日），明天是8月10日（周一）。如果你有其他学业方面的问题（选课、成绩、考试安排等），随时可以问我。"
+    },
+    {
+      "case_id": "library_followup",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": false,
+        "mode": true,
+        "tools": true,
+        "classifier_stage": false
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 1117,
+        "output_tokens": 448,
+        "trace_id": "ef4e6ff8ed0a"
+      },
+      "latency_ms": 8125.9,
+      "knowledge_used": false,
+      "answer_preview": "基于上一轮的信息，南校区图书馆（逸夫图书馆）不同区域关门时间不一样：\n\n| 区域 | 关门时间 |\n|------|----------|\n| **主阅览区** | **22:30** |\n| **图书借还处** | 周一至周五 22:30 / 周末 22:30 |\n| **A区2-3层自习室** | **23:00** |\n| **研修间** | **22:00** |\n| **B1层 24小时自习室** | **不关门**（全天开放） |\n| **特藏文献中心** | 周"
+    },
+    {
+      "case_id": "parallel_request",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "parallel",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "显式复合语义涉及多个校园领域",
+        "agents": [
+          "academic",
+          "it_help"
+        ],
+        "tools": [
+          "knowledge_search",
+          "diagnose_it_issue"
+        ],
+        "tasks": [
+          {
+            "id": "t0",
+            "agent": "academic",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 27984.8
+          },
+          {
+            "id": "t1",
+            "agent": "it_help",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 27984.8
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 7495,
+        "output_tokens": 2550,
+        "trace_id": "35ea60b18611"
+      },
+      "latency_ms": 48228.4,
+      "knowledge_used": true,
+      "answer_preview": "[academic]\n好的，我来同时回答你这两个问题。\n\n---\n\n## 一、教务系统登录不上\n\n目前的知识库里没有检索到西电教务系统登录问题的专项解决方案。不过根据一般经验，你可以按下面的步骤排查：\n\n1. **确认登录入口是否正确**：西电教务系统一般通过学校官网的「教务系统」入口或统一身份认证平台进入，确认你没有进错地址。\n2. **检查账号密码**：教务系统通常使用统一身份认证账号（学号）和密码。如果忘记密码，可以在统一身份认证页面点击「忘记密码」通过绑定的手机或邮箱"
+    },
+    {
+      "case_id": "dependent_dag",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "dag": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "dependent",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "日程、办事与待办存在前后依赖",
+        "agents": [
+          "personal",
+          "affairs"
+        ],
+        "tools": [
+          "query_schedule",
+          "knowledge_search",
+          "query_affairs_process",
+          "query_todo",
+          "query_ddl",
+          "add_todo"
+        ],
+        "tasks": [
+          {
+            "id": "t1",
+            "agent": "personal",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 17879.5
+          },
+          {
+            "id": "t2",
+            "agent": "affairs",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 17879.5
+          },
+          {
+            "id": "t3",
+            "agent": "personal",
+            "depends_on": [
+              "t1",
+              "t2"
+            ],
+            "status": "success",
+            "duration_ms": 16507.1
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 6706,
+        "output_tokens": 2810,
+        "trace_id": "10b32bd07d6a"
+      },
+      "latency_ms": 46510.2,
+      "knowledge_used": true,
+      "answer_preview": "明天下午没有课，完全有空，正好可以把时间用来补办校园卡[1][2][3]。  \n\n你需要先在线上完成挂失，通过一网通办 ehall.xidian.edu.cn 或自助终端操作，保障资金安全；然后登录一网通办查询所在校区的补卡窗口位置与当天开放时间；明天下午带上本人有效身份证件和校园身份信息，直接前往现场办理[2]。暑假期间窗口时间可能有调整，建议今晚就完成挂失和查询[2][3]。  \n\n待办这边，已新增一条“补办校园卡”并安排在明天下午[1]，目前记录中还有 #25（明天14"
+    },
+    {
+      "case_id": "guard_injection",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 403,
+      "latency_ms": 3.8262000307440758
+    },
+    {
+      "case_id": "personal_schedule",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": false,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_schedule"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 1395,
+        "output_tokens": 470,
+        "trace_id": "7c51ca5e84a2"
+      },
+      "latency_ms": 8589.9,
+      "knowledge_used": false,
+      "answer_preview": "## 📅 今天（2026年8月9日 周日）的课程\n\n| 时间 | 课程 | 地点 | 状态 |\n|------|------|------|------|\n| 10:10 - 11:55 | **智能系统导论** | 南校区B楼-203 | ✅ 已结束 |\n\n今天只有一门课——**智能系统导论**，不过上午 11:55 就已经结束了，现在（16:53）已经下课啦～\n\n---\n\n> ⚠️ 提醒：目前是**第 0 周**（暑假/预备周），正式学期要到 **2026年9月7日** "
+    },
+    {
+      "case_id": "personal_todo",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_todo"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1565,
+        "output_tokens": 386,
+        "trace_id": "964347f22b89"
+      },
+      "latency_ms": 4010.7,
+      "knowledge_used": false,
+      "answer_preview": "你目前有 **5 项未完成的待办**，我来帮你整理一下：\n\n### ⏰ 带截止时间的任务\n\n| 事项 | 类型 | 截止时间 | 剩余 |\n|------|------|---------|------|\n| 提交 Agent 实验报告 | DDL | 08-14 | 还剩 **5 天** |\n| 【下午】去一卡通服务中心补办校园卡（带身份证+学号，提前在一网通办挂失） | 待办 | 明天 08-10 14:00 | 还剩 1 天 |\n| 补办校园卡：①先在一网通办挂失 ②带"
+    },
+    {
+      "case_id": "weighted_score",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "calculate_weighted_score"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1030,
+        "output_tokens": 290,
+        "trace_id": "140e82020286"
+      },
+      "latency_ms": 2905.1,
+      "knowledge_used": false,
+      "answer_preview": "根据你提供的三门课程成绩，加权学分成绩计算结果如下：\n\n| 课程 | 学分 | 成绩 | 加权贡献 |\n|------|------|------|----------|\n| 高等数学 | 4 | 90 | 360 |\n| 大学物理 | 3 | 84 | 252 |\n| 英语 | 2 | 92 | 184 |\n\n**总学分数：** 9\n**加权学分成绩：** 88.44\n\n计算公式为 Σ(成绩×学分)/Σ学分 = (360+252+184)/9 = 88.44\n\n需要说明的是"
+    },
+    {
+      "case_id": "affairs_card",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": false,
+        "profile": true,
+        "mode": true,
+        "tools": false
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 889,
+        "output_tokens": 387,
+        "trace_id": "970376a619b7"
+      },
+      "latency_ms": 4540.7,
+      "knowledge_used": true,
+      "answer_preview": "我帮你查了一下，知识库里暂时没有校园卡补办的详细资料。不过根据学校校园卡业务的常规流程，给你梳理一下：\n\n## 校园卡补办指引\n\n**第一步：先挂失（重要！）**\n校园卡丢失后，建议第一时间挂失，避免被他人盗刷。挂失方式：\n- **手机端**：通过校园卡相关的手机应用或小程序操作挂失\n- **圈存机**：南北校区自助终端机上挂失\n\n**第二步：补办**\n携带材料到校园卡服务网点办理：\n- **所需材料**：学生证 **或** 身份证（用于身份核实）\n- **办理地点**：校园"
+    },
+    {
+      "case_id": "it_network",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "it_help"
+        ],
+        "tools": [
+          "diagnose_it_issue",
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1065,
+        "output_tokens": 632,
+        "trace_id": "fedf18b6e3d4"
+      },
+      "latency_ms": 7447.0,
+      "knowledge_used": true,
+      "answer_preview": "根据诊断树分析，你遇到的是\"校园网已认证但无法访问网页\"的典型情况。认证成功说明你已经通过认证网关，但网络数据没能正常转发，常见原因是本机代理/DNS 配置问题。请按以下步骤从易到难排查：\n\n## 第一步：关闭代理和 VPN（最常见原因）\n- **Windows/Mac**：打开系统设置 → 网络 → 代理，确保关闭所有代理（HTTP/SOCKS 代理）。\n- 同时**退出**你电脑上运行的 VPN 客户端（比如你之前可能装的校外访问工具），并把**浏览器代理插件**（Swi"
+    },
+    {
+      "case_id": "academic_policy",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "citation": true
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 4554,
+        "output_tokens": 1083,
+        "trace_id": "459d4ee8ba61"
+      },
+      "latency_ms": 21351.9,
+      "knowledge_used": true,
+      "answer_preview": "关于西电转专业，首先要明确一点：**转专业没有全校\"一刀切\"的硬性门槛，接收条件、名额、考核方式都由各学院每年分别制定**。不能拿某一个学院的方案直接套用到其他学院。\n\n以下是基于现有公开资料整理的通识框架：\n\n---\n\n## 一、政策依据\n\n西电转专业主要依据学校层面的 **《大类招生学生分流转专业实施办法（试行）》** 以及各学院当年发布的实施方案执行。每年细则可能微调，**必须以你申请那年目标学院的通知为准**。\n\n---\n\n## 二、共同流程（各学院基本一致）\n\n| "
+    },
+    {
+      "case_id": "campus_shuttle",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "query_campus_info"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1085,
+        "output_tokens": 328,
+        "trace_id": "c00f8f589dc1"
+      },
+      "latency_ms": 3667.3,
+      "knowledge_used": false,
+      "answer_preview": "为您查询到南校区到北校区校车的下一班信息：\n\n## 🚌 南校区 → 北校区校车\n\n**下一班发车时间：18:00**（约 **65分钟** 后发车）\n\n- **线路**：南校区→北校区（教工班车·双休/节假日班次）\n- **乘车点**：南校区乘车点\n- **预计车程**：约 60 分钟\n- **今日情况**：今天（2026-08-09，周日）为双休日班次，**末班车即 18:00 这一班**\n\n### 温馨提示\n- 今天是周日，执行的是**双休日/节假日/寒暑假班次**，班次"
+    },
+    {
+      "case_id": "campus_weather",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": false,
+        "profile": true,
+        "mode": true,
+        "tools": false
+      },
+      "domain": "other",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 939,
+        "output_tokens": 196,
+        "trace_id": "97d67ff84014"
+      },
+      "latency_ms": 2953.3,
+      "knowledge_used": true,
+      "answer_preview": "抱歉，我这边检索不到关于西电南校区天气的实时信息。天气预报属于实时数据，我无法直接获取，建议你通过以下方式查看：\n\n- **手机天气App**：如墨迹天气、中国天气等，定位\"西安\"即可查看南校区（位于长安区）的天气。\n- **学校相关平台**：注意校区位置不同，北校区在雁塔区，南校区在长安区，两处天气可能略有差异。\n\n另外提醒一下，今天（8月9日）是暑假期间，明天是8月10日周一，出行记得提前规划。有其他学业上的问题随时问我～"
+    },
+    {
+      "case_id": "library_followup",
+      "strategy": "always_llm_deep",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": false,
+        "mode": true,
+        "tools": true,
+        "classifier_stage": false
+      },
+      "domain": "campus_life",
+      "execution": {
+        "mode": "single",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "campus_life"
+        ],
+        "tools": [
+          "query_campus_info"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 1590,
+        "output_tokens": 788,
+        "trace_id": "49693dbf575e"
+      },
+      "latency_ms": 11938.0,
+      "knowledge_used": false,
+      "answer_preview": "南校区图书馆不同区域的关门时间不太一样，帮你梳理一下：\n\n| 区域 | 关门时间 |\n|------|----------|\n| 🏠 **主阅览区** | **22:30** |\n| 📚 图书借还处 | **22:30**（周末也到 22:30） |\n| ✏️ A区 2–3 层自习室 | **23:00** |\n| 💬 研修间 | **22:00** |\n| 🌙 B1 层 24 小时自习室 | **不关门**（全天开放） |\n| 📜 特藏文献中心 | **17:30**（仅工"
+    },
+    {
+      "case_id": "parallel_request",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "parallel",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "显式复合语义涉及多个校园领域",
+        "agents": [
+          "academic",
+          "it_help"
+        ],
+        "tools": [
+          "knowledge_search",
+          "diagnose_it_issue"
+        ],
+        "tasks": [
+          {
+            "id": "t0",
+            "agent": "academic",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 25504.2
+          },
+          {
+            "id": "t1",
+            "agent": "it_help",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 25504.2
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 5359,
+        "output_tokens": 2674,
+        "trace_id": "269b919ae7d6"
+      },
+      "latency_ms": 44355.9,
+      "knowledge_used": true,
+      "answer_preview": "[academic]\n关于选课规则和教务系统登录两个问题，知识库暂未检索到直接相关的最新文档，但我基于西电教务的公开常识为你梳理如下：\n\n---\n\n## 一、教务系统登录不上\n\n这类问题通常有几个常见原因，你可以逐一排查：\n\n1. **网络环境**：如果你在校外，教务系统一般需要通过 **VPN** 才能访问。确认 VPN 是否已连接且正常。\n\n2. **浏览器兼容性**：教务系统对浏览器有要求，推荐使用 **Chrome、Edge 或 IE 兼容模式**。可以先清除浏览器缓"
+    },
+    {
+      "case_id": "dependent_dag",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": true,
+        "dag": true
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "dependent",
+        "profile": "deep",
+        "classifier_stage": "llm",
+        "complexity_reason": "日程、办事与待办存在前后依赖",
+        "agents": [
+          "personal",
+          "affairs"
+        ],
+        "tools": [
+          "query_schedule",
+          "knowledge_search",
+          "query_affairs_process",
+          "add_todo"
+        ],
+        "tasks": [
+          {
+            "id": "t1",
+            "agent": "personal",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 17815.0
+          },
+          {
+            "id": "t2",
+            "agent": "affairs",
+            "depends_on": [],
+            "status": "success",
+            "duration_ms": 17815.0
+          },
+          {
+            "id": "t3",
+            "agent": "personal",
+            "depends_on": [
+              "t1",
+              "t2"
+            ],
+            "status": "success",
+            "duration_ms": 15640.1
+          }
+        ],
+        "model": "deepseek-v4-pro",
+        "input_tokens": 5164,
+        "output_tokens": 2877,
+        "trace_id": "e5dc84265aae"
+      },
+      "latency_ms": 45007.1,
+      "knowledge_used": true,
+      "answer_preview": "好的，我帮你梳理清楚了。\n\n## 明天下午没课，正好去补办校园卡\n\n根据你的课表，**明天（8月10日，周一）下午完全空闲**。上午只有一节 **08:30 - 10:05** 的“计算机网络”，地点在南校区A楼-101，下课之后就有大把时间了。\n\n---\n\n## 🪪 补办流程与准备\n\n补办校园卡需要按以下步骤来 [1]：\n\n| 步骤 | 做什么 |\n|------|--------|\n| **① 挂失** | 先登录[一网通办](https://ehall.xidian.e"
+    },
+    {
+      "case_id": "guard_injection",
+      "strategy": "always_llm_deep",
+      "ok": true,
+      "status": 403,
+      "latency_ms": 3.2328999368473887
+    },
+    {
+      "case_id": "weighted_score",
+      "strategy": "generic_rag",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": false
+      },
+      "domain": "academic",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "academic"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1124,
+        "output_tokens": 436,
+        "trace_id": "50b03897dbaf"
+      },
+      "latency_ms": 4964.8,
+      "knowledge_used": true,
+      "answer_preview": "关于加权平均成绩的具体计算方式，知识库中没有检索到对应的官方文档。我基于常见的加权平均计算公式帮你算一下，但需要明确说明：**这只是按通用公式的计算，并非学校官方认定的GPA/加权成绩，最终数值请以教务系统或学院公布的结果为准。**\n\n三门课程数据如下：\n- 高等数学：4学分，90分\n- 大学物理：3学分，84分\n- 英语：2学分，92分\n\n**加权平均成绩 = Σ(成绩 × 学分) ÷ Σ(学分)**\n\n先算加权总分：\n- 高数：90 × 4 = 360\n- 物理：84 ×"
+    },
+    {
+      "case_id": "affairs_card",
+      "strategy": "generic_rag",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": false
+      },
+      "domain": "affairs",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "affairs"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1897,
+        "output_tokens": 607,
+        "trace_id": "0745015a2098"
+      },
+      "latency_ms": 7379.0,
+      "knowledge_used": true,
+      "answer_preview": "我注意到知识库中暂时没有检索到专门的校园卡补办办事流程条目。不过根据校园卡常见管理规范，我为你整理了一份标准操作指引（具体以学校最新通知为准）：\n\n## 校园卡补办指引\n\n### 第一步：立即挂失（重要）\n- **渠道**：登录校园卡服务系统或微信公众号（如“西电校园卡”），或通过圈存机操作挂失。\n- **作用**：防止卡内余额被他人盗刷，挂失后原卡立即失效。\n\n### 第二步：准备材料\n一般不需要复杂材料，通常只需：\n- **本人有效身份证件**（身份证或学生证）\n- **"
+    },
+    {
+      "case_id": "it_network",
+      "strategy": "generic_rag",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": true,
+        "mode": true,
+        "tools": false
+      },
+      "domain": "it_help",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "单领域或无显式复合语义",
+        "agents": [
+          "it_help"
+        ],
+        "tools": [
+          "knowledge_search"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 657,
+        "output_tokens": 971,
+        "trace_id": "9c844b9265e4"
+      },
+      "latency_ms": 9683.8,
+      "knowledge_used": true,
+      "answer_preview": "知识库里暂时没有检索到校园网相关的具体排障文档，我这里基于标准的排障流程给你一份可执行的排查清单。\n\n你遇到的情况是**认证成功但上不了网**，这通常说明网络认证层面已经通过，问题往往出在**IP 分配、DNS 解析、或浏览器/系统网络配置**这几个环节。请按顺序排查：\n\n---\n\n### 第一步：先判断是\"完全不能上网\"还是\"个别网页打不开\"\n\n**目的**：区分是整体断网还是 DNS 问题。\n\n1. **试试能否访问 IP 地址**（绕过域名解析）：\n   - Windo"
+    },
+    {
+      "case_id": "dependent_dag",
+      "strategy": "single_agent",
+      "ok": false,
+      "status": 200,
+      "checks": {
+        "domain": true,
+        "profile": false,
+        "mode": false,
+        "tools": false,
+        "dag": false
+      },
+      "domain": "personal",
+      "execution": {
+        "mode": "single",
+        "profile": "fast",
+        "classifier_stage": "pattern",
+        "complexity_reason": "Benchmark 单 Agent 基线",
+        "agents": [
+          "personal"
+        ],
+        "tools": [
+          "query_schedule",
+          "add_todo"
+        ],
+        "tasks": [],
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1857,
+        "output_tokens": 422,
+        "trace_id": "9f15a08fcba1"
+      },
+      "latency_ms": 5077.5,
+      "knowledge_used": false,
+      "answer_preview": "已帮你安排好啦！给你汇总一下：\n\n## 📋 明日安排（8月10日 周一）\n\n**课程**\n- **计算机网络**：08:30–10:05，南校区 A楼-101\n\n**下午：空闲，已安排补办校园卡**\n- 待办「补办校园卡」已记录，时间设在 **明天 14:00** ✅\n\n---\n\n在补办校园卡之前，记得确认一下办卡地点和所需证件（通常需身份证），可以提前到综合服务大厅办理。\n\n需要我把提醒时间改到更合适的时间吗？或者你还有别的待办要一起记吗？"
+    }
+  ]
+}

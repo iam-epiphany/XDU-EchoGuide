@@ -1,212 +1,257 @@
-# EchoGuide — 西电校园智慧助手
+# EchoGuide · 西电校园智慧助手
 
-面向西安电子科技大学（西电）师生的校园智能问答助手。基于多 Agent 编排 + 三级记忆 + RAG 知识库架构，覆盖**学业支持、校园生活、校务咨询、IT 支持、个人助理**五大领域，并内置 **Agent 运行时安全治理**（EchoGuide Guard）与 **LLM-as-Judge 评测**体系。
+EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个可观测、可评测的 Agent Runtime。它不把所有请求都送进同一条昂贵链路：课表、校车、办事清单和故障诊断走 **DeepSeek V4 Flash 快速路径**；政策检索、低置信度问题和跨领域依赖任务进入 **DeepSeek V4 Pro 深度路径**。
 
-> 说明：本项目为团队**自主设计、自主开发**的原生项目，从零构建完整的校园智能问答链路：意图体系、Agent 角色、Skills、知识库、评测用例、前端界面均独立设计与实现。
+项目保留多 Agent、三级记忆、Agentic RAG、动态 Skills、MCP、语义缓存、Guard、Trace、Monitor 与 LLM-as-Judge，但每项技术都有明确触发条件和可复现实测，而不是停留在架构图中。
 
-📄 技术亮点详解：见 [`docs/技术亮点.md`](docs/技术亮点.md)（二维意图识别、Agentic RAG 检索优化、三级记忆、多 Agent 路由、动态 Skills、监控闭环、评测体系、EchoGuide Guard 安全治理等）
+## 三类核心任务
 
----
+| 任务 | 示例 | 系统行为 |
+|---|---|---|
+| 个人校园状态 | “我今天有什么课？”“还有哪些 DDL？” | 读取登录用户的课表、待办与考试数据 |
+| 确定性校园服务 | “算一下加权成绩”“校园卡怎么补办”“校园网认证后打不开网页” | 调用领域专属工具，返回可测试的结构化结果 |
+| 复杂校园任务 | “明天下午有空就安排我去补办校园卡，并记个待办” | Planner 生成依赖 DAG，多个 Agent 分波执行并合成结果 |
 
-## 功能总览
+## 真实网页实测
 
-![EchoGuide 功能界面](docs/images/image-20260805123552188.png)
+以下截图由 Playwright 访问真实网页、登录 Demo 用户、导入动态课表、调用真实 DeepSeek 模型后自动生成；使用 `?debug=1` 展开 Profile、分类阶段、工具、DAG、Token 和 Trace ID。
 
-| 领域 | 覆盖内容 | 示例问题 |
-|------|----------|----------|
-| 🎓 学业支持 | 选课、课表、考试、成绩、绩点、重修、转专业、保研 | "这学期选课什么时候开始？" |
-| 🏠 校园生活 | 宿舍、食堂、校车、校园卡、快递、水电、社团 | "南校区食堂几点关门？" |
-| 📋 校务咨询 | 校历、请假、奖学金、证明开具、缴费、注册 | "奖学金什么时候评定？" |
-| 🖥️ IT 支持 | 教务系统、校园网、VPN、邮箱、统一身份认证 | "教务系统登录不上怎么办？" |
-| 🧑🎓 个人助理 | **我的课表（ICS 导入）、待办、考试/DDL 倒计时、日程提醒、天气、校车下一班、楼宇/场馆/图书馆查询** | "今天有什么课？" "我最近的考试安排？" "下一班校车几点？" |
+### Fast · 个人课表
 
-**个人数据中心**（`personal/`）：学生通过「我的课表」上传教务系统导出的 `.ics` 文件或 JSON 课表（按 user_id 隔离，SQLite 持久化），即可在对话中问"今天/明天/周几有什么课、几点在哪上"；考试、DDL、作业待办可在对话中直接记录（"帮我记个待办，周三前交实验报告"），查询自动带倒计时。
+![Fast 个人课表实测](assets/readme/01-fast-personal.png)
 
-**时间感知**：Agent 的 system prompt 统一注入当前日期、星期几、第几节课（西电作息表，夏季/秋冬春季自动切换）与教学周（默认 2026-2027 学年校历，`SEMESTER_START` 可配）——"现在第几节""这周第几周"可直接回答。
+### 领域专属工具
 
-**外部 API 工具**：`get_weather`（Open-Meteo 免费数据源，无需 Key）等工具经 MCPToolManager 注册，Agent 通过 function calling 自主调用；`query_campus_info` 提供校车下一班（按当前时间精确计算）、楼宇、运动场馆、图书馆开放时间等**结构化公开信息**（数据在 `data/public/*.json`，缺失时如实提示并引导）。
+![Affairs 专属工具实测](assets/readme/02-specialized-tools.png)
 
-- **多轮对话记忆**：Redis 工作记忆（24h TTL + LLM 自动压缩）+ ChromaDB 情景记忆（跨会话语义检索）+ 用户画像（**信号驱动提炼**：仅当用户消息含偏好/背景声明时调用 LLM 更新，普通提问不重复提炼；画像按用户单条聚合、去重上限 20 条）
-- **多 Agent 路由**：层次化意图识别（领域 domain × 动作 action，LLM 70% + **本地真 Embedding 20%（all-MiniLM-L6-v2，384 维）** + 关键词 10%）→ 领域路由（动作不参与）→ 性能路由 → 降级兜底；短句追问自动继承上一轮领域；个人助理领域与学业领域同词命中时优先个人助理（"考试安排"不拆分回答）；**每领域双实例**，失败率升高被 Monitor 惩罚后自动切换另一实例（性能路由闭环真实生效）
-- **轻量多 Agent 协作**：复杂请求由 **Task Planner** 拆分为自包含任务 DAG（规则命中时生成真实依赖链，如"查课表 + 查办理信息 → 创建待办"），**Executor** 按 `depends_on` 分波并行执行，结果写入 **SharedState** 并注入后续任务的协作上下文（后续 Agent 真正使用前序 Agent 结果），最后由 **Synthesizer** 合并为连贯回复（LLM 失败降级拼接）；不做 Agent 间聊天
-- **Agent 工具权限边界**：按 Agent 类型做**最小权限**隔离（`AGENT_TOOL_ALLOWLIST`），职责外工具不暴露、调用直接拒绝——避免职责模糊、误调与多 Agent 重复执行；个人数据工具（课表/待办/DDL）只归 PersonalAgent
-- **Agentic RAG**：Agent 通过 function calling 工具调用循环自主检索知识库（相关性阈值 + 领域过滤 + overlap 语义分块），回答带引用；检索层内置**查询改写（多角度子查询并行召回）+ LLM 重排**，Agent 调用 `knowledge_search` 与 `/search` 演示接口走同一优化链路；工具层以标准 MCP 协议（JSON-RPC 2.0）暴露，任何 MCP 客户端即插即用（见下方「MCP 客户端接入」）
-- **动态 Skills**：可热加载的业务规范文件（SOP），关键词整词匹配 + 追问历史感知注入 system prompt（现覆盖五大领域）
-- **流式对话**：SSE 逐 token 输出 + 工具调用过程实时可视化（`/chat/stream`）
-- **双层语义缓存**：GPTCache 思路，相似问题直接复用答案（阈值 0.85，24h TTL）；**Global 层**只缓存不依赖用户上下文的答案（任何用户可复用），**User 层**按 `user_id` + **上下文指纹**双重隔离个性化答案（同 query 不同用户/不同对话上下文互不覆盖、互不命中）；缓存读取在**记忆上下文之后**，有明显用户上下文的请求只查 User 层、**不回退 Global**（防止公共答案绕过个性化推理）；**个人数据领域（课表/待办等）绝不入缓存**
-- **监控闭环**：Prometheus 指标 + Agent 在线表现统计 + 路由惩罚动态调整 + 全链路 Trace（`/traces`）
-- **评测体系**：LLM-as-Judge 四维度评分（支持双模型：生成模型与评判模型可分离配置，消除自评偏差）+ 意图/路由/追问评测 + **RAG 检索硬指标（HitRate@K / Recall@K / MRR）与生成端引用正确性 / 忠实性 / 答案正确性** + 回归对比
-- **安全治理**：EchoGuard 中间件**默认启用**（Prompt 注入检测 / 限流 / 脱敏审计，覆盖 /chat、/personal/*、/mcp；token 认证按需开启；中间件自身异常自动放行，不影响可用性）。独立的 Sidecar 参考实现已归档至 `docs/archive/echoguide-guard-sidecar/`
+### Deep · Agentic RAG
 
----
+![Deep RAG 实测](assets/readme/03-deep-rag.png)
 
-## 系统架构
+### 多 Agent 依赖 DAG
 
-```text
-┌─────────────┐     ┌──────────────────────────────────────────────────────┐
-│  Frontend   │     │                      FastAPI                          │
-│ (Vue 3)     │ ──► │  /chat  /chat/stream  /mcp  /search  /knowledge/*     │
-│  SSE 流式   │     │  /skills  /eval/run  /traces  /monitor                │
-└─────────────┘     └───────────────┬──────────────────────────────────────┘
-                                    │
-                      ┌─────────────▼──────────────┐
-                      │  AgentOrchestrator          │
-                      │  ┌───────────────────────┐  │
-                      │  │ IntentRecognizer       │  │ 领域×动作 二维意图
-                      │  │ 层次化意图 + 追问继承    │  │ LLM+Embedding+Pattern
-                      │  └───────────────────────┘  │
-                      │  ┌─────┬─────┬─────┬─────┐  │
-                      │  │Academic│Campus│Affairs│IT  │ 五领域 Agent
-                      │  │  Life │      │  Help  │  │ + function calling
-                      │  │  + PersonalAgent       │  │ 工具调用循环(Agentic RAG)
-                      │  └─────┴─────┴─────┴─────┘  │
-                      │  + SkillManager 动态注入 SOP  │
-                      │  + 时间上下文注入（日期/第几节/第几周）│
-                      └─────────────┬──────────────┘
-                                    │
-        ┌───────────────┬───────────┼───────────┬─────────────────┐
-        ▼               ▼           ▼           ▼                 ▼
-   Redis          ChromaDB     ChromaDB     KnowledgeBase  EchoGuide Guard
-   工作记忆        情景记忆      用户画像      RAG 向量检索   中间件(默认启用)
-        └───────────────┴───────────┴───────────┴─────────────────┘
-   语义缓存(SemanticCache) / 个人数据中心(SQLite: 课表·待办·DDL) /
-   结构化公开信息(data/public: 校车·楼宇·场馆·图书馆) /
-   外部工具(Open-Meteo 天气) / Prometheus 监控 / LLM-as-Judge 评测 / Trace
+![多 Agent DAG 实测](assets/readme/04-multi-agent-dag.png)
+
+### 多轮记忆与 Guard 拒绝
+
+![多轮记忆与 Prompt 注入拦截实测](assets/readme/05-memory-and-guard.png)
+
+## Fast / Deep 双路径
+
+```mermaid
+flowchart LR
+    U["学生请求"] --> G["级联意图识别"]
+    G -->|"Pattern ≥ 0.90"| C["复杂度闸门"]
+    G -->|"Embedding ≥ 0.74 且 margin ≥ 0.08"| C
+    G -->|"短追问"| H["历史领域继承"] --> C
+    G -->|"低置信度"| L["LLM 分类"] --> C
+    C -->|"单领域 / 确定性工具"| F["V4 Flash · Fast"]
+    C -->|"RAG / 低置信度"| D["V4 Pro · Deep"]
+    C -->|"多领域依赖"| P["Planner → DAG → Executor"]
+    P --> D
+    F --> T["Tools / MCP"]
+    D --> T
+    T --> R["回答 + Execution Meta + Trace"]
 ```
 
-> 任意 MCP 客户端（Claude Desktop 等）可经 `/mcp` 端点接入本系统的全部工具能力。
+| Profile | 模型 | 思考模式 | 输出预算 | RAG 策略 | 典型任务 |
+|---|---|---|---:|---|---|
+| Fast | `deepseek-v4-flash` | 关闭 | 768 | Top-K 3，不改写、不重排 | 课表、天气、校车、确定性工具 |
+| Deep | `deepseek-v4-pro` | 开启，effort=high | 1536 | Top-K 5，查询改写 + LLM 重排 | 政策问答、复杂请求、多 Agent |
 
-## MCP 客户端接入
+Monitor 按 `academic.fast`、`academic.deep` 等真实 Profile 统计成功率、延迟和在途请求。Fast 执行失败时升级到 Deep；两种 Profile 可以分别配置 API Key、模型和端点。
 
-EchoGuide 作为标准 **MCP Server**（JSON-RPC 2.0 / Streamable HTTP），把 8 个工具
-（知识检索 / 课表 / 待办 / DDL / 校园信息 / 天气）开放给任意 MCP 客户端即插即用。
+## 多 Agent 的合理触发边界
 
-**Claude Desktop 配置示例**（`claude_desktop_config.json`）：
+简单问题始终走单 Agent。只有两类请求进入协作：
 
-```json
-{
-  "mcpServers": {
-    "echoguide": {
-      "type": "http",
-      "url": "http://localhost:8100/mcp",
-      "headers": { "X-User-Id": "u1001" }
-    }
-  }
-}
+- `parallel`：显式包含“同时、还要、并且、另外、顺便”等复合语义，并命中两个以上领域。
+- `dependent`：命中必须使用前序结果的任务规则。
+
+依赖任务示例：
+
+```mermaid
+flowchart LR
+    S["PersonalAgent<br/>query_schedule"] --> A["PersonalAgent<br/>add_todo"]
+    P["AffairsAgent<br/>query_affairs_process"] --> A
+    A --> Y["Deep Synthesizer"]
 ```
 
-- `X-User-Id` 头传入用户身份（与前端 user_id 相同的软身份信任模型），
-  个人工具（课表/待办/DDL）按该身份生效
-- 端点受 EchoGuard 保护（限流 + 可选 token 认证）；协议方法：
-  `initialize` / `tools/list` / `tools/call` / `ping`
+Executor 每次最多运行三个 Agent、六个任务；依赖缺失或出现循环时直接失败并记录计划错误，不会绕过 DAG 执行。
 
-## 技术栈
+## 五个 Agent 与真实能力差异
 
-- **后端**：Python 3.12 · FastAPI · Anthropic SDK（兼容 DeepSeek）
-- **记忆**：Redis（工作记忆）+ ChromaDB（情景记忆 / 用户画像 / RAG 知识库，内置 all-MiniLM-L6-v2 embedding）
-- **前端**：Vue 3 + Vite，支持 Python/Java 双后端调试面板
-- **部署**：Docker 多阶段构建（生产镜像 ~500MB）· Docker Compose · Nginx 反代 · Prometheus
-- **质量**：pytest（业务逻辑 + EchoGuide Guard 安全测试 + RAG 硬指标单测）· LLM-as-Judge 评测
+| Agent | 专属能力 | 工具权限 |
+|---|---|---|
+| AcademicAgent | 学业政策 RAG、加权学分成绩计算 | `knowledge_search`、`calculate_weighted_score` |
+| AffairsAgent | 版本化办事材料、步骤、部门与来源 | `knowledge_search`、`query_affairs_process` |
+| ITHelpAgent | 校园网、VPN、统一认证、教务系统诊断树 | `knowledge_search`、`diagnose_it_issue` |
+| CampusLifeAgent | 校车、楼宇、场馆、图书馆、天气 | `knowledge_search`、`query_campus_info`、`get_weather` |
+| PersonalAgent | 登录用户课表、待办、DDL 与考试 | `query_schedule`、`query_todo`、`add_todo`、`complete_todo`、`query_ddl` |
 
----
+工具在模型可见范围和执行层分别校验权限。个人工具只接受服务端签名 Cookie 中的身份，客户端提交的 `user_id` 不作为可信身份。
 
-## 快速开始
+## 真实 Benchmark
 
-### 1. 配置环境变量
+Benchmark 使用 12 个版本化场景，覆盖五个领域、追问继承、Fast/Deep 路由、专属工具、RAG、多 Agent DAG 和 Guard。默认每个场景运行三次，并与 Always-LLM + Always-Deep 基线比较。
 
-```bash
-cp .env.example .env
-# 填写 ANTHROPIC_API_KEY（Claude 或 DeepSeek 兼容协议）
+<!-- BENCHMARK:START -->
+> 实测时间：2026-08-09 16:56:50 +0800 · Commit `81affb8` · 每场景重复 3 次
+
+| 指标 | 自适应链路 | Always-LLM + Always-Deep 基线 |
+|---|---:|---:|
+| 用例通过率 | 100.0% | 63.6% |
+| 领域准确率 | 100.0% | 81.8% |
+| 领域 Macro-F1 | 100.0% | 73.3% |
+| LLM 分类调用率 | 9.1% | 100.0% |
+| Profile 路由准确率 | 100.0% | 81.8% |
+| 复杂度 Precision / Recall | 100.0% / 100.0% | 100.0% / 100.0% |
+| 专属工具成功率 | 100.0% | 66.7% |
+| DAG 任务成功率 | 100.0% | 100.0% |
+| RAG HitRate@5 / Recall@5 / MRR | 100.0% / 100.0% / 1.00 | — |
+| 引用正确率 | 100.0% | 100.0% |
+| P50 延迟 | 4641 ms | 6700 ms |
+| P95 延迟 | 55040 ms | 47198 ms |
+| 输入 / 输出 Token | 84501 / 30436 | 81476 / 28917 |
+
+> 消融：专属工具成功率 100.0%，改用通用 RAG 后为 0.0%；依赖 DAG 成功率 100.0%，强制单 Agent 后为 0.0%。
+<!-- BENCHMARK:END -->
+
+完整机器可读结果保存在 [`assets/readme/demo-metrics.json`](assets/readme/demo-metrics.json)。报告记录时间、Git commit、模型、逐场景检查和失败信息，不隐藏不利结果。
+
+## Agent 工程闭环
+
+- **三级记忆**：Redis 工作记忆解决当前对话，ChromaDB 情景记忆恢复跨会话信息，用户画像仅在检测到明确背景/偏好信号时更新。
+- **Agentic RAG**：Deep Profile 自主调用知识检索，执行查询改写、并行召回、去重与重排；回答携带来源证据。
+- **动态 Skills**：五类校园 SOP 可热加载，按 Agent、关键词和对话历史注入 Prompt。
+- **双层语义缓存**：Global 只缓存公共回答；User 按用户和上下文指纹隔离；个人数据领域不缓存。
+- **EchoGuide Guard**：Prompt 注入检测、输入限制、用户/IP 限流、审计脱敏与失败关闭。
+- **可观测性**：SSE 展示工具过程；`execution` 返回安全执行摘要；Trace 记录逐跳耗时；Prometheus 采集真实成功率/延迟指标，`config/alerts/` 提供告警规则，Monitor 反馈到 Profile 路由。
+- **评测**：意图 Accuracy/Macro-F1、RAG HitRate/Recall/MRR、引用正确率、回答忠实性、回归基线和双模型 Judge。
+- **MCP**：`POST /mcp` 提供 Streamable HTTP tools 子集。浏览器与 MCP 均使用签名登录 Cookie；未登录客户端只能调用公开工具。
+
+## 快速启动
+
+### 1. 配置
+
+```powershell
+Copy-Item .env.example .env
+# 编辑 .env，填写 ANTHROPIC_API_KEY
 ```
 
-### 2. 本地运行后端
+生产环境（`APP_ENV=production`）**必须设置 `JWT_SECRET_KEY`**（会话签名密钥），
+缺失或保持占位值时服务将拒绝启动（fail-closed）。首次启动可用
+`ECHOGUIDE_ADMIN_PASSWORD` 播种管理员账号（仅对新建数据库生效）。
 
-```bash
-pip install -r requirements.txt
-python -m uvicorn api.main:app --port 8000   # 本地直跑为 8000
+默认 DeepSeek 配置：
+
+```dotenv
+ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+ANTHROPIC_MODEL=deepseek-v4-flash
+ECHOGUIDE_FAST_MODEL=deepseek-v4-flash
+ECHOGUIDE_DEEP_MODEL=deepseek-v4-pro
 ```
 
-或启动交互式 CLI：
+### 2. 本地运行
 
-```bash
-python api/main.py --cli
+```powershell
+pip install -r requirements.txt -r requirements-dev.txt
+python -m uvicorn api.main:app --port 8000
 ```
 
-> 端口说明：本地直接跑后端监听 **8000**；Docker Compose 部署后，Nginx 统一入口（前端页面 + API 转发）对外暴露 **8088**，API 直连端口为 8100（容器内部 8000）。
+另一个终端：
 
-### 3. 本地运行前端（可选）
-
-```bash
-cd frontend
+```powershell
+Set-Location frontend
 npm install
-npm run dev   # http://localhost:5175
+npm run dev
 ```
 
-### 4. Docker Compose 一键部署
+Vite 开发代理默认转发到 `http://localhost:8000`（与上方 uvicorn 端口一致）；
+Docker 部署时后端对外端口为 8100，可用 `VITE_PYTHON_API_URL=http://localhost:8100` 覆盖。
 
-```bash
-./build-image.sh
-docker compose up -d
+访问 `http://localhost:5175`；技术演示模式为 `http://localhost:5175/?debug=1`。
+
+### 3. Docker Compose
+
+```powershell
+docker compose up -d --build
 ```
 
-访问：`http://localhost:8088`（前端页面 + API 统一入口，Swagger 文档 `http://localhost:8088/docs`）
+统一入口为 `http://localhost:8088`，API 文档为 `http://localhost:8088/api/docs`。
 
----
+## 复现 Demo、指标与截图
 
-## 常用 API
+本地 Benchmark 策略覆盖默认关闭。仅在演示环境设置：
+
+```dotenv
+ECHOGUIDE_BENCHMARK_ENABLED=1
+```
+
+运行 Smoke：
+
+```powershell
+python -m evaluation.demo_benchmark --base-url http://localhost:8000 --smoke
+```
+
+运行完整三轮真实 Benchmark 并更新 README：
+
+```powershell
+python -m evaluation.demo_benchmark --base-url http://localhost:8000 --repeat 3 --update-readme
+```
+
+安装浏览器并生成五张真实网页截图：
+
+```powershell
+Set-Location frontend
+npx playwright install chromium
+$env:ECHOGUIDE_DEMO_URL='http://localhost:8088'
+npm run demo:capture
+```
+
+脚本默认驱动系统 Microsoft Edge；可用 `ECHOGUIDE_PLAYWRIGHT_CHANNEL=chrome` 切换到 Chrome。本地 Vite 模式可额外设置 `ECHOGUIDE_API_URL=http://127.0.0.1:8100`。
+
+截图脚本会自动登录专用 `echoguide_demo` 用户、替换该用户课表并实测 SSE；不会修改其他用户数据。回答失败、执行路径不符或截图缺失时命令返回非零。
+
+## API 摘要
 
 | 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/chat` | 对话主入口（message / user_id / conv_id），语义缓存优先 |
-| POST | `/chat/stream` | 流式对话（SSE）：meta/tool/delta/done 事件序列，工具调用过程可视化 |
-| POST | `/personal/schedule/import` · `/import/file` | 导入课表（JSON / ICS 文本 / .ics 文件上传） |
-| GET · DELETE | `/personal/schedule` | 查看本周课表 / 清空课表（按 user_id） |
-| POST · GET | `/personal/todo` | 新增 / 查看待办（kind: todo/ddl/exam，due_at 可选） |
-| POST · DELETE | `/personal/todo/{id}/complete` · `/personal/todo/{id}` | 完成/恢复 / 删除待办 |
-| GET | `/personal/overview` | 当日汇总：课程 + 待办 + 未来 7 天 DDL/考试倒计时 |
-| GET | `/campus/info` · POST `/campus/reload` | 结构化公开信息（校车下一班/楼宇/场馆/图书馆）/ 热加载 |
-| POST | `/mcp` | 标准 MCP 协议端点（JSON-RPC 2.0：initialize/tools/list/tools/call） |
-| GET | `/health` | 健康检查 |
-| GET | `/monitor` | Agent 实时表现摘要 |
-| GET | `/traces` · `/traces/{id}` | 全链路 Trace 列表 / 详情（逐跳耗时） |
-| POST | `/search?query=&top_k=` | RAG 检索优化链路演示（改写→召回→重排，与 /chat 的 Agent 检索共用） |
-| POST | `/knowledge/add` | 批量导入知识文档 |
-| POST | `/knowledge/upload` | 上传文件导入（txt/md/json） |
-| GET | `/skills` · POST `/skills/reload` | Skills 查看 / 热加载 |
-| POST | `/eval/run` | 运行评测（意图 + 多轮对话 + 路由/追问 + RAG 检索硬指标） |
+|---|---|---|
+| POST | `/chat`、`/chat/stream` | 对话与 SSE；附加向后兼容的 `execution` 字段 |
+| POST/GET | `/personal/schedule/*`、`/personal/todo/*` | 登录用户课表、待办、DDL |
+| POST | `/mcp` | MCP Streamable HTTP tools 子集 |
+| POST | `/search` | RAG 改写、召回、重排演示 |
+| POST/GET | `/knowledge/*` | 管理员知识导入与统计 |
+| GET | `/monitor`、`/metrics`、`/traces` | 监控、Prometheus 和 Trace |
+| POST | `/eval/run` | 管理员评测入口 |
 
-## Skills 热加载
-
-业务规范存放于 `skills/`（四个领域 SOP），修改后无需重启：
-
-```bash
-curl -X POST http://localhost:8088/skills/reload   # Docker 部署统一入口；本地直跑为 8000
-```
+`execution` 只包含路径、Profile、分类阶段、Agent、工具名、任务状态、模型、Token 和 Trace ID；不会返回思维链、完整 Prompt、个人上下文或敏感工具参数。
 
 ## 测试
 
-```bash
-python -m pytest tests/ -q
+```powershell
+python -m pytest tests -q
+Set-Location frontend
+npm run build
+npm audit --omit=dev --audit-level=high
 ```
 
-覆盖：Skill 解析/匹配/注入、多 Agent 路由/降级/轻量协作流水线、二维意图投票与追问继承、子串误命中回归、MCP 协议、双层语义缓存决策、RAG 检索硬指标、EchoGuide Guard 安全策略/中间件/静态扫描、SSE 流式链路、Trace。
+CI 运行全部离线回归、前端构建、依赖审计和 Docker Compose 配置检查。真实 DeepSeek Benchmark 与截图任务由开发者手动触发，避免 CI 消耗密钥。
 
 ## 项目结构
 
 ```text
-api/              FastAPI 入口、路由、CLI
-agents/           多 Agent 编排（五领域 Agent + 轻量协作流水线 + 工具权限 + 时间注入）
-core/             二维意图识别、Skill 加载器、领域词表、轻量 Trace
-memory/           三级记忆（工作 / 情景 / 用户画像）
-personal/         个人数据中心（SQLite 课表/待办/DDL、ICS 解析、时间上下文、查询服务）
-campus/           结构化公开信息（校车时刻/楼宇/场馆/图书馆 加载与查询）
-mcp/              RAG 知识库、工具框架、语义缓存、MCP 协议层
-tools/            业务工具 handler（天气 Open-Meteo / 课表 / 待办 / DDL / 校园信息）
-evaluation/       双模型 LLM-as-Judge 评测框架（意图/对话/路由 + RAG 硬指标）
-echoguide_guard/  Agent 运行时安全中间件（默认启用：注入检测/限流/脱敏审计）
-skills/           五领域业务 SOP（可热加载）
-frontend/         Vue 3 调试面板（SSE 流式渲染 + 课表导入/待办面板）
-config/           Prometheus 等运行配置
-data/             demo 知识数据 / ChromaDB 持久化 / echoguide.db / public 公开信息
-docs/             文档与历史归档
+agents/        Fast/Deep 五领域 Agent、复杂度闸门、Planner/DAG/Executor/Synthesizer
+api/           FastAPI、认证、SSE、execution 元数据、MCP 与管理接口
+core/          级联意图识别、领域词表、Skills 与 Trace
+tools/         个人、校园、Academic、Affairs、IT 确定性工具
+data/public/   版本化校园公开信息、办事流程和 IT 诊断树
+memory/        工作记忆、情景记忆与用户画像
+mcp/           工具管理器、Agentic RAG、协议和语义缓存
+config/        Prometheus 抓取配置与告警规则（config/alerts/）
+evaluation/    离线评测与真实 Demo Benchmark
+frontend/      Vue 3 学生界面、debug 执行详情和 Playwright 截图
+assets/readme/ README 截图与真实 Benchmark 结果
 ```
+
+> 仓库内结构化校园信息包含来源、更新时间和适用范围；无法确认的内容会明确标为演示级数据。实际办理、班次和开放时间应以学校最新官方通知为准。
