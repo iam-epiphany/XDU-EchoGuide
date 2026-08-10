@@ -96,7 +96,7 @@ Executor 每次最多运行三个 Agent、六个任务；依赖缺失或出现�
 Benchmark 使用 12 个版本化场景，覆盖五个领域、追问继承、Fast/Deep 路由、专属工具、RAG、多 Agent DAG 和 Guard。默认每个场景运行三次，并与 Always-LLM + Always-Deep 基线比较。
 
 <!-- BENCHMARK:START -->
-> 实测时间：2026-08-09 16:56:50 +0800 · Commit `fd74a10` · 每场景重复 3 次
+> 实测时间：2026-08-09 16:56:50 +0800 · Commit `a85c806` · 每场景重复 3 次
 
 | 指标 | 自适应链路 | Always-LLM + Always-Deep 基线 |
 |---|---:|---:|
