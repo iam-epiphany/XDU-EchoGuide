@@ -49,7 +49,7 @@ class _FakeCache:
     def __init__(self, hit=None):
         self._hit = hit
 
-    def get(self, query, user_id=None, context_fp=""):
+    def get(self, query, user_id=None, dependence="global"):
         return self._hit
 
     def put(self, *args, **kwargs):

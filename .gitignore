@@ -46,3 +46,6 @@ build-image*.sh
 *~
 *.bak
 docker-compose(1).yml
+
+# 评测脚本生成物（compare_embedders.py 输出，可随时重新生成）
+evaluation/embedding_compare_result.json

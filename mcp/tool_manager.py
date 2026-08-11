@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -137,12 +138,25 @@ class MCPToolManager:
       用户查询 → 查询改写（多角度子查询）→ 并行召回 → 结果重排 → 返回 Top-K
     """
 
-    def __init__(self, api_key: str, base_url: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: Optional[str] = None,
+        model: str = "claude-3-5-sonnet-20241022",
+        rerank_backend: Optional[str] = None,
+    ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
         self._client = AsyncAnthropic(**kwargs)
         self._model  = model
+        # 重排后端（构造参数优先，否则读环境变量）：
+        #   local（默认）= 本地 bge-reranker 毫秒级打分，不可用自动降级 LLM；
+        #   llm = LLM 打分（旧行为，秒级延迟 + token 成本）；
+        #   off = 关闭重排，按原顺序截断 Top-K。
+        self._rerank_backend = (
+            rerank_backend or os.getenv("ECHOGUIDE_RERANK_BACKEND", "local")
+        ).strip().lower()
         self._tools: Dict[str, Tool] = {}
         self._cache: Dict[str, tuple] = {}   # key → (result, expire_at)
 
@@ -375,7 +389,45 @@ class MCPToolManager:
 
     async def _rerank(self, query: str, items: List[Any], top_k: int) -> List[Any]:
         """
-        用 LLM 对召回结果重新打分排序。
+        结果重排：本地 cross-encoder 优先，LLM 兜底。
+
+        解决问题：向量检索的相似度分数不等于"对用户有用"，重排后
+        Top-K 质量显著提升。后端由 ECHOGUIDE_RERANK_BACKEND 控制：
+          - local（默认）：bge-reranker-base 本地打分（毫秒级，零 token 成本）；
+            模型不可用自动降级 LLM；
+          - llm：LLM 打分（旧行为，理解语义最强但秒级延迟）；
+          - off：不重排，按原顺序截断 Top-K。
+        """
+        if len(items) <= top_k:
+            return items
+        if self._rerank_backend == "off":
+            return items[:top_k]
+        if self._rerank_backend == "local":
+            reranked = await self._rerank_local(query, items, top_k)
+            if reranked is not None:
+                return reranked
+            logger.info("本地重排不可用，降级 LLM 重排")
+        return await self._rerank_llm(query, items, top_k)
+
+    async def _rerank_local(self, query: str, items: List[Any], top_k: int) -> Optional[List[Any]]:
+        """本地 bge-reranker 重排（线程池执行，避免阻塞事件循环）。
+
+        模型不可用返回 None，由 _rerank 决定降级路径。
+        """
+        try:
+            from mcp.embeddings import get_reranker
+
+            reranker = get_reranker()
+            if reranker is None:
+                return None
+            return await asyncio.to_thread(reranker.rerank, query, items, top_k)
+        except Exception as ex:
+            logger.warning(f"本地重排失败: {ex}")
+            return None
+
+    async def _rerank_llm(self, query: str, items: List[Any], top_k: int) -> List[Any]:
+        """
+        LLM 对召回结果重新打分排序（本地模型不可用时的兜底）。
 
         解决问题：向量检索的相似度分数不等于"对用户有用"，
         LLM 能理解语义相关性，重排后 Top-K 质量显著提升。

@@ -213,3 +213,125 @@ def test_force_llm_bypasses_cascade():
     result = asyncio.run(rec.recognize("选课成绩学分有什么规定？", force_llm=True))
     assert result.domain == IntentDomain.AFFAIRS
     assert result.classifier_stage == "llm"
+
+
+# ── 复杂度判定（意图识别的一部分，LLM 参与时顺带输出）────────────────────────
+
+def test_llm_complexity_attached_when_llm_used():
+    """LLM 参与意图识别时顺带输出 complexity（parallel），随 IntentResult 返回。"""
+    rec = _recognizer()
+
+    async def fake_llm(message, history):
+        return {
+            "domain": IntentDomain.AFFAIRS, "action": IntentAction.QUERY,
+            "confidence": 0.9, "reasoning": "baseline",
+            "complexity": {"mode": "parallel", "targets": ["affairs", "personal"]},
+        }
+
+    rec._llm_recognize = fake_llm
+    result = asyncio.run(rec.recognize("奖学金评定和我的待办一起看下", force_llm=True))
+    assert result.classifier_stage == "llm"
+    assert result.complexity is not None
+    assert result.complexity.mode == "parallel"
+    assert result.complexity.targets == ["affairs", "personal"]
+
+
+def test_llm_complexity_dependent_carries_tasks():
+    """mode=dependent 时 LLM 输出的原始任务链随信号保留。"""
+    rec = _recognizer()
+
+    async def fake_llm(message, history):
+        return {
+            "domain": IntentDomain.PERSONAL, "action": IntentAction.REQUEST,
+            "confidence": 0.8, "reasoning": "baseline",
+            "complexity": {
+                "mode": "dependent", "targets": ["personal", "affairs"],
+                "tasks": [
+                    {"id": "t1", "agent": "personal", "goal": "查空闲"},
+                    {"id": "t2", "agent": "affairs", "depends_on": ["t1"]},
+                ],
+            },
+        }
+
+    rec._llm_recognize = fake_llm
+    result = asyncio.run(rec.recognize("我下午有空想办校园卡再记个待办", force_llm=True))
+    assert result.complexity is not None
+    assert result.complexity.mode == "dependent"
+    assert len(result.complexity.tasks) == 2
+    assert result.complexity.tasks[1]["depends_on"] == ["t1"]
+
+
+def test_llm_complexity_none_when_absent():
+    """LLM 未输出 complexity 字段（旧 fake/旧模型）→ None，不影响主流程。"""
+    rec = _recognizer()
+
+    async def fake_llm(message, history):
+        return {"domain": IntentDomain.OTHER, "action": IntentAction.QUERY, "confidence": 0.3, "reasoning": "x"}
+
+    rec._llm_recognize = fake_llm
+    result = asyncio.run(rec.recognize("随便聊聊", force_llm=True))
+    assert result.complexity is None
+
+
+def test_high_confidence_pattern_has_no_complexity():
+    """高置信度 Pattern 不调 LLM → 无复杂度信号（复杂度只随 LLM 参与产生）。"""
+    rec = _recognizer()
+
+    async def llm_should_not_run(message, history):
+        raise AssertionError("高置信度 Pattern 不应调用 LLM")
+
+    rec._llm_recognize = llm_should_not_run
+    result = asyncio.run(rec.recognize("选课成绩学分有什么规定？"))
+    assert result.classifier_stage == "pattern"
+    assert result.complexity is None
+
+
+def test_parse_complexity_valid_signal():
+    rec = _recognizer()
+    signal = rec._parse_complexity({
+        "mode": "parallel", "targets": ["campus_life", "personal"], "reason": "两个领域",
+    })
+    assert signal is not None
+    assert signal.mode == "parallel"
+    assert signal.targets == ["campus_life", "personal"]
+
+
+def test_parse_complexity_rejects_invalid_shapes():
+    rec = _recognizer()
+    # 非法 mode
+    assert rec._parse_complexity({"mode": "weird"}) is None
+    # 非 dict
+    assert rec._parse_complexity(None) is None
+    assert rec._parse_complexity("string") is None
+    # parallel 模式携带 tasks → tasks 被丢弃但信号仍合法
+    signal = rec._parse_complexity({"mode": "parallel", "tasks": [{"id": "t1"}]})
+    assert signal is not None and signal.mode == "parallel" and signal.tasks is None
+    # dependent 模式 tasks 非列表 → tasks 被丢弃
+    signal = rec._parse_complexity({"mode": "dependent", "tasks": "not-a-list"})
+    assert signal is not None and signal.tasks is None
+
+
+def test_judge_complexity_delegates_with_complexity_only():
+    """升级路径：judge_complexity 只问复杂度（complexity_only=True），不重复问领域/动作。"""
+    rec = _recognizer()
+    seen = {}
+
+    async def fake_llm(message, history, complexity_only=False):
+        seen["complexity_only"] = complexity_only
+        return {"complexity": {"mode": "parallel", "targets": ["campus_life", "personal"]}}
+
+    rec._llm_recognize = fake_llm
+    signal = asyncio.run(rec.judge_complexity("食堂几点关门，顺便查下明天课表"))
+    assert seen["complexity_only"] is True
+    assert signal is not None and signal.mode == "parallel"
+
+
+def test_judge_complexity_failure_returns_none():
+    """LLM 不可用/输出非法 → judge_complexity 返回 None（调用方回落关键词规则）。"""
+    rec = _recognizer()
+
+    async def fake_llm(message, history, complexity_only=False):
+        return {"complexity": None}
+
+    rec._llm_recognize = fake_llm
+    assert asyncio.run(rec.judge_complexity("随便问问")) is None

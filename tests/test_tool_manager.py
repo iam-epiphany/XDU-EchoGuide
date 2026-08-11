@@ -143,8 +143,8 @@ def test_rewrite_query_llm_failure_returns_original_query():
 
 
 def test_rerank_llm_failure_returns_original_order():
-    """_rerank 自身：LLM 异常时返回原始顺序 Top-K（内部降级）。"""
-    tm = MCPToolManager(api_key=FAKE_KEY)
+    """LLM 重排后端：LLM 异常时返回原始顺序 Top-K（内部降级）。"""
+    tm = MCPToolManager(api_key=FAKE_KEY, rerank_backend="llm")
     items = [{"title": "a"}, {"title": "b"}, {"title": "c"}]
     with patch.object(
         tm._client.messages, "create",
@@ -153,3 +153,60 @@ def test_rerank_llm_failure_returns_original_order():
         out = asyncio.run(tm._rerank("q", items, 2))
 
     assert out == [{"title": "a"}, {"title": "b"}]  # 原顺序取 Top-2
+
+
+# ── 重排后端分派（local / llm / off）────────────────────────────────────────
+
+def test_rerank_local_backend_uses_local_reranker():
+    """local 后端：本地 reranker 可用时走本地重排，不调 LLM。"""
+    tm = MCPToolManager(api_key=FAKE_KEY, rerank_backend="local")
+    items = [{"title": "a"}, {"title": "b"}, {"title": "c"}]
+    expected = [{"title": "c"}, {"title": "a"}]  # 本地重排结果
+
+    class _FakeReranker:
+        def rerank(self, query, items_, top_k):
+            return expected
+
+    with patch("mcp.embeddings.get_reranker", return_value=_FakeReranker()), \
+            patch.object(tm._client.messages, "create", new=AsyncMock()) as llm:
+        out = asyncio.run(tm._rerank("q", items, 2))
+
+    assert out == expected
+    llm.assert_not_awaited()  # 本地重排不消耗 LLM token
+
+
+def test_rerank_local_unavailable_falls_back_to_llm():
+    """local 后端但本地模型不可用（返回 None）→ 自动降级 LLM 重排。"""
+    tm = MCPToolManager(api_key=FAKE_KEY, rerank_backend="local")
+    items = [{"title": "a"}, {"title": "b"}, {"title": "c"}]
+
+    with patch("mcp.embeddings.get_reranker", return_value=None), \
+            patch.object(tm, "_rerank_llm", new=AsyncMock(
+                side_effect=lambda q, items_, k: items_[:k])) as llm:
+        out = asyncio.run(tm._rerank("q", items, 2))
+
+    assert out == [{"title": "a"}, {"title": "b"}]
+    llm.assert_awaited_once()
+
+
+def test_rerank_off_returns_original_order():
+    """off 后端：不重排，按原顺序截断 Top-K。"""
+    tm = MCPToolManager(api_key=FAKE_KEY, rerank_backend="off")
+    items = [{"title": "a"}, {"title": "b"}, {"title": "c"}]
+    with patch.object(tm, "_rerank_llm", new=AsyncMock()) as llm, \
+            patch("mcp.embeddings.get_reranker") as gr:
+        out = asyncio.run(tm._rerank("q", items, 2))
+
+    assert out == [{"title": "a"}, {"title": "b"}]
+    llm.assert_not_awaited()
+    gr.assert_not_called()
+
+
+def test_rerank_short_circuit_when_within_topk():
+    """结果数 ≤ top_k 时直接返回，不触发任何后端。"""
+    tm = MCPToolManager(api_key=FAKE_KEY, rerank_backend="local")
+    items = [{"title": "a"}, {"title": "b"}]
+    with patch("mcp.embeddings.get_reranker") as gr:
+        out = asyncio.run(tm._rerank("q", items, 3))
+    assert out == items
+    gr.assert_not_called()

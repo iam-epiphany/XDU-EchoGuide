@@ -100,12 +100,12 @@ def _validate_mcp_accept(request: Request) -> None:
         raise HTTPException(406, "MCP Accept 必须同时包含 application/json 和 text/event-stream")
 
 
-async def _cache_get(cache: Any, query: str, *, user_id: str, context_fp: str) -> Any:
+async def _cache_get(cache: Any, query: str, *, user_id: str, dependence: str) -> Any:
     """兼容旧测试替身；真实 SemanticCache 使用异步接口。"""
     async_get = getattr(cache, "aget", None)
     if async_get:
-        return await async_get(query, user_id=user_id, context_fp=context_fp)
-    return cache.get(query, user_id=user_id, context_fp=context_fp)
+        return await async_get(query, user_id=user_id, dependence=dependence)
+    return cache.get(query, user_id=user_id, dependence=dependence)
 
 
 def _cache_put(cache: Any, query: str, response: str, **kwargs: Any) -> None:
@@ -204,7 +204,7 @@ def _build_runtime() -> None:
         deep_model=cfg["deep_model"],
     )
 
-    # 记忆管理器（Redis 工作记忆 + ChromaDB 情景记忆/用户画像）
+    # 记忆管理器（Redis 工作记忆 + ChromaDB 情景记忆/用户画像 + SQLite 分层存储）
     _memory = MemoryManager(
         redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"),
         chroma_host=os.getenv("CHROMA_HOST", "chromadb"),
@@ -214,12 +214,16 @@ def _build_runtime() -> None:
         base_url=cfg.get("base_url"),
         model=cfg["model"],
     )
+    # 分层记忆存储注入编排器（上下文卸载落盘与 MemoryManager 共享同一实例）
+    _orchestrator.set_memory_store(_memory.layered_store)
 
     # MCP 工具管理器 + RAG 知识库（基于 ChromaDB 的真实检索）
     _tool_manager = MCPToolManager(
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url"),
         model=cfg["model"],
+        # 结果重排后端：local=本地 bge-reranker（默认，不可用自动降级 LLM）
+        rerank_backend=os.getenv("ECHOGUIDE_RERANK_BACKEND", "local"),
     )
     _kb = KnowledgeBase(
         chroma_host=os.getenv("CHROMA_HOST", "chromadb"),
@@ -661,14 +665,15 @@ async def reload_skills(_admin: AuthUser = Depends(require_admin)):
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, response: Response, request: Optional[Request] = None):
+async def chat(req: ChatRequest, response: Response, request: Request = None):
     """
     主对话接口。完整流程：
       语义缓存 → 记忆读取 → 意图识别（领域×动作）→ Agent 路由 →
       Agentic RAG 执行 → 记忆写入 → 语义缓存写入
 
-    request 标注为 Optional 并默认 None：HTTP 场景由 FastAPI 注入真实请求，
+    request 默认 None：HTTP 场景由 FastAPI 注入真实请求，
     离线单测直接传 None 跳过身份覆盖（保留旧测试路径）。
+    注意：注解不能写成 Optional[Request]（新版 FastAPI 会当成响应字段报错）。
     """
     if _orchestrator is None or _memory is None:
         raise HTTPException(503, "服务未就绪")
@@ -692,21 +697,21 @@ async def chat(req: ChatRequest, response: Response, request: Optional[Request] 
 
     try:
         # 1. 先读取记忆上下文 —— 语义缓存必须在其后：
-        #    需要据此判断请求是否依赖历史上下文，并计算上下文指纹 context_fp
-        #    （同一用户不同对话上下文的"那几点开门？"等追问互不污染）。
+        #    需要据此判断请求是否依赖历史上下文（追问/省略句/个人数据等），
+        #    决定走 Global / User / 直接 bypass。
         async with span("memory_read"):
             mem_ctx = await _memory.get_context(req.user_id, conv_id, query=req.message)
         ctx_text = mem_ctx.to_prompt_text()
-        from mcp.semantic_cache import context_fingerprint
+        from mcp.semantic_cache import classify_context_dependence
 
-        context_fp = context_fingerprint(ctx_text)
+        dependence = classify_context_dependence(req.message, ctx_text)
 
-        # 2. 双层语义缓存读取（读取层由 context_fp 决定）：
-        #    - 无上下文 → 只查 Global（公共答案）；
-        #    - 有上下文且身份有效 → 只查 User（user_id + 上下文指纹隔离，
+        # 2. 双层语义缓存读取（读取层由上下文依赖性决定，见 cache_read_tier）：
+        #    - 公共事实查询（global）→ 只查 Global（语义匹配，容忍近义改写）；
+        #    - 依赖用户画像（user）+ 有效身份 → 只查 User（仅 user_id 分区，
         #      miss 不回退 Global，防止公共答案绕过个性化 Agent 推理）；
-        #    - 有上下文但匿名 → 跳过缓存。
-        cached = await _cache_get(_semantic_cache, req.message, user_id=req.user_id, context_fp=context_fp) if _semantic_cache else None
+        #    - 强上下文依赖（skip：追问/省略句/指代/个人数据）→ 直接 bypass。
+        cached = await _cache_get(_semantic_cache, req.message, user_id=req.user_id, dependence=dependence) if _semantic_cache else None
         if cached and cached.get("domain") == "personal":
             logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
             cached = None
@@ -753,6 +758,8 @@ async def chat(req: ChatRequest, response: Response, request: Optional[Request] 
         async with span("orchestrator_run"):
             result = await _orchestrator.run(orch_req)
         result.execution["trace_id"] = trace.trace_id
+        # 记忆 trace（四层命中统计，透出给前端 debug 面板 / 评测统计）
+        result.execution["memory_trace"] = getattr(mem_ctx, "memory_trace", {})
 
         # 5. 写入记忆
         async with span("memory_write"):
@@ -762,22 +769,24 @@ async def chat(req: ChatRequest, response: Response, request: Optional[Request] 
         # 6. 异步更新用户画像 + 双层语义缓存（不阻塞响应）
         _spawn_background(_memory.update_profile(req.user_id, conv_id))
         if _semantic_cache:
-            # 写入层决策：无用户上下文 → Global；有个性化上下文且身份有效 → User（隔离）；
-            # personal/other 领域或匿名带上下文 → 不缓存（防跨用户串扰）
-            from mcp.semantic_cache import cache_tier
+            # 写入层决策：与读取侧同一规则（叠加编排信号：personal/history/request
+            # → skip 不落库），classify 决定 global/user/skip，cache_tier 只做映射
+            from mcp.semantic_cache import cache_tier, classify_context_dependence
 
-            tier = cache_tier(
-                domain=result.domain.value if result.domain else "other",
-                has_user_context=bool(ctx_text),
-                user_id=req.user_id,
+            dep_write = classify_context_dependence(
+                req.message, ctx_text,
+                domain=result.domain.value if result.domain else None,
+                action=result.action.value if result.action else None,
+                classifier_stage=result.execution.get("classifier_stage"),
             )
+            tier = cache_tier(dep_write, req.user_id)
             if tier == "user":
                 _cache_put(_semantic_cache,
                     req.message, result.response,
                     domain=result.domain.value,
                     agent_type=result.agent_type.value,
                     user_id=req.user_id,
-                    context_fp=context_fp,
+                    dependence=dep_write,
                     knowledge_used="knowledge_search" in result.tools_used,
                 )
             elif tier == "global":
@@ -785,6 +794,7 @@ async def chat(req: ChatRequest, response: Response, request: Optional[Request] 
                     req.message, result.response,
                     domain=result.domain.value,
                     agent_type=result.agent_type.value,
+                    dependence=dep_write,
                     knowledge_used="knowledge_search" in result.tools_used,
                 )
 
@@ -808,7 +818,7 @@ async def chat(req: ChatRequest, response: Response, request: Optional[Request] 
 
 
 @app.post("/chat/stream")
-async def chat_stream(req: ChatRequest, request: Optional[Request] = None):
+async def chat_stream(req: ChatRequest, request: Request = None):
     """
     流式对话接口（SSE / Server-Sent Events）。
 
@@ -819,7 +829,7 @@ async def chat_stream(req: ChatRequest, request: Optional[Request] = None):
       event: done   最终汇总（完整回答、耗时、是否用 RAG）
       event: error  出错信息
 
-    request 标注为 Optional 并默认 None：HTTP 场景由 FastAPI 注入，
+    request 默认 None：HTTP 场景由 FastAPI 注入真实请求，
     离线单测直接传 None 跳过身份覆盖。
     """
     if _orchestrator is None or _memory is None:
@@ -847,19 +857,20 @@ async def chat_stream(req: ChatRequest, request: Optional[Request] = None):
             request_started = time.perf_counter()
             try:
                 # 1. 先读记忆上下文 —— 语义缓存必须在其后（同 /chat）：
-                #    需要据此判断请求是否依赖历史上下文并计算 context_fp，
-                #    避免"那几点开门？"等追问在不同对话上下文中错误命中旧缓存。
+                #    据此判断请求是否依赖历史上下文（追问/省略句/个人数据等），
+                #    决定走 Global / User / 直接 bypass。
                 async with span("memory_read"):
                     mem_ctx = await _memory.get_context(req.user_id, conv_id, query=req.message)
                 ctx_text = mem_ctx.to_prompt_text()
-                from mcp.semantic_cache import context_fingerprint
+                from mcp.semantic_cache import classify_context_dependence
 
-                context_fp = context_fingerprint(ctx_text)
+                dependence = classify_context_dependence(req.message, ctx_text)
 
-                # 2. 双层语义缓存读取（读取层由 context_fp 决定，与 /chat 完全一致）：
-                #    - 无上下文 → 只查 Global；有上下文+身份有效 → 只查 User（指纹隔离，
-                #      不回退 Global）；有上下文但匿名 → 跳过缓存。
-                cached = await _cache_get(_semantic_cache, req.message, user_id=req.user_id, context_fp=context_fp) if _semantic_cache else None
+                # 2. 双层语义缓存读取（读取层由上下文依赖性决定，与 /chat 完全一致）：
+                #    - 公共事实查询（global）→ 只查 Global；依赖用户画像（user）+
+                #      有效身份 → 只查 User（仅 user_id 分区，不回退 Global）；
+                #    - 强上下文依赖（skip）→ 直接 bypass。
+                cached = await _cache_get(_semantic_cache, req.message, user_id=req.user_id, dependence=dependence) if _semantic_cache else None
                 if cached and cached.get("domain") == "personal":
                     logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
                     cached = None
@@ -903,6 +914,8 @@ async def chat_stream(req: ChatRequest, request: Optional[Request] = None):
                 async with span("orchestrator_run"):
                     result = await _orchestrator.run(orch_req, on_event=on_event)
                 result.execution["trace_id"] = trace.trace_id
+                # 记忆 trace（四层命中统计，透出给前端 debug 面板 / 评测统计）
+                result.execution["memory_trace"] = getattr(mem_ctx, "memory_trace", {})
 
                 async with span("memory_write"):
                     await _memory.add_message(req.user_id, conv_id, MsgRole.USER, req.message)
@@ -910,21 +923,23 @@ async def chat_stream(req: ChatRequest, request: Optional[Request] = None):
                 _spawn_background(_memory.update_profile(req.user_id, conv_id))
 
                 if _semantic_cache:
-                    # 写入层决策：无用户上下文 → Global；有个性化上下文且身份有效 → User（隔离）
-                    from mcp.semantic_cache import cache_tier
+                    # 写入层决策：与读取侧同一规则（叠加编排信号），同 /chat
+                    from mcp.semantic_cache import cache_tier, classify_context_dependence
 
-                    tier = cache_tier(
-                        domain=result.domain.value if result.domain else "other",
-                        has_user_context=bool(ctx_text),
-                        user_id=req.user_id,
+                    dep_write = classify_context_dependence(
+                        req.message, ctx_text,
+                        domain=result.domain.value if result.domain else None,
+                        action=result.action.value if result.action else None,
+                        classifier_stage=result.execution.get("classifier_stage"),
                     )
+                    tier = cache_tier(dep_write, req.user_id)
                     if tier == "user":
                         _cache_put(_semantic_cache,
                             req.message, result.response,
                             domain=result.domain.value,
                             agent_type=result.agent_type.value,
                             user_id=req.user_id,
-                            context_fp=context_fp,
+                            dependence=dep_write,
                             knowledge_used="knowledge_search" in result.tools_used,
                         )
                     elif tier == "global":
@@ -932,6 +947,7 @@ async def chat_stream(req: ChatRequest, request: Optional[Request] = None):
                             req.message, result.response,
                             domain=result.domain.value,
                             agent_type=result.agent_type.value,
+                            dependence=dep_write,
                             knowledge_used="knowledge_search" in result.tools_used,
                         )
 
@@ -1179,6 +1195,8 @@ async def upload_knowledge(file: UploadFile = File(...), _admin: AuthUser = Depe
     支持格式：
     - `.txt` / `.md`：整个文件作为一篇文档，文件名作为标题
     - `.json`：JSON 数组格式 `[{"title": "...", "content": "..."}, ...]`
+    - `.pdf`：逐页提取文本，分块记录页码区间；扫描件（无文本层）会明确报错
+    - `.docx`：按文档流顺序提取段落与表格（表格行以 | 拼接）
 
     文件大小限制：10MB
     """
@@ -1190,24 +1208,15 @@ async def upload_knowledge(file: UploadFile = File(...), _admin: AuthUser = Depe
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(413, "文件大小超过 10MB 限制")
 
-    text = content.decode("utf-8", errors="ignore")
-    filename = file.filename or "unknown"
+    from mcp.document_parser import parse_document
+    try:
+        docs = parse_document(file.filename or "unknown", content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
-    if filename.endswith(".json"):
-        try:
-            docs = json.loads(text)
-            if not isinstance(docs, list):
-                raise HTTPException(400, "JSON 文件应为数组格式: [{title, content}, ...]")
-        except json.JSONDecodeError as e:
-            raise HTTPException(400, f"JSON 解析失败: {e}")
-    else:
-        # txt / md：整个文件作为一篇文档
-        title = filename.rsplit(".", 1)[0] if "." in filename else filename
-        docs = [{"title": title, "content": text}]
-
-    count = kb.add_documents(docs)
+    count = await asyncio.to_thread(kb.add_documents, docs)
     return {
-        "message": f"文件 {filename} 导入成功",
+        "message": f"文件 {file.filename} 导入成功",
         "added_chunks": count,
         "total_chunks": kb.doc_count,
     }

@@ -12,7 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONPATH=/app
 
-# curl 用于健康检查；不再需要 gcc/g++（已移除本地 ML 模型）
+# curl 用于健康检查；推理用 ONNX Runtime（无需 gcc/g++）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -20,17 +20,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── 阶段 2：安装 Python 依赖 ──────────────────────────────────────────────────
 FROM base AS dependencies
 
+# 可选：模型下载镜像端点（如 https://hf-mirror.com），构建时 --build-arg HF_ENDPOINT=...
+ARG HF_ENDPOINT=https://huggingface.co
+ENV HF_ENDPOINT=$HF_ENDPOINT
+
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
 # 预下载 ChromaDB 内置的 ONNX embedding 模型（~79MB），避免运行时下载超时
+# （本地 bge 模型不可用时的回退向量空间）
 RUN mkdir -p /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2 && \
     curl -L --retry 3 --retry-delay 5 -o /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz \
     https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz && \
     cd /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2 && \
     tar -xzf onnx.tar.gz && \
     rm onnx.tar.gz
+
+# 预下载本地向量模型（bge-small-zh-v1.5 Embedding ~95MB + bge-reranker-base ~570MB）
+# 与运行期共用 mcp/embeddings.py 的下载逻辑，落在默认缓存目录（root 的 ~/.cache）
+COPY mcp/embeddings.py /tmp/preload/embeddings.py
+RUN python -c "import importlib.util as u; s = u.spec_from_file_location('emb', '/tmp/preload/embeddings.py'); m = u.module_from_spec(s); s.loader.exec_module(m); m.preload_models()"
 
 # ── 阶段 3：生产镜像 ──────────────────────────────────────────────────────────
 FROM base AS production
@@ -41,8 +51,9 @@ RUN useradd -m -u 1000 echoguide
 # 从依赖阶段复制已安装的包
 COPY --from=dependencies /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=dependencies /usr/local/bin /usr/local/bin
-# 复制预下载的 ONNX 模型缓存
+# 复制预下载的 ONNX 模型缓存（chroma 内置 + 本地 bge 向量模型）
 COPY --from=dependencies --chown=echoguide:echoguide /root/.cache/chroma /home/echoguide/.cache/chroma
+COPY --from=dependencies --chown=echoguide:echoguide /root/.cache/echoguide_models /home/echoguide/.cache/echoguide_models
 
 # 复制应用代码
 COPY --chown=echoguide:echoguide . .

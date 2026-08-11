@@ -17,20 +17,30 @@
     → Synthesizer 合并为最终回复（LLM 失败降级拼接）。
   工具按 Agent 类型做最小权限隔离（AGENT_TOOL_ALLOWLIST），
   职责外工具不暴露、调用直接拒绝，避免误调与重复执行。
+
+复杂度判定（规则筛 + LLM 升级确认）：
+  意图识别走 LLM 时顺带输出 complexity（single/parallel/dependent + 依赖链，
+  同一次调用零额外成本）；否则免费关键词规则先判，规则判 single 但"拿不准"
+  （多从句/长句/多领域无连接词）才升级 LLM 确认；LLM 结论必须通过规则校验
+  （领域合法/任务无环/数量受限/目标 Agent 有实例），非法回落关键词规则。
 """
 import asyncio
 import inspect
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from anthropic import AsyncAnthropic
 
 from core.domains import DOMAIN_KEYWORDS, IntentAction, IntentDomain, keyword_hit
 from core.intent_recognizer import IntentCategory, IntentRecognizer
+from memory.layered_store import (
+    LayeredStore, estimate_tokens, OFFLOAD_CHARS, OFFLOAD_SUMMARY_CHARS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +65,39 @@ AGENT_TOOL_ALLOWLIST: Dict[AgentType, Set[str]] = {
     AgentType.IT_HELP:     {"knowledge_search", "diagnose_it_issue"},
     AgentType.PERSONAL:    {"knowledge_search", "query_schedule", "query_todo",
                             "add_todo", "complete_todo", "query_ddl"},
+}
+
+# Action 层工具策略（与 AGENT_TOOL_ALLOWLIST 叠加，职责划分：domain = 谁处理，action = 怎么处理）。
+#   - QUERY：只开放只读/查询类工具，禁止状态修改类工具；
+#   - REQUEST：允许按需开放完整工具（含执行类）；
+#   - GREETING / FEEDBACK：原则上不开放工具；
+#   - COMPLAINT / OTHER：保守策略，只开放只读工具；
+#   - None（预置请求/兼容路径）：不额外限制，保持原有 allowlist 行为。
+# 新增状态修改类工具时必须登记到 WRITE_TOOLS，否则会在 QUERY 等只读动作下被误开放。
+WRITE_TOOLS: FrozenSet[str] = frozenset({"add_todo", "complete_todo"})
+
+
+def action_allows_tool(action: Optional[IntentAction], tool_name: str) -> bool:
+    """Action 层工具过滤（纯函数）：返回该动作下工具是否可暴露/执行。"""
+    if action == IntentAction.REQUEST:
+        return True  # 完整工具：按需执行
+    if action in (IntentAction.GREETING, IntentAction.FEEDBACK):
+        return False  # 原则上不开放工具
+    if action is None:
+        return True  # 动作未知：保持原有 allowlist 行为（兼容既有调用方）
+    # QUERY / COMPLAINT / OTHER：保守策略，只开放只读工具
+    return tool_name not in WRITE_TOOLS
+
+
+# Action 行为指引（注入 system prompt）。职责划分：
+# domain 决定"谁处理"（Agent 路由），action 决定"怎么处理"（执行策略）。
+ACTION_GUIDANCE: Dict[IntentAction, str] = {
+    IntentAction.QUERY: "当前意图为查询：请准确查询并如实回答，不要执行任何修改状态的操作（如新增/删除/完成待办）。",
+    IntentAction.REQUEST: "当前意图为请求办理：请积极调用工具解决问题，需要执行操作时按用户指令完成。",
+    IntentAction.COMPLAINT: "当前意图为投诉/不满：请先识别具体问题点，再给出明确的解决路径或建议，语气克制。",
+    IntentAction.GREETING: "当前意图为问候：请简洁友好回应即可，无需调用工具。",
+    IntentAction.FEEDBACK: "当前意图为反馈：请简洁回应并感谢反馈，无需调用工具。",
+    IntentAction.OTHER: "当前意图不明确：请保守处理，仅基于已有信息回答，不要执行任何修改状态的操作。",
 }
 
 
@@ -116,6 +159,8 @@ class AgentResponse:
     model: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    offloaded_chars: int = 0   # 上下文卸载：从上下文移出的字符数
+    saved_tokens: int = 0      # 上下文卸载：按估算口径省下的 token 数
 
 
 @dataclass
@@ -172,6 +217,9 @@ class ComplexityDecision:
     mode: str
     reason: str
     targets: List[AgentType]
+    # LLM 判定的依赖链（mode == "dependent" 时由 _tasks_from_llm 校验产出；
+    # 关键词规则产出时保持 None，由 TaskPlanner 现场生成）
+    tasks: Optional[List[Task]] = None
 
 
 class SharedState:
@@ -441,11 +489,13 @@ class BaseAgent:
         skill_manager: Optional[Any] = None,
         tool_manager: Optional[Any] = None,
         profile: Optional[ExecutionProfile] = None,
+        memory_store: Optional[LayeredStore] = None,
     ):
         self._client = client
         self._model  = model
         self._skill_manager = skill_manager
         self._tool_manager  = tool_manager
+        self._memory_store  = memory_store  # 上下文卸载落盘（refs 表），可由编排器注入
         self.profile = profile or ExecutionProfile(
             name=ProfileName.FAST,
             model=model,
@@ -470,7 +520,9 @@ class BaseAgent:
             from core.tracing import span
 
             async with span("agent_handle", agent=self.agent_type.value):
-                content, tools_used, tool_evidence, input_tokens, output_tokens = await self._call_llm(req, on_event=on_event)
+                (content, tools_used, tool_evidence,
+                 input_tokens, output_tokens,
+                 offloaded_chars, saved_tokens) = await self._call_llm(req, on_event=on_event)
             # 引用是检索链路的执行后置条件，不依赖模型是否自觉把 URL 抄进正文。
             # 仅追加工具返回的公开标题/URL/更新时间，不暴露原始参数或内部上下文。
             cited = []
@@ -499,6 +551,8 @@ class BaseAgent:
                 model=self.profile.model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                offloaded_chars=offloaded_chars,
+                saved_tokens=saved_tokens,
             )
         except Exception as ex:
             ms = (time.monotonic() - t0) * 1000
@@ -537,11 +591,14 @@ class BaseAgent:
                 "calculate_weighted_score", "query_affairs_process", "diagnose_it_issue",
             }
         tools = []
+        action = req.action if req is not None else None
         for name, tool in self._tool_manager._tools.items():
             if not getattr(tool, "agent_exposed", True):
                 continue
             if name not in allowed:
                 continue  # 最小权限：职责外工具不暴露
+            if action is not None and not action_allows_tool(action, name):
+                continue  # Action 层策略：查询/问候等动作下不暴露执行类工具
             tools.append({
                 "name": name,
                 "description": tool.description,
@@ -567,12 +624,17 @@ class BaseAgent:
             int(getattr(usage, "output_tokens", 0) or 0),
         )
 
-    async def _call_llm(self, req: Request, on_event: Optional[Any] = None) -> tuple[str, List[str], List[Dict[str, Any]], int, int]:
+    async def _call_llm(self, req: Request, on_event: Optional[Any] = None) -> tuple[str, List[str], List[Dict[str, Any]], int, int, int, int]:
         """
         工具调用循环：
           1. 首次调用带 tools（function calling），让 Agent 自主决定是否检索知识库
           2. 返回 tool_use → 执行工具 → 把 tool_result 回填 → 再次调用
           3. 无工具请求或达到轮次上限 → 返回最终文本
+
+        上下文卸载（对应记忆金字塔之外的短期记忆优化）：
+          工具结果超过 OFFLOAD_CHARS 时，完整内容落盘 refs 表，
+          上下文只留"前 OFFLOAD_SUMMARY_CHARS 字摘要 + refs/{id} 索引"，
+          需要时可按 id 100% 找回 —— 长任务 token 消耗显著下降。
 
         兼容性：若上游（如部分 DeepSeek 兼容端点）不支持 tools 参数，
         自动降级为普通调用，保证主链路可用。
@@ -599,6 +661,8 @@ class BaseAgent:
         tool_evidence: List[Dict[str, Any]] = []
         input_tokens = 0
         output_tokens = 0
+        offloaded_chars = 0   # 上下文卸载统计（从上下文移出的字符数）
+        saved_tokens = 0      # 上下文卸载统计（估算省下的 token）
         hit_tool_use_at_limit = False
         for _round in range(self.MAX_TOOL_ROUNDS):
             try:
@@ -660,10 +724,32 @@ class BaseAgent:
                             "type": "tool", "name": name, "status": "done",
                             "titles": self._tool_result_titles(data),
                         })
+                    # 上下文卸载：超长结果落盘 refs 表，上下文只留摘要行 + 索引
+                    # （需要时可沿 refs/{id} 100% 找回，代价是上下文里的 token 显著下降）
+                    tool_text = self._clean_text(data) if data is not None else None
+                    if (
+                        tool_text is not None
+                        and len(tool_text) > OFFLOAD_CHARS
+                        and self._memory_store is not None
+                    ):
+                        try:
+                            ref_id = await self._memory_store.save_ref(
+                                req.user_id, req.conv_id, name, tool_text
+                            )
+                            char_len = len(tool_text)
+                            tool_text = (
+                                f"{tool_text[:OFFLOAD_SUMMARY_CHARS]}..."
+                                f"[完整结果 refs/{ref_id}，共 {char_len} 字符]"
+                            )
+                            offloaded_chars += char_len - len(tool_text)
+                            saved_tokens += estimate_tokens(char_len - len(tool_text))
+                        except Exception as ex:
+                            # 落盘失败（磁盘/权限等）：保持全量回填，不阻断主链路
+                            logger.warning(f"上下文卸载落盘失败，保持全量回填: {ex}")
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": getattr(block, "id", ""),
-                        "content": self._clean_text(data) if data is not None else f"工具执行失败: {error}",
+                        "content": tool_text if tool_text is not None else f"工具执行失败: {error}",
                     })
                 messages.append({"role": "user", "content": tool_results})
                 hit_tool_use_at_limit = _round == self.MAX_TOOL_ROUNDS - 1
@@ -673,7 +759,7 @@ class BaseAgent:
             text = "".join(
                 b.text for b in resp.content if getattr(b, "type", "") == "text"
             ).strip()
-            return text, tools_used, tool_evidence, input_tokens, output_tokens
+            return text, tools_used, tool_evidence, input_tokens, output_tokens, offloaded_chars, saved_tokens
 
         # 达到工具轮次上限仍有工具请求：用普通调用收尾，保证一定有最终答复
         if hit_tool_use_at_limit:
@@ -710,9 +796,9 @@ class BaseAgent:
                 b.text for b in resp.content if getattr(b, "type", "") == "text"
             ).strip()
             if text:
-                return text, tools_used, tool_evidence, input_tokens, output_tokens
+                return text, tools_used, tool_evidence, input_tokens, output_tokens, offloaded_chars, saved_tokens
 
-        return "抱歉，处理超时或模型未返回有效内容，请稍后重试。", tools_used, tool_evidence, input_tokens, output_tokens
+        return "抱歉，处理超时或模型未返回有效内容，请稍后重试。", tools_used, tool_evidence, input_tokens, output_tokens, offloaded_chars, saved_tokens
 
     async def _stream_llm(self, system: str, messages: List[Dict], tools: List[Dict], on_event: Any):
         """
@@ -754,6 +840,13 @@ class BaseAgent:
         if name not in allowed:
             logger.warning(f"{self.agent_type.value} 尝试调用权限外工具 {name}，已拒绝")
             return None, f"工具 {name} 不在 {self.agent_type.value} Agent 权限范围内"
+        # Action 层权限（防御纵深，与 _build_tools 暴露层一致）：
+        # 查询/问候等动作下，LLM 即使声明了执行类工具也直接拒绝
+        if req.action is not None and not action_allows_tool(req.action, name):
+            logger.warning(
+                f"{self.agent_type.value} 在 {req.action.value} 动作下尝试调用工具 {name}，已拒绝"
+            )
+            return None, f"工具 {name} 不在当前意图（{req.action.value}）的权限范围内"
         from core.tracing import span
 
         async with span("tool_call", tool=name, query=str(params.get("query", ""))[:80]):
@@ -787,12 +880,15 @@ class BaseAgent:
                 value = str(value)
         return value.encode("utf-8", errors="ignore").decode("utf-8")
 
+    # ── Action 行为指引（注入 system prompt）──────────────────────────────────
+
     def _build_system_prompt(self, req: Request) -> str:
         """
         组装 system prompt：
           1. Agent 静态角色定义
           2. 动态 Skills（业务 SOP，随请求热加载）
-          3. 时间上下文（当前日期/星期/第几节/第几周）—— 所有 Agent 统一注入，
+          3. 意图指引（Action 层行为指令：查询只读 / 请求办理 / 投诉给路径等）
+          4. 时间上下文（当前日期/星期/第几节/第几周）—— 所有 Agent 统一注入，
              是"今天有什么课""现在第几节"类问答的前提。
         """
         prompt = self.system_prompt
@@ -800,6 +896,11 @@ class BaseAgent:
             skill_prompt = self._skill_manager.prompt_for(req.message, self.agent_type.value, req.history)
             if skill_prompt:
                 prompt = f"{prompt}\n\n[动态 Skills]\n{skill_prompt}"
+
+        if req.action is not None:
+            guidance = ACTION_GUIDANCE.get(req.action)
+            if guidance:
+                prompt = f"{prompt}\n\n[意图指引]\n{guidance}"
 
         from personal.time_context import build_time_context
         prompt = f"{prompt}\n\n{build_time_context()}"
@@ -903,6 +1004,7 @@ class AgentOrchestrator:
         deep_api_key: Optional[str] = None,
         deep_base_url: Optional[str] = None,
         deep_model: Optional[str] = None,
+        memory_store: Optional[LayeredStore] = None,
     ):
         def make_client(key: str, url: Optional[str]) -> AsyncAnthropic:
             kwargs: Dict[str, Any] = {"api_key": key}
@@ -931,6 +1033,7 @@ class AgentOrchestrator:
         self._synthesizer = Synthesizer(deep_client, deep_name)
         self._skill_manager = skill_manager
         self._tool_manager  = tool_manager
+        self._memory_store  = memory_store  # 上下文卸载落盘（refs 表），与 MemoryManager 共享
 
         # 每个领域各有 Fast/Deep 两种真实执行配置，而非相同对象的伪副本。
         def agents(cls):
@@ -966,6 +1069,13 @@ class AgentOrchestrator:
             for agent in agents:
                 agent._tool_manager = tool_manager
 
+    def set_memory_store(self, memory_store: Optional[LayeredStore]) -> None:
+        """注入/更新分层记忆存储（上下文卸载落盘），与 MemoryManager 共享实例。"""
+        self._memory_store = memory_store
+        for agents in self._pool.values():
+            for agent in agents:
+                agent._memory_store = memory_store
+
     # ── 主入口 ────────────────────────────────────────────────────────────────
 
     # 兼容映射：旧调用方只传 IntentCategory 时，推导出 domain / action。
@@ -994,6 +1104,7 @@ class AgentOrchestrator:
         t0 = time.monotonic()
 
         # 1. 意图识别（如果调用方已识别则跳过）
+        intent_result = None
         if req.domain is None:
             if req.intent is not None:
                 # 兼容：只有旧版单维 intent 时，推导 domain/action，避免重复调用 LLM
@@ -1019,7 +1130,14 @@ class AgentOrchestrator:
                         "classifier_stage": intent_result.classifier_stage,
                     })
 
-        complexity = self._complexity_decision(req)
+        # 复杂度判定（意图识别的一部分）：意图识别走了 LLM 时复用其 complexity 输出
+        # （零额外调用）；否则走"免费规则 → 拿不准升级 LLM 确认"的级联。
+        llm_signal = (
+            intent_result.complexity
+            if intent_result is not None and req.classifier_stage == "llm"
+            else None
+        )
+        complexity = await self._decide_complexity(req, llm_signal)
         if req.benchmark_strategy == "single_agent" and complexity.mode != "single":
             complexity = ComplexityDecision("single", "Benchmark 单 Agent 基线", [self._route(req.domain)])
         req.complexity_mode = complexity.mode
@@ -1037,7 +1155,7 @@ class AgentOrchestrator:
                 "complexity_reason": complexity.reason,
             })
         if complexity.mode in ("parallel", "dependent"):
-            return await self.run_parallel(req, complexity.targets, on_event)
+            return await self.run_parallel(req, complexity.targets, on_event, tasks=complexity.tasks)
 
         # 2. 路由：按领域选择 Agent 类型
         agent_type = self._route(req.domain)
@@ -1070,6 +1188,7 @@ class AgentOrchestrator:
         req: Request,
         agent_types: List[AgentType],
         on_event: Optional[Any] = None,
+        tasks: Optional[List[Task]] = None,
     ) -> OrchestratorResult:
         """
         轻量多 Agent 协作（非 Agent 间聊天），职责链清晰：
@@ -1079,16 +1198,18 @@ class AgentOrchestrator:
               依赖任务执行时注入协作上下文（能看到前序 Agent 结果）
             → Synthesizer 读取 SharedState 合并为最终回复（LLM 失败降级拼接）
 
-        OrchestratorResult 字段保持兼容。
+        tasks 由调用方给出时（LLM 判定的依赖链，已通过 _tasks_from_llm 校验）
+        直接采用；否则 Planner 现场生成。OrchestratorResult 字段保持兼容。
         """
         t0 = time.monotonic()
 
-        # 1. Planner：拆分为任务 DAG（规则命中 → 依赖链；否则领域并行）
+        # 1. 任务来源：LLM 依赖链（已校验）或 Planner 生成（规则 DAG）
         req.profile = ProfileName.DEEP
-        tasks = TaskPlanner().plan(req, agent_types)[:6]
+        plan = tasks if tasks is not None else TaskPlanner().plan(req, agent_types)
+        plan = list(plan)[:6]
 
         # 2. Executor：分波执行，产出 SharedState
-        shared = await self._executor.execute(req, tasks, on_event)
+        shared = await self._executor.execute(req, plan, on_event)
 
         # 3. Synthesizer：合并最终回复
         final_text = await self._synthesizer.synthesize(
@@ -1159,6 +1280,12 @@ class AgentOrchestrator:
         # Executor 按任务的 required_tool 后置条件补执行，避免出现
         # "任务 success 但待办未创建"。由 Planner 声明，不硬编码具体任务标识。
         if task.required_tool and task.required_tool not in response.tools_used:
+            if req.action is not None and not action_allows_tool(req.action, task.required_tool):
+                # Action 层策略（如 QUERY 只读）：补执行写操作被禁止，跳过（策略内不执行即符合预期）
+                logger.warning(
+                    f"协作任务补执行被 Action 策略拒绝: {task.required_tool} (action={req.action.value})"
+                )
+                return response
             if on_event is not None:
                 await on_event({
                     "type": "tool", "name": task.required_tool,
@@ -1245,6 +1372,189 @@ class AgentOrchestrator:
         primary = self._route(req.domain)
         return ComplexityDecision("single", "单领域或无显式复合语义", [primary])
 
+    # ── LLM 复杂度判定（规则筛 + LLM 升级确认）──────────────────────────────
+    #
+    # 三段式：
+    #   1. 意图识别已走 LLM（stage=="llm"）→ 复用其 complexity 输出（零额外调用）；
+    #   2. 免费关键词规则先判（_complexity_decision，行为与旧版一致）；
+    #   3. 规则判 single 但预筛认为"拿不准"（多从句/长句/多领域无连接词）
+    #      → judge_complexity 升级确认；LLM 结论通过规则校验则采用（LLM 说了算）。
+
+    # 升级预筛的从句切分器：连接词与 _complexity_decision 的 connectors 同源
+    _COMPLEXITY_UPGRADE_CLAUSE_RE = re.compile(
+        r"[，。；、,;]+|(?:同时|另外|顺便|然后|再|还要|以及|并且)"
+    )
+
+    async def _decide_complexity(
+        self,
+        req: Request,
+        llm_complexity: Optional[Any],
+    ) -> ComplexityDecision:
+        """三段式复杂度判定（见上方注释）。"""
+        if llm_complexity is not None:
+            decision = self._complexity_from_llm(llm_complexity, req)
+            if decision is not None:
+                return decision
+            # 复用失败（LLM 输出非法）：规则兜底，不再升级 —— 避免对同一条请求重复调用 LLM
+            return self._complexity_decision(req)
+
+        complexity = self._complexity_decision(req)
+        if complexity.mode != "single" or not self._needs_llm_complexity(req):
+            return complexity
+        signal = await self._intent_recognizer.judge_complexity(req.message, req.history)
+        llm_decision = self._complexity_from_llm(signal, req)
+        return llm_decision if llm_decision is not None else complexity
+
+    def _needs_llm_complexity(self, req: Request) -> bool:
+        """
+        升级预筛：规则判 single 后，判断这条请求是否值得升级 LLM 确认复杂度。
+
+        任一信号命中即升级：
+          1. 消息被切出 ≥3 个从句（信息量大，可能复合）；
+          2. 长消息（>24 字）且 ≥2 个从句；
+          3. 领域关键词命中 ≥2 个领域但无显式连接词（旧规则会判 single 的"隐式复合"）。
+        """
+        msg = req.message
+        clauses = [c for c in self._COMPLEXITY_UPGRADE_CLAUSE_RE.split(msg) if c.strip()]
+        if len(clauses) >= 3:
+            return True
+        if len(msg) > 24 and len(clauses) >= 2:
+            return True
+        lowered = msg.lower()
+        hit_domains = {
+            domain for domain, kws in DOMAIN_KEYWORDS.items()
+            if any(keyword_hit(kw, lowered) for kw in kws)
+        }
+        return len(hit_domains) >= 2
+
+    def _complexity_from_llm(
+        self,
+        signal: Optional[Any],
+        req: Request,
+    ) -> Optional[ComplexityDecision]:
+        """
+        把 LLM 复杂度信号（IntentResult.complexity / judge_complexity 返回值）校验并
+        映射为 ComplexityDecision。LLM 输出不可信：任何非法 → None（调用方回落关键词规则）。
+
+        - targets：领域值 → AgentType，未知领域丢弃、去重、≤3、过滤无实例的；
+        - mode=dependent：任务链必须通过 _tasks_from_llm 硬校验，否则整链作废。
+        """
+        if signal is None:
+            return None
+        mode = getattr(signal, "mode", None)
+        if mode not in ("single", "parallel", "dependent"):
+            return None
+        reason = str(getattr(signal, "reason", "") or "")[:120]
+
+        targets: List[AgentType] = []
+        for value in getattr(signal, "targets", []) or []:
+            try:
+                domain = IntentDomain(str(value))
+            except ValueError:
+                continue
+            agent_type = self._INTENT_ROUTING.get(domain)
+            if agent_type is not None and self._pool.get(agent_type) and agent_type not in targets:
+                targets.append(agent_type)
+
+        if mode == "single":
+            return ComplexityDecision(
+                "single", reason or "LLM 判定单领域", targets or [self._route(req.domain)],
+            )
+        if not targets:
+            return None
+        if mode == "parallel":
+            return ComplexityDecision(
+                "parallel", reason or "LLM 判定多领域并行", targets[:3],
+            )
+        tasks = self._tasks_from_llm(getattr(signal, "tasks", None), req)
+        if tasks is None:
+            return None
+        return ComplexityDecision(
+            "dependent", reason or "LLM 判定任务存在依赖", targets[:3], tasks=tasks,
+        )
+
+    def _tasks_from_llm(
+        self,
+        raw_tasks: Optional[Any],
+        req: Request,
+    ) -> Optional[List[Task]]:
+        """
+        LLM 任务链硬校验（全部为硬性条件，任一不满足 → None 整链作废）：
+
+          - 1~6 个任务（TaskExecutor 上限）；id 非空且唯一
+          - agent 必须是已知领域且池中有实例
+          - depends_on 引用的 id 必须存在，且无环（拓扑检查）
+          - message 缺失时回落自包含格式（含原始用户请求）
+          - required_tool 一律不采用：后置条件是关键词规则链的保险带
+            （规则知道精确写参数）；LLM 链中模型会在自己的工具循环里完成写操作，
+            无参数的硬执行写工具比不执行更危险。
+        """
+        if not isinstance(raw_tasks, list) or not (1 <= len(raw_tasks) <= 6):
+            return None
+        tasks: List[Task] = []
+        seen_ids: Set[str] = set()
+        for raw in raw_tasks:
+            if not isinstance(raw, dict):
+                return None
+            task_id = str(raw.get("id") or "").strip()
+            if not task_id or task_id in seen_ids:
+                return None
+            try:
+                domain = IntentDomain(str(raw.get("agent") or ""))
+            except ValueError:
+                return None
+            agent_type = self._INTENT_ROUTING.get(domain)
+            if agent_type is None or not self._pool.get(agent_type):
+                return None
+            goal = str(raw.get("goal") or "").strip() or self._task_goal_fallback(agent_type)
+            message = str(raw.get("message") or "").strip()
+            if not message:
+                message = f"{goal}。用户请求: {req.message}"
+            depends = raw.get("depends_on") or []
+            if isinstance(depends, str):
+                depends = [depends]
+            if not isinstance(depends, list) or not all(
+                isinstance(d, str) and d.strip() for d in depends
+            ):
+                return None
+            deps = list(dict.fromkeys(d.strip() for d in depends))
+            tasks.append(Task(
+                task_id=task_id,
+                agent_type=agent_type,
+                goal=goal,
+                message=message,
+                depends_on=deps,
+            ))
+            seen_ids.add(task_id)
+        # 依赖引用与无环校验（第二次遍历：LLM 可能引用后置任务的 id）
+        for task in tasks:
+            if any(dep not in seen_ids for dep in task.depends_on):
+                return None
+        if not self._is_acyclic(tasks):
+            return None
+        return tasks
+
+    @staticmethod
+    def _is_acyclic(tasks: List[Task]) -> bool:
+        """Kahn 拓扑排序判环（任务量 ≤6，O(n²) 足够）。"""
+        incoming = {t.task_id: set(t.depends_on) for t in tasks}
+        ready = [t.task_id for t in tasks if not incoming[t.task_id]]
+        done = 0
+        while ready:
+            tid = ready.pop()
+            done += 1
+            for t in tasks:
+                if tid in incoming[t.task_id]:
+                    incoming[t.task_id].discard(tid)
+                    if not incoming[t.task_id]:
+                        ready.append(t.task_id)
+        return done == len(tasks)
+
+    @staticmethod
+    def _task_goal_fallback(agent_type: AgentType) -> str:
+        """LLM 未给 goal 时的兜底（与 TaskPlanner.GOAL_TEMPLATES 同源）。"""
+        return TaskPlanner.GOAL_TEMPLATES.get(agent_type, "回答用户的请求")
+
     @staticmethod
     def _select_profile(req: Request, complexity: ComplexityDecision) -> ProfileName:
         if complexity.mode != "single":
@@ -1283,6 +1593,8 @@ class AgentOrchestrator:
             "model": next((resp.model for resp in responses if resp.model), ""),
             "input_tokens": sum(resp.input_tokens for resp in responses),
             "output_tokens": sum(resp.output_tokens for resp in responses),
+            "offloaded_chars": sum(resp.offloaded_chars for resp in responses),
+            "saved_tokens": sum(resp.saved_tokens for resp in responses),
         }
 
     def _best_agent(self, agent_type: AgentType, profile: Optional[ProfileName] = None) -> Optional[BaseAgent]:

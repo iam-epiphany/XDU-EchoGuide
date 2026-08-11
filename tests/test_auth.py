@@ -40,7 +40,10 @@ def test_user_creation_authentication_and_password_change(tmp_path):
     assert store.authenticate("student01", "abcdef") == user
     assert store.change_password(user.id, "abcdef", "new-password") is True
     assert store.authenticate("student01", "abcdef") is None
-    assert store.authenticate("student01", "new-password") == user
+    # 改密后 authenticate 返回的是 pwd_ver=1 的新版本用户（不是创建时的 pwd_ver=0）
+    assert store.authenticate("student01", "new-password") == auth_service.AuthUser(
+        user.id, user.username, user.role, pwd_ver=1,
+    )
 
 
 def test_signed_session_rejects_tampering(tmp_path, monkeypatch):
@@ -56,12 +59,18 @@ def test_password_change_revokes_old_session(tmp_path, monkeypatch):
     """改密后旧 token 立即失效（pwd_ver 递增 + user_from_scope 比对）。"""
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret")
     store = _store(tmp_path)
+    # user_from_scope 走全局 store 单例：本测试显式指到临时库
+    monkeypatch.setattr(auth_service, "_store", store)
     user = store.create_user("student01", "abcdef")
     token = create_session_token(user)
     assert decode_session_token(token) == user
+    scope = {"headers": [(b"cookie", f"{auth_service.SESSION_COOKIE}={token}".encode("latin-1"))]}
+    assert auth_service.user_from_scope(scope) == user
     assert store.change_password(user.id, "abcdef", "new-password") is True
     # token 内的 pwd_ver=0 已与库中 pwd_ver=1 不一致 → 会话吊销
-    assert decode_session_token(token) is None
+    # 注意：user_from_scope 会把结果缓存进 scope["state"]，改密后须用新 scope 重新校验
+    fresh_scope = {"headers": scope["headers"]}
+    assert auth_service.user_from_scope(fresh_scope) is None
 
 
 def test_old_token_without_pwd_ver_still_valid_when_unchanged(tmp_path, monkeypatch):

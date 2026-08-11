@@ -6,15 +6,21 @@ from __future__ import annotations
 
 import asyncio
 
-from core.domains import IntentDomain
+from core.domains import IntentAction, IntentDomain
+from core.intent_recognizer import ComplexitySignal
 from agents.agent_orchestrator import (
+    ACTION_GUIDANCE,
+    AGENT_TOOL_ALLOWLIST,
     AgentOrchestrator,
     AgentResponse,
     AgentStats,
     AgentType,
     BaseAgent,
     Request,
+    SharedState,
+    Task,
     TaskPlanner,
+    action_allows_tool,
 )
 
 FAKE_KEY = "sk-test-not-used"
@@ -457,3 +463,389 @@ def test_execute_tool_rejects_out_of_scope_tool():
     # 权限内工具正常走执行链（无 handler 结果时返回失败但非权限拒绝）
     data, error = asyncio.run(academic._execute_tool("knowledge_search", {"query": "选课"}, _req("hi")))
     assert "权限" not in (error or "")
+
+
+# ── Action 层执行策略（domain 决定 Agent，action 决定 How）────────────────────
+
+def test_action_allows_tool_policy_matrix():
+    """Action→Tool 策略矩阵：QUERY 禁写、REQUEST 全放行、GREETING/FEEDBACK 全拒、
+    COMPLAINT/OTHER 只读、None 不限制（兼容路径）。"""
+    assert action_allows_tool(IntentAction.QUERY, "add_todo") is False
+    assert action_allows_tool(IntentAction.QUERY, "complete_todo") is False
+    assert action_allows_tool(IntentAction.QUERY, "query_todo") is True
+    assert action_allows_tool(IntentAction.QUERY, "knowledge_search") is True
+
+    assert action_allows_tool(IntentAction.REQUEST, "add_todo") is True
+    assert action_allows_tool(IntentAction.REQUEST, "query_todo") is True
+
+    assert action_allows_tool(IntentAction.GREETING, "knowledge_search") is False
+    assert action_allows_tool(IntentAction.FEEDBACK, "query_todo") is False
+
+    assert action_allows_tool(IntentAction.COMPLAINT, "add_todo") is False
+    assert action_allows_tool(IntentAction.COMPLAINT, "query_todo") is True
+    assert action_allows_tool(IntentAction.OTHER, "add_todo") is False
+    assert action_allows_tool(IntentAction.OTHER, "knowledge_search") is True
+
+    assert action_allows_tool(None, "add_todo") is True
+
+
+def test_build_tools_query_action_readonly():
+    """QUERY：PERSONAL Agent 只暴露只读工具，不暴露写工具（add_todo/complete_todo）。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    personal = orch._pool[AgentType.PERSONAL][0]
+
+    names = {t["name"] for t in personal._build_tools(_req("看看我的待办", action=IntentAction.QUERY))}
+    assert "query_todo" in names and "query_schedule" in names
+    assert "add_todo" not in names and "complete_todo" not in names
+
+
+def test_build_tools_request_action_full_allowlist():
+    """REQUEST：PERSONAL Agent 暴露完整 allowlist（含执行类工具）。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    personal = orch._pool[AgentType.PERSONAL][0]
+
+    names = {t["name"] for t in personal._build_tools(_req("帮我记个待办", action=IntentAction.REQUEST))}
+    assert names == AGENT_TOOL_ALLOWLIST[AgentType.PERSONAL]
+    assert "add_todo" in names
+
+
+def test_build_tools_greeting_feedback_no_tools():
+    """GREETING / FEEDBACK：原则上不开放任何工具。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    campus = orch._pool[AgentType.CAMPUS_LIFE][0]
+
+    assert campus._build_tools(_req("你好", action=IntentAction.GREETING)) == []
+    assert campus._build_tools(_req("这个建议很好", action=IntentAction.FEEDBACK)) == []
+
+
+def test_build_tools_complaint_other_readonly():
+    """COMPLAINT / OTHER：保守策略，只开放只读工具。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    personal = orch._pool[AgentType.PERSONAL][0]
+
+    for action in (IntentAction.COMPLAINT, IntentAction.OTHER):
+        names = {t["name"] for t in personal._build_tools(_req("不满", action=action))}
+        assert "query_todo" in names
+        assert "add_todo" not in names and "complete_todo" not in names
+
+
+def test_execute_tool_query_blocks_write_tool():
+    """防御纵深：QUERY 动作下 Agent 直接调用写工具 → 拒绝（含"权限"），不执行。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    personal = orch._pool[AgentType.PERSONAL][0]
+
+    data, error = asyncio.run(personal._execute_tool(
+        "add_todo", {"content": "买饭卡"}, _req("查一下我的待办", action=IntentAction.QUERY)))
+    assert data is None
+    assert "权限" in error
+
+
+def test_execute_tool_request_allows_write_tool():
+    """REQUEST 动作下写工具正常走执行链（不被权限拦截）。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    personal = orch._pool[AgentType.PERSONAL][0]
+
+    data, error = asyncio.run(personal._execute_tool(
+        "add_todo", {"content": "买饭卡"}, _req("帮我记个待办", action=IntentAction.REQUEST)))
+    assert error is None  # 放行：fake handler 返回 []
+    assert data == []
+
+
+def test_system_prompt_injects_action_guidance():
+    """Action 指引注入 system prompt：各动作注入对应行为指令，None 不注入。"""
+    orch = _orchestrator()
+    academic = orch._pool[AgentType.ACADEMIC][0]
+
+    prompt = academic._build_system_prompt(_req("hi", action=IntentAction.QUERY))
+    assert "[意图指引]" in prompt
+    assert ACTION_GUIDANCE[IntentAction.QUERY] in prompt
+
+    prompt = academic._build_system_prompt(_req("hi", action=IntentAction.REQUEST))
+    assert "积极调用工具解决问题" in prompt
+
+    prompt = academic._build_system_prompt(_req("hi", action=IntentAction.COMPLAINT))
+    assert "识别具体问题点" in prompt
+
+    prompt = academic._build_system_prompt(_req("hi", action=IntentAction.GREETING))
+    assert "无需调用工具" in prompt
+
+    # None：不注入意图指引段（保持原有 prompt 结构）
+    prompt = academic._build_system_prompt(_req("hi"))
+    assert "[意图指引]" not in prompt
+
+
+def test_run_task_backfill_blocked_on_query_action():
+    """Executor 补执行（required_tool）遵守 Action 策略：QUERY 下不补写操作。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+
+    async def fake_execute(task_req, agent_type, on_event=None):
+        return AgentResponse(agent_type=agent_type, content="查询结果", success=True, tools_used=[])
+
+    orch._execute = fake_execute
+    task = Task(
+        task_id="t3",
+        agent_type=AgentType.PERSONAL,
+        goal="记录待办",
+        message="帮我记个待办",
+        required_tool="add_todo",
+        required_tool_args={"content": "补办校园卡"},
+    )
+    req = _req("帮我记个待办", domain=IntentDomain.PERSONAL, action=IntentAction.QUERY)
+    result = asyncio.run(orch._run_task(req, task, SharedState()))
+    assert result.success
+    assert "已按协作计划记录待办" not in result.content
+    assert result.tools_used == []
+
+
+def test_run_task_backfill_executes_on_request_action():
+    """REQUEST 动作下补执行正常落地（写工具被执行并回填）。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+
+    async def fake_execute(task_req, agent_type, on_event=None):
+        return AgentResponse(agent_type=agent_type, content="办理建议", success=True, tools_used=[])
+
+    orch._execute = fake_execute
+    task = Task(
+        task_id="t3",
+        agent_type=AgentType.PERSONAL,
+        goal="记录待办",
+        message="帮我记个待办",
+        required_tool="add_todo",
+        required_tool_args={"content": "补办校园卡"},
+    )
+    req = _req("帮我记个待办", domain=IntentDomain.PERSONAL, action=IntentAction.REQUEST)
+    result = asyncio.run(orch._run_task(req, task, SharedState()))
+    assert "已按协作计划记录待办" in result.content
+    assert "add_todo" in result.tools_used
+
+
+# ── LLM 复杂度判定（规则筛 + LLM 升级确认）───────────────────────────────────
+
+def _signal(mode, targets=None, reason="", tasks=None) -> ComplexitySignal:
+    return ComplexitySignal(mode=mode, targets=targets or [], reason=reason, tasks=tasks)
+
+
+def test_complexity_from_llm_valid_parallel_maps_targets():
+    orch = _orchestrator()
+    decision = orch._complexity_from_llm(_signal("parallel", ["campus_life", "personal"]), _req("x"))
+    assert decision is not None
+    assert decision.mode == "parallel"
+    assert set(decision.targets) == {AgentType.CAMPUS_LIFE, AgentType.PERSONAL}
+
+
+def test_complexity_from_llm_drops_unknown_domains():
+    """未知领域丢弃；全部非法 → None（调用方回落关键词规则）。"""
+    orch = _orchestrator()
+    req = _req("x")
+    decision = orch._complexity_from_llm(_signal("parallel", ["campus_life", "unknown_domain"]), req)
+    assert decision is not None
+    assert decision.targets == [AgentType.CAMPUS_LIFE]
+    assert orch._complexity_from_llm(_signal("parallel", ["unknown_domain"]), req) is None
+    assert orch._complexity_from_llm(None, req) is None
+    assert orch._complexity_from_llm(_signal("weird"), req) is None
+
+
+def test_complexity_from_llm_single_uses_route_fallback():
+    orch = _orchestrator()
+    req = _req("随便聊聊", domain=IntentDomain.CAMPUS_LIFE)
+    decision = orch._complexity_from_llm(_signal("single", []), req)
+    assert decision is not None and decision.mode == "single"
+    assert decision.targets == [AgentType.CAMPUS_LIFE]
+
+
+def test_complexity_from_llm_dependent_builds_tasks():
+    """dependent：LLM 任务链通过校验并映射为 Task 列表。"""
+    orch = _orchestrator()
+    req = _req("我下午有空想办校园卡再记个待办")
+    decision = orch._complexity_from_llm(_signal(
+        "dependent", ["personal", "affairs"],
+        tasks=[
+            {"id": "t1", "agent": "personal", "goal": "查空闲", "message": "查我的空闲时间"},
+            {"id": "t2", "agent": "affairs", "depends_on": ["t1"]},
+        ],
+    ), req)
+    assert decision is not None
+    assert decision.mode == "dependent"
+    assert decision.tasks is not None
+    assert [t.task_id for t in decision.tasks] == ["t1", "t2"]
+    assert decision.tasks[1].depends_on == ["t1"]
+    # message 缺失 → 回落自包含格式（含原始用户请求）
+    assert "用户请求" in decision.tasks[1].message
+
+
+def test_complexity_from_llm_dependent_bad_chain_falls_back():
+    """dependent 任务链非法（成环 / 缺失）→ 整链作废 → None。"""
+    orch = _orchestrator()
+    req = _req("我下午有空想办校园卡再记个待办")
+    assert orch._complexity_from_llm(_signal(
+        "dependent", ["personal", "affairs"],
+        tasks=[
+            {"id": "t1", "agent": "personal", "depends_on": ["t2"]},
+            {"id": "t2", "agent": "affairs", "depends_on": ["t1"]},
+        ],
+    ), req) is None
+    assert orch._complexity_from_llm(_signal("dependent", ["personal"]), req) is None
+
+
+def test_tasks_from_llm_rejects_invalid_chains():
+    orch = _orchestrator()
+    req = _req("x")
+    # depends_on 引用不存在的 id
+    assert orch._tasks_from_llm([{"id": "t1", "agent": "personal", "depends_on": ["t9"]}], req) is None
+    # 超过 6 个任务（Executor 上限）
+    assert orch._tasks_from_llm(
+        [{"id": f"t{i}", "agent": "personal"} for i in range(7)], req,
+    ) is None
+    # 未知领域
+    assert orch._tasks_from_llm([{"id": "t1", "agent": "unknown"}], req) is None
+    # id 重复
+    assert orch._tasks_from_llm(
+        [{"id": "t1", "agent": "personal"}, {"id": "t1", "agent": "affairs"}], req,
+    ) is None
+    # 空列表 / 非列表
+    assert orch._tasks_from_llm([], req) is None
+    assert orch._tasks_from_llm("not-a-list", req) is None
+
+
+def test_needs_llm_complexity_heuristics():
+    orch = _orchestrator()
+    # 短句单领域 → 不升级（免费路径直答）
+    assert orch._needs_llm_complexity(_req("南校区食堂几点关门？")) is False
+    # ≥3 从句 → 升级
+    assert orch._needs_llm_complexity(
+        _req("帮我看看明天有没有课，然后查一下图书馆几点关门，再提醒我交作业")) is True
+    # 长句多从句（换说法的复合请求）→ 升级
+    assert orch._needs_llm_complexity(
+        _req("这周哪天能挤出空，得跑一趟把学费结清，完了帮我定个提醒")) is True
+    # 多领域关键词但无连接词（旧规则判 single 的"隐式复合"）→ 升级
+    assert orch._needs_llm_complexity(_req("教务系统打不开，没法选课了")) is True
+
+
+def test_run_parallel_uses_llm_tasks_when_provided():
+    """LLM 依赖链传入 run_parallel 时直接采用，不被 Planner 规则覆盖。"""
+    orch = _orchestrator()
+    req = _req("我下午有空想办校园卡再记个待办")
+    plan = [
+        Task(task_id="L1", agent_type=AgentType.PERSONAL, goal="查空闲", message="查我的空闲时间"),
+        Task(task_id="L2", agent_type=AgentType.AFFAIRS, goal="查办理", message="查办理信息",
+             depends_on=["L1"]),
+    ]
+    calls = []
+
+    async def fake_execute(task_req, agent_type, on_event=None):
+        calls.append((task_req.message, agent_type))
+        return AgentResponse(agent_type=agent_type, content=f"{agent_type.value} 结果", success=True)
+
+    orch._execute = fake_execute
+    result = asyncio.run(orch.run_parallel(
+        req, [AgentType.PERSONAL, AgentType.AFFAIRS], tasks=plan,
+    ))
+    # 两个任务按依赖分波执行（L1 先、L2 后），消息来自 LLM 链而非 Planner
+    assert [msg for msg, _ in calls] == ["查我的空闲时间", "查办理信息"]
+    assert result.response
+
+
+def test_run_reuses_llm_complexity_when_stage_llm():
+    """意图识别走 LLM 时，run() 复用其 complexity 输出（parallel → run_parallel）。"""
+    from core.intent_recognizer import IntentAction, IntentResult
+
+    orch = _orchestrator()
+    req = _req("食堂几点关门，顺便查下明天课表")
+
+    async def fake_recognize(message, history=None, force_llm=False):
+        return IntentResult(
+            domain=IntentDomain.CAMPUS_LIFE, action=IntentAction.QUERY,
+            intent=None, confidence=0.6, entities={}, reasoning="llm",
+            latency_ms=1.0, classifier_stage="llm",
+            complexity=_signal("parallel", ["campus_life", "personal"]),
+        )
+
+    calls = []
+
+    async def fake_execute(task_req, agent_type, on_event=None):
+        calls.append(agent_type)
+        return AgentResponse(agent_type=agent_type, content=f"{agent_type.value} 结果", success=True)
+
+    orch._intent_recognizer.recognize = fake_recognize
+    orch._execute = fake_execute
+    result = asyncio.run(orch.run(req))
+    assert result.execution["mode"] == "parallel"
+    assert {AgentType.CAMPUS_LIFE, AgentType.PERSONAL} <= set(calls)
+
+
+def test_run_upgrade_path_adopts_llm_judgment():
+    """规则判 single + 预筛命中 → judge_complexity 升级；LLM 合法结论被采用。"""
+    from core.intent_recognizer import IntentAction, IntentResult
+
+    orch = _orchestrator()
+    req = _req("教务系统打不开，没法选课了")   # 多领域词但无连接词 → 升级信号
+
+    async def fake_recognize(message, history=None, force_llm=False):
+        return IntentResult(
+            domain=IntentDomain.IT_HELP, action=IntentAction.QUERY,
+            intent=None, confidence=0.95, entities={}, reasoning="pattern",
+            latency_ms=1.0, classifier_stage="pattern",
+        )
+
+    async def fake_judge(message, history=None):
+        return _signal("parallel", ["it_help", "academic"], reason="两个领域")
+
+    async def fake_execute(task_req, agent_type, on_event=None):
+        return AgentResponse(agent_type=agent_type, content="ok", success=True)
+
+    orch._intent_recognizer.recognize = fake_recognize
+    orch._intent_recognizer.judge_complexity = fake_judge
+    orch._execute = fake_execute
+    result = asyncio.run(orch.run(req))
+    assert result.execution["mode"] == "parallel"
+    assert result.execution["complexity_reason"] == "两个领域"
+
+
+def test_run_upgrade_path_falls_back_when_llm_invalid():
+    """升级后 LLM 不可用/输出非法 → 回落规则结论，行为不比现状差。"""
+    from core.intent_recognizer import IntentAction, IntentResult
+
+    orch = _orchestrator()
+    req = _req("教务系统打不开，没法选课了")
+
+    async def fake_recognize(message, history=None, force_llm=False):
+        return IntentResult(
+            domain=IntentDomain.IT_HELP, action=IntentAction.QUERY,
+            intent=None, confidence=0.95, entities={}, reasoning="pattern",
+            latency_ms=1.0, classifier_stage="pattern",
+        )
+
+    async def fake_judge(message, history=None):
+        return None   # LLM 不可用
+
+    async def fake_execute(task_req, agent_type, on_event=None):
+        return AgentResponse(agent_type=agent_type, content="ok", success=True)
+
+    orch._intent_recognizer.recognize = fake_recognize
+    orch._intent_recognizer.judge_complexity = fake_judge
+    orch._execute = fake_execute
+    result = asyncio.run(orch.run(req))
+    assert result.execution["mode"] == "single"
+
+
+def test_run_single_agent_benchmark_forces_single():
+    """benchmark single_agent：即使规则判 parallel，也强制压回单 Agent。"""
+    orch = _orchestrator()
+    req = _req("食堂几点关门，顺便查下明天课表", domain=IntentDomain.CAMPUS_LIFE)
+    req.benchmark_strategy = "single_agent"
+
+    async def fake_execute(task_req, agent_type, on_event=None):
+        return AgentResponse(agent_type=agent_type, content="ok", success=True)
+
+    orch._execute = fake_execute
+    result = asyncio.run(orch.run(req))
+    assert result.execution["mode"] == "single"
+    assert result.agent_type == AgentType.CAMPUS_LIFE

@@ -1,15 +1,23 @@
 """
-亮点：多轮对话记忆管理
+亮点：多轮对话记忆管理（四层记忆金字塔，对应 TencentDB-Agent-Memory 思路）
 
-三级记忆架构，模拟人类记忆机制：
+四层记忆架构，模拟人类记忆机制：
+  0. 原文层 L0（SQLite）—— 原始对话全量落库，永不丢失，是证据链的锚点
   1. 工作记忆（Redis）—— 当前会话的最近 N 条消息，毫秒级读写
-  2. 情景记忆（ChromaDB）—— 跨会话的历史对话，按语义相似度检索
-  3. 用户画像（ChromaDB）—— 从对话中提炼的长期偏好和实体
+  2. 情景记忆（ChromaDB）—— 跨会话历史检索；压缩时生成"场景块"（layer=scenario）
+     优先注入，普通片段次之（L2 场景层）
+  3. 原子事实（SQLite）—— 从对话提炼的结构化事实，每条带来源会话与轮次，
+     可沿 turn_id 下钻回 L0 原文（L1 事实层，白盒可溯源）
+  4. 用户画像（ChromaDB + SQLite）—— 长期偏好；升级为版本历史可回滚，
+     条目带来源引用（L3 画像层）
 
 关键设计：
-  - 上下文构建时三级记忆融合，按重要性 + 时效性排序
-  - 工作记忆超过阈值时自动压缩（LLM 摘要），防止 context 爆炸
-  - Embedding 由 ChromaDB 内置模型生成（all-MiniLM-L6-v2），不依赖外部 Embedding API
+  - 上下文构建时四层记忆融合，按重要性 + 时效性排序
+  - 工作记忆超过阈值时自动压缩（LLM 场景化摘要），防止 context 爆炸
+  - 提炼画像时一次 LLM 调用同时产出"画像 + 原子事实"（零额外成本），
+    且只有检测到画像信号才调用 LLM（llm_call_count 统计调用率）
+  - Embedding 由本地 bge 中文模型生成（mcp.embeddings，ONNX，不依赖外部 API）；
+    模型不可用时回退 ChromaDB 内置 all-MiniLM-L6-v2（collection 名随向量空间切换）
 """
 import hashlib
 import asyncio
@@ -25,6 +33,9 @@ from typing import Any, Dict, List, Optional
 import chromadb
 import redis.asyncio as redis
 from anthropic import AsyncAnthropic
+
+from mcp.embeddings import get_embedder
+from memory.layered_store import LayeredStore
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +78,13 @@ class Message:
 
 @dataclass
 class MemoryContext:
-    """传给 Agent 的完整上下文。"""
+    """传给 Agent 的完整上下文（四层记忆融合）。"""
     recent_messages:  List[Message]   # 工作记忆：最近对话
-    relevant_history: List[str]       # 情景记忆：语义相关的历史片段
-    user_profile:     Dict[str, Any]  # 用户画像：偏好、常用实体
+    relevant_history: List[str]       # 情景记忆：语义相关历史片段（L2 场景块优先）
+    user_profile:     Dict[str, Any]  # 用户画像：长期偏好、常用实体（L3）
     summary:          str             # 当前会话摘要（压缩后）
+    facts:            List[str]       # 原子事实：结构化偏好/背景声明（L1）
+    memory_trace:     Dict[str, Any]  # 各层命中统计（透出 API/前端，白盒演示用）
 
     @staticmethod
     def _clean(text: str) -> str:
@@ -79,10 +92,12 @@ class MemoryContext:
         return text.encode("utf-8", errors="ignore").decode("utf-8")
 
     def to_prompt_text(self) -> str:
-        """将记忆上下文格式化为 LLM 可用的文本。"""
+        """将记忆上下文格式化为 LLM 可用的文本（场景 → 事实 → 历史 → 画像 → 最近）。"""
         parts = []
         if self.summary:
             parts.append(f"[会话摘要]\n{self._clean(self.summary)}")
+        if self.facts:
+            parts.append("[用户事实]\n" + "\n".join(f"- {self._clean(f)}" for f in self.facts[:8]))
         if self.relevant_history:
             parts.append("[相关历史]\n" + "\n".join(f"- {self._clean(h)}" for h in self.relevant_history[:3]))
         if self.user_profile:
@@ -96,14 +111,17 @@ class MemoryContext:
 
 class MemoryManager:
     """
-    三级记忆管理器。
-
-    工作记忆存 Redis（TTL 24h），情景记忆和用户画像存 ChromaDB（持久化）。
+    四层记忆管理器（对应记忆金字塔）：
+      L0 原文层 —— LayeredStore.raw_messages（SQLite，永不丢失）
+      L1 事实层 —— LayeredStore.facts（结构化原子事实，带证据链）
+      L2 场景层 —— ChromaDB episodic（layer=scenario 场景块优先检索）
+      L3 画像层 —— ChromaDB profile + LayeredStore.profile_history（版本可回滚）
+    工作记忆存 Redis（TTL 24h）。
     """
 
     WORKING_MAX   = 20    # 工作记忆最大条数，超过则触发压缩
     COMPRESS_AT   = 15    # 达到此条数时压缩，保留摘要 + 最近 5 条
-    HISTORY_TOP_K = 5     # 情景记忆检索返回条数
+    HISTORY_TOP_K = 5     # 情景记忆检索返回条数（场景块优先取 2 条）
 
     def __init__(
         self,
@@ -114,6 +132,7 @@ class MemoryManager:
         api_key:      str = "",
         base_url:     Optional[str] = None,
         model:        str = "claude-3-5-sonnet-20241022",
+        layered_store: Optional[LayeredStore] = None,
     ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -121,8 +140,12 @@ class MemoryManager:
         self._client = AsyncAnthropic(**kwargs)
         self._model  = model
 
-        self._redis = redis.from_url(redis_url, decode_responses=True)
+        # L0/L1/L3 数据底座（SQLite，可注入以便测试替换）
+        self._layered = layered_store or LayeredStore()
+        # 记忆模块自身的 LLM 调用计数（画像提炼 + 摘要压缩），供评测统计调用率
+        self.llm_call_count = 0
 
+        self._redis = redis.from_url(redis_url, decode_responses=True)
         # ChromaDB：优先连接独立服务（docker compose 模式），连不上则降级为本地嵌入式
         try:
             # HttpClient 默认也会初始化 ChromaDB telemetry；显式关闭避免 posthog 兼容性错误日志。
@@ -140,12 +163,52 @@ class MemoryManager:
                 settings=chromadb.Settings(anonymized_telemetry=False),
             )
 
+        # Embedding：本地 bge 模型优先；不可用时回退 MiniLM 向量空间。
+        # collection 名随向量空间切换，两种模型的向量绝不混存。
+        embedding_function = get_embedder()
+        if embedding_function is None:
+            logger.warning("本地 Embedding 模型不可用，记忆回退 MiniLM 向量空间")
+        episodic_name = "episodic_v3" if embedding_function is not None else "episodic_v2"
+        profile_name = "user_profile_v2" if embedding_function is not None else "user_profile"
+
         # 情景记忆：存储历史对话片段
         self._episodic = chroma.get_or_create_collection(
-            "episodic_v2", metadata={"hnsw:space": "cosine", "description": "情景记忆（cosine）"},
+            episodic_name,
+            metadata={"hnsw:space": "cosine", "description": "情景记忆（cosine，bge）"},
+            embedding_function=embedding_function,
         )
-        # 用户画像：存储提炼出的偏好和实体
-        self._profile  = chroma.get_or_create_collection("user_profile")
+        # 用户画像：存储提炼出的偏好和实体（只按 user_id 精确读取，不做向量查询）
+        self._profile = chroma.get_or_create_collection(
+            profile_name, metadata={"hnsw:space": "cosine", "description": "用户画像（bge）"},
+            embedding_function=embedding_function,
+        )
+
+        # 跨模型迁移：旧向量空间的原始文本重写入当前空间（仅当当前为空时）
+        self._migrate_collections(chroma)
+
+    def _migrate_collections(self, chroma: Any) -> None:
+        """把旧向量空间的记忆/画像重写入当前 collection（跨模型需重嵌入）。
+
+        仅当当前 collection 为空时进行（幂等），失败不阻断服务启动。
+        """
+        for current, previous in (
+            (self._episodic, "episodic_v2"),
+            (self._profile, "user_profile"),
+        ):
+            if current.name == previous or current.count() != 0:
+                continue  # 本就是回退空间 / 已有数据
+            try:
+                old = chroma.get_collection(previous)
+                records = old.get(include=["documents", "metadatas"])
+                ids = records.get("ids") or []
+                docs = records.get("documents") or []
+                metas = records.get("metadatas") or []
+                if ids and docs:
+                    current.upsert(ids=ids, documents=docs, metadatas=metas)
+                    logger.info("记忆已从 %s 重新索引 %d 条到 %s",
+                                previous, len(ids), current.name)
+            except Exception as ex:
+                logger.debug("记忆迁移 %s 跳过（可忽略）: %s", previous, ex)
 
     # ── 写入 ──────────────────────────────────────────────────────────────────
 
@@ -176,20 +239,32 @@ class MemoryManager:
         }))
         await self._redis.expire(key, 86400)  # 24h TTL
 
+        # L0 原文落库（四层金字塔的证据链锚点，永不丢失）。
+        # 写入失败只告警不阻断主链路（记忆是增强，不是依赖）。
+        try:
+            await self._layered.append_raw(
+                user_id, conv_id, msg.role.value, msg.content, clean_metadata
+            )
+        except Exception as ex:
+            logger.warning(f"L0 原文写入失败 user={user_id}: {ex}")
+
         # 超过压缩阈值时触发压缩
         if await self._redis.llen(key) >= self.COMPRESS_AT:
             await self._compress(user_id, conv_id)
 
     async def update_profile(self, user_id: str, conv_id: str) -> None:
         """
-        从当前对话中提炼用户偏好，更新用户画像（按用户单条聚合）。
+        从当前对话中提炼用户偏好与原子事实，更新用户画像（L3）与事实层（L1）。
 
-        两个设计点（修复旧版缺陷）：
+        设计要点（对应记忆金字塔治理）：
         1. 成本控制 —— 只有最近用户消息包含"画像信号"（偏好/背景声明）才调用 LLM
            提炼，普通提问（"食堂几点关门"）不重复提炼；
-        2. 按用户聚合 —— doc_id = {user_id}_profile 单条，新提炼结果与既有画像
-           合并去重（preferences 上限 20 条），消除旧版"每会话一条 + limit=1
-           无排序"导致的取不到最新画像问题。
+        2. 一次调用双产出 —— LLM 一次返回 {preferences, entities, facts}：
+           画像仍按用户聚合单条（L3），事实写入 facts 表（L1，带来源会话与
+           轮次，可沿证据链下钻回 L0 原文）；零额外 LLM 成本；
+        3. 版本治理 —— 每次提炼把画像快照写入 profile_history（L3 版本历史，
+           可回滚），reason 记录触发信号；
+        4. 去重 —— 与既有 active 事实按文本去重（LLM 合并后的重复提炼不落库）。
         """
         user_id = self._safe_text(user_id)
         conv_id = self._safe_text(conv_id)
@@ -203,20 +278,23 @@ class MemoryManager:
         text = self._safe_text("\n".join(f"{m.role.value}: {m.content}" for m in messages[-10:]))
         existing = await self._get_profile(user_id)
         existing_text = self._safe_text(json.dumps(existing, ensure_ascii=False)) if existing else "（无既有画像）"
-        prompt = f"""从以下西电校园用户对话中提炼用户偏好和关键实体，返回 JSON。
+        prompt = f"""从以下西电校园用户对话中提炼用户偏好、关键实体和原子事实，返回 JSON。
 对话:
 {text}
 
 既有画像（合并时保留仍有效的信息，去除过时条目）:
 {existing_text}
 
-返回格式: {{"preferences": ["..."], "entities": {{"院系专业": [], "年级": [], "校区": [], "诉求类型": []}}}}
-要求：preferences 去重合并，最多 20 条；entities 每个字段最多 10 条。"""
+返回格式: {{"preferences": ["..."], "entities": {{"院系专业": [], "年级": [], "校区": [], "诉求类型": []}}, "facts": [{{"fact": "原子事实一句话", "category": "preference|entity|decision|status"}}]}}
+要求：preferences 去重合并，最多 20 条；entities 每个字段最多 10 条；
+facts 只提炼对话中明确表达的事实（身份背景、偏好、做出的决定、当前状态），
+不与 preferences 重复，最多 10 条。"""
         prompt = self._safe_text(prompt)
 
         try:
+            self.llm_call_count += 1
             resp = await self._client.messages.create(
-                model=self._model, max_tokens=512, temperature=0.0,
+                model=self._model, max_tokens=768, temperature=0.0,
                 thinking={"type": "disabled"},
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -232,6 +310,20 @@ class MemoryManager:
                 k: (v[:10] if isinstance(v, list) else v) for k, v in entities.items()
             }
 
+            # L1 原子事实落库（带证据链：来源会话 + 当前轮次锚点）
+            facts_raw = profile_data.get("facts") if isinstance(profile_data.get("facts"), list) else []
+            source_turn = await self._layered.get_last_turn(user_id, conv_id)
+            facts = [
+                {"fact": str(f.get("fact") or "").strip(),
+                 "category": str(f.get("category") or "preference"),
+                 "source_conv": conv_id, "source_turn": source_turn}
+                for f in facts_raw[:10] if isinstance(f, dict) and str(f.get("fact") or "").strip()
+            ]
+            added = await self._layered.add_facts(user_id, facts)
+            if added:
+                logger.info(f"原子事实新增 {added} 条: {user_id}")
+
+            # L3 画像：用户级单条（聚合）+ 版本历史（可回滚）
             doc_id = f"{user_id}_profile"   # 用户级单条（聚合）
             doc_text = self._safe_text(json.dumps(profile_data, ensure_ascii=False))
 
@@ -242,7 +334,10 @@ class MemoryManager:
                 metadatas=[{"user_id": user_id, "conv_id": conv_id,
                             "ts": datetime.now().isoformat()}],
             )
-            logger.info(f"用户画像已更新: {user_id}（{len(prefs)} 条偏好）")
+            await self._layered.save_profile_version(
+                user_id, doc_text, reason=f"signal: {conv_id}"
+            )
+            logger.info(f"用户画像已更新: {user_id}（{len(prefs)} 条偏好，{added} 条新事实）")
         except Exception as ex:
             logger.warning(f"更新用户画像失败: {ex}")
 
@@ -250,7 +345,7 @@ class MemoryManager:
 
     async def get_context(self, user_id: str, conv_id: str, query: str = "") -> MemoryContext:
         """
-        构建完整的记忆上下文。
+        构建完整的记忆上下文（四层融合）。
 
         query 用于从情景记忆中检索语义相关的历史片段。
         """
@@ -261,30 +356,58 @@ class MemoryManager:
 
         recent = await self._get_working_memory(user_id, conv_id)
 
-        # 2. 情景记忆（跨会话语义检索）
-        history = await self._search_episodic(user_id, query or (recent[-1].content if recent else ""))
+        # 2. 情景记忆（跨会话语义检索，L2 场景块优先）
+        history, layer_counts = await self._search_episodic(
+            user_id, query or (recent[-1].content if recent else "")
+        )
 
-        # 3. 用户画像
+        # 3. 原子事实（L1，结构化偏好/背景，带证据链）
+        facts = await self._list_facts(user_id)
+
+        # 4. 用户画像（L3）
         profile = await self._get_profile(user_id)
 
-        # 4. 会话摘要（如果已压缩过）
+        # 5. 会话摘要（如果已压缩过）
         summary = await self._redis.get(self._summary_key(user_id, conv_id)) or ""
+
+        # 6. 各层命中统计（白盒 trace：透出给 API/前端演示）
+        memory_trace = {
+            "layers": {
+                "raw": await self._layered.count_raw(user_id),
+                "facts": len(facts),
+                "scenario": layer_counts["scenario"],
+                "segments": layer_counts["segment"],
+                "profile_versions": await self._layered.count_profile_versions(user_id),
+            }
+        }
 
         return MemoryContext(
             recent_messages=recent,
             relevant_history=history,
             user_profile=profile,
             summary=summary,
+            facts=[f["fact"] for f in facts[:8]],
+            memory_trace=memory_trace,
         )
+
+    async def _list_facts(self, user_id: str) -> List[Dict[str, Any]]:
+        """读取用户当前有效原子事实（L1；读取失败降级为空，不阻断主链路）。"""
+        try:
+            return await self._layered.list_facts(user_id)
+        except Exception as ex:
+            logger.warning(f"读取原子事实失败: {ex}")
+            return []
 
     # ── 压缩（防止 context 爆炸）─────────────────────────────────────────────
 
     async def _compress(self, user_id: str, conv_id: str) -> None:
         """
-        工作记忆压缩：
-          1. 用 LLM 对旧消息生成摘要
-          2. 摘要存 Redis（覆盖旧摘要）
-          3. 旧消息存入情景记忆（ChromaDB）供跨会话检索
+        工作记忆压缩（L2 场景层生成）：
+          1. 用 LLM 对旧消息生成**场景化摘要**（任务/结论/关键实体），
+             即 L2 场景块 —— 用于跨会话快速恢复"当时在做什么、结论是什么"
+          2. 摘要存 Redis（覆盖旧摘要，会话内快速参考）
+          3. 场景块存入情景记忆（ChromaDB，layer="scenario"），检索时优先注入；
+             对话原文由 L0 层兜底（不再截断存 metadata）
           4. 工作记忆只保留最近 5 条
         """
         messages = await self._get_working_memory(user_id, conv_id)
@@ -294,10 +417,15 @@ class MemoryManager:
         to_compress = messages[:-5]   # 保留最近 5 条
         keep        = messages[-5:]
 
-        # LLM 摘要
+        # LLM 场景化摘要
         text = self._safe_text("\n".join(f"{m.role.value}: {m.content}" for m in to_compress))
-        prompt = self._safe_text(f"用 2-3 句话总结以下对话的关键信息：\n{text}")
+        prompt = self._safe_text(
+            f"总结以下对话。用 3-5 句话输出场景化摘要，必须包含："
+            f"1) 涉及的任务/问题；2) 结论或给出的答案；3) 关键实体（人名/地点/数字/日期）。\n"
+            f"对话:\n{text}"
+        )
         try:
+            self.llm_call_count += 1
             resp = await self._client.messages.create(
                 model=self._model, max_tokens=256, temperature=0.0,
                 thinking={"type": "disabled"},
@@ -313,8 +441,8 @@ class MemoryManager:
         new_summary = self._safe_text(f"{old_summary}\n{summary}").strip()
         await self._redis.setex(skey, 86400, new_summary)
 
-        # 旧消息存入情景记忆
-        await self._store_episodic(user_id, conv_id, text, summary)
+        # 场景块存入情景记忆（L2，原文由 L0 兜底）
+        await self._store_episodic(user_id, conv_id, text, summary, layer="scenario")
 
         # 重置工作记忆为最近 5 条
         key = self._wm_key(user_id, conv_id)
@@ -325,7 +453,7 @@ class MemoryManager:
                 "ts": m.timestamp.isoformat(), "metadata": m.metadata,
             }))
         await self._redis.expire(key, 86400)
-        logger.info(f"工作记忆压缩完成: {user_id}/{conv_id}，摘要 {len(summary)} 字")
+        logger.info(f"工作记忆压缩完成: {user_id}/{conv_id}，场景块 {len(summary)} 字")
 
     # ── 内部辅助 ──────────────────────────────────────────────────────────────
 
@@ -351,26 +479,77 @@ class MemoryManager:
                 )
         return msgs
 
-    async def _search_episodic(self, user_id: str, query: str) -> List[str]:
-        """语义检索情景记忆。ChromaDB 内置 embedding，不依赖外部 API。"""
+    async def _search_episodic(
+        self, user_id: str, query: str
+    ) -> tuple[List[str], Dict[str, int]]:
+        """
+        语义检索情景记忆（分层注入）：
+          1. 先查 L2 场景块（layer=scenario，跨会话"快速恢复工作场景"）
+          2. 再取普通片段（segment，旧数据无 layer 字段按普通处理）
+        返回 (合并文档, 各层命中计数)。
+        """
+        counts = {"scenario": 0, "segment": 0}
         query_text = self._safe_text(query).strip()
         if not query_text:
-            return []
+            return [], counts
+
+        # L2 场景块优先（n=2）
+        scenario = await self._query_episodic(
+            user_id, query_text, n=2, layer="scenario"
+        )
+        counts["scenario"] = len(scenario)
+
+        # 普通片段（排除场景块，Python 侧过滤兼容旧数据无 layer 字段）
+        segments = await self._query_episodic(
+            user_id, query_text, n=self.HISTORY_TOP_K
+        )
+        segments = [d for d in segments if d not in scenario]
+        counts["segment"] = len(segments)
+
+        return scenario + segments, counts
+
+    async def _query_episodic(
+        self, user_id: str, query_text: str, n: int, layer: Optional[str] = None
+    ) -> List[str]:
+        """单次 ChromaDB 语义查询；layer 指定时按 metadata 精确过滤。"""
         try:
-            # 直接传 query_texts，ChromaDB 内置模型自动生成向量做匹配
+            where: Dict[str, Any] = {"user_id": self._safe_text(user_id)}
+            if layer:
+                where["layer"] = layer
             results = await asyncio.to_thread(self._episodic.query,
                 query_texts=[query_text],
-                n_results=self.HISTORY_TOP_K,
-                where={"user_id": self._safe_text(user_id)},
+                n_results=n,
+                where=where,
+                include=["documents", "metadatas"],
             )
             docs = results["documents"][0] if results["documents"] else []
-            return [self._safe_text(doc) for doc in docs if isinstance(doc, str) and doc.strip()]
+            metas = results["metadatas"][0] if results.get("metadatas") else []
+            kept = []
+            for d, mt in zip(docs, metas):
+                if not isinstance(d, str) or not d.strip():
+                    continue
+                # 普通片段查询时排除场景块（旧数据无 layer 字段视为普通）
+                if layer is None and (mt or {}).get("layer") == "scenario":
+                    continue
+                kept.append(self._safe_text(d))
+            return kept
         except Exception as ex:
             logger.warning(f"情景记忆检索失败: {ex}")
             return []
 
-    async def _store_episodic(self, user_id: str, conv_id: str, text: str, summary: str) -> None:
-        """将压缩后的对话片段存入情景记忆。ChromaDB 内置 embedding，不依赖外部 API。"""
+    async def _store_episodic(
+        self,
+        user_id: str,
+        conv_id: str,
+        text: str,
+        summary: str,
+        layer: str = "segment",
+    ) -> None:
+        """
+        将压缩后的对话片段存入情景记忆（ChromaDB）。
+        layer 标记记忆层级：scenario（L2 场景块，检索优先）或 segment（普通片段）。
+        原文全文不再截断入 metadata —— L0 层已全量落库（证据链锚点）。
+        """
         try:
             user_id = self._safe_text(user_id)
             conv_id = self._safe_text(conv_id)
@@ -382,7 +561,7 @@ class MemoryManager:
                 ids=[doc_id],
                 documents=[summary],
                 metadatas=[{"user_id": user_id, "conv_id": conv_id,
-                            "ts": datetime.now().isoformat(), "full_text": self._safe_text(text[:500])}],
+                            "ts": datetime.now().isoformat(), "layer": layer}],
             )
         except Exception as ex:
             logger.warning(f"存储情景记忆失败: {ex}")
@@ -400,6 +579,11 @@ class MemoryManager:
     @staticmethod
     def _wm_key(user_id: str, conv_id: str) -> str:
         return f"wm:{user_id}:{conv_id}"
+
+    @property
+    def layered_store(self) -> LayeredStore:
+        """分层记忆存储（L0/L1/L3 数据底座），供编排器注入共享实例。"""
+        return self._layered
 
     async def close(self) -> None:
         """关闭异步 Redis 连接，供 FastAPI lifespan 调用。"""
