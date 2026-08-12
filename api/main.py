@@ -769,7 +769,7 @@ async def chat(req: ChatRequest, response: Response, request: Request = None):
         # 6. 异步更新用户画像 + 双层语义缓存（不阻塞响应）
         _spawn_background(_memory.update_profile(req.user_id, conv_id))
         if _semantic_cache:
-            # 写入层决策：与读取侧同一规则（叠加编排信号：personal/history/request
+            # 写入层决策：与读取侧同一规则（叠加编排信号：personal/request
             # → skip 不落库），classify 决定 global/user/skip，cache_tier 只做映射
             from mcp.semantic_cache import cache_tier, classify_context_dependence
 
@@ -777,7 +777,6 @@ async def chat(req: ChatRequest, response: Response, request: Request = None):
                 req.message, ctx_text,
                 domain=result.domain.value if result.domain else None,
                 action=result.action.value if result.action else None,
-                classifier_stage=result.execution.get("classifier_stage"),
             )
             tier = cache_tier(dep_write, req.user_id)
             if tier == "user":
@@ -930,7 +929,6 @@ async def chat_stream(req: ChatRequest, request: Request = None):
                         req.message, ctx_text,
                         domain=result.domain.value if result.domain else None,
                         action=result.action.value if result.action else None,
-                        classifier_stage=result.execution.get("classifier_stage"),
                     )
                     tier = cache_tier(dep_write, req.user_id)
                     if tier == "user":
@@ -1194,9 +1192,10 @@ async def upload_knowledge(file: UploadFile = File(...), _admin: AuthUser = Depe
 
     支持格式：
     - `.txt` / `.md`：整个文件作为一篇文档，文件名作为标题
-    - `.json`：JSON 数组格式 `[{"title": "...", "content": "..."}, ...]`
-    - `.pdf`：逐页提取文本，分块记录页码区间；扫描件（无文本层）会明确报错
-    - `.docx`：按文档流顺序提取段落与表格（表格行以 | 拼接）
+    - `.json` / `.jsonl`：JSON 数组 `[{"title": "...", "content": "..."}, ...]` / 每行一个对象
+    - 其余格式（pdf/doc/docx/ppt/pptx/xls/xlsx/odt/odp/rtf/epub/csv 等）由
+      Firecrawl anydoc 统一转为 GFM Markdown，标题/表格结构完整保留；
+      扫描件（无文本层的 PDF）会明确报错
 
     文件大小限制：10MB
     """

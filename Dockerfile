@@ -39,8 +39,17 @@ RUN mkdir -p /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2 && \
 
 # 预下载本地向量模型（bge-small-zh-v1.5 Embedding ~95MB + bge-reranker-base ~570MB）
 # 与运行期共用 mcp/embeddings.py 的下载逻辑，落在默认缓存目录（root 的 ~/.cache）
+# 默认 strict：任一模型不可用即构建失败（保证产物模型齐备）。
+# 受限网络（无 HF 访问）可传 --build-arg MODEL_PRELOAD=skip 跳过预装：
+# 运行时自动降级 chroma 内置模型并 300s 冷却重试下载，网络恢复后可重构建恢复预装。
+ARG MODEL_PRELOAD=strict
 COPY mcp/embeddings.py /tmp/preload/embeddings.py
-RUN python -c "import importlib.util as u; s = u.spec_from_file_location('emb', '/tmp/preload/embeddings.py'); m = u.module_from_spec(s); s.loader.exec_module(m); m.preload_models()"
+RUN if [ "$MODEL_PRELOAD" = "skip" ]; then \
+        echo "[WARN] 已跳过模型预下载（MODEL_PRELOAD=skip），运行时将降级并自动重试"; \
+        mkdir -p /root/.cache/echoguide_models; \
+    else \
+        python -c "import importlib.util as u; s = u.spec_from_file_location('emb', '/tmp/preload/embeddings.py'); m = u.module_from_spec(s); s.loader.exec_module(m); m.preload_models()"; \
+    fi
 
 # ── 阶段 3：生产镜像 ──────────────────────────────────────────────────────────
 FROM base AS production

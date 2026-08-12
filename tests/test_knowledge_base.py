@@ -236,3 +236,133 @@ def test_migrate_no_source_collections_is_silent():
     kb = _kb_for_migration("knowledge_base_v3", _FakeChroma([]))
     kb._migrate_previous_collections()
     assert kb._collection.count() == 0
+
+
+# ── Markdown 结构感知分块 ─────────────────────────────────────────────────
+
+def test_plain_text_falls_back_to_recursive():
+    """无标题/表格/代码块的纯文本：行为与递归分隔符切分一致（回归）。"""
+    kb = _kb()
+    text = "甲" * 400 + "\n\n" + "乙" * 400
+    assert kb._chunk_text(text, chunk_size=500, overlap=60) == kb._chunk_text(text, chunk_size=500, overlap=60)
+    # 与 _split_recursive 结果一致（纯文本路径）
+    expected = [c for c, _, _ in kb._split_recursive(text, kb._CHUNK_SEPARATORS, 500, 60)]
+    assert kb._chunk_text(text, chunk_size=500, overlap=60) == expected
+
+
+def test_heading_chain_injected_and_headings_split_blocks():
+    """标题链注入块首；每个标题是硬边界，开新块。"""
+    text = (
+        "# 校园指南\n\n"
+        "## 校车时刻\n\n"
+        "工作日校车每 15 分钟一班。\n\n"
+        "## 食堂介绍\n\n"
+        "南校区食堂共三层。"
+    )
+    chunks = _kb()._chunk_text(text, chunk_size=500, overlap=60)
+    assert len(chunks) == 2
+    # 每块块首携带「文档标题 > 小节标题」链
+    assert chunks[0].startswith("校园指南 > 校车时刻\n")
+    assert chunks[1].startswith("校园指南 > 食堂介绍\n")
+    # 标题链不进内容区，内容完整保留
+    assert "工作日校车每 15 分钟一班。" in chunks[0]
+    assert "南校区食堂共三层。" in chunks[1]
+
+
+def test_heading_level_updates_chain():
+    """三级标题出现后，链为 文档 > 部分 > 小节；同级/上级标题替换链。"""
+    text = (
+        "# 面试面经\n\n"
+        "## 第一部分\n\n"
+        "### Q1. 项目目标\n\n"
+        "内容一。\n\n"
+        "## 第二部分\n\n"
+        "内容二。"
+    )
+    chunks = _kb()._chunk_text(text, chunk_size=500, overlap=60)
+    assert chunks[0].startswith("面试面经 > 第一部分 > Q1. 项目目标\n")
+    assert chunks[1].startswith("面试面经 > 第二部分\n")
+
+
+def test_table_kept_atomic():
+    """表格整体成块，行不被打散；表格与其标题合并到同一块。"""
+    text = (
+        "# 校历\n\n"
+        "| 周次 | 事项 |\n"
+        "| --- | --- |\n"
+        "| 第1周 | 报到 |\n"
+        "| 第2周 | 选课 |\n"
+        "\n"
+        "补充说明：以上时间以教务系统为准。"
+    )
+    chunks = _kb()._chunk_text(text, chunk_size=500, overlap=60)
+    # 表格是原子单元独立成块；后续段落单独成块（均带链头）
+    assert len(chunks) == 2
+    table_block = chunks[0]
+    assert table_block.startswith("校历\n")
+    assert "| 周次 | 事项 |" in table_block
+    assert "| 第1周 | 报到 |" in table_block
+    assert "| 第2周 | 选课 |" in table_block
+    # 表格行之间不被其他内容插入
+    assert table_block == "校历\n| 周次 | 事项 |\n| --- | --- |\n| 第1周 | 报到 |\n| 第2周 | 选课 |"
+    assert chunks[1] == "校历\n补充说明：以上时间以教务系统为准。"
+
+
+def test_oversized_table_own_block_even_over_budget():
+    """超长表格是原子单元：宁可独占一块超预算，也不拆散结构。"""
+    rows = "\n".join(f"| 第{i}周 | 事项{i} |" for i in range(1, 30))
+    text = f"# 校历\n\n| 周次 | 事项 |\n| --- | --- |\n{rows}"
+    chunks = _kb()._chunk_text(text, chunk_size=100, overlap=20)
+    assert len(chunks) == 1
+    # header + 分隔行 + 29 数据行全部完整保留（表格是原子单元）
+    table_lines = [l for l in chunks[0].split("\n") if l.startswith("|")]
+    assert len(table_lines) == 31
+    assert "| 第29周 | 事项29 |" in chunks[0]
+
+
+def test_code_block_kept_atomic():
+    """代码块整体成块，围栏内容不被打散。"""
+    text = (
+        "# API 示例\n\n"
+        "```python\n"
+        "def add(a, b):\n"
+        "    return a + b\n"
+        "```\n\n"
+        "调用方式见上文。"
+    )
+    chunks = _kb()._chunk_text(text, chunk_size=500, overlap=60)
+    assert len(chunks) == 2
+    code_block = chunks[0]
+    assert code_block.startswith("API 示例\n")
+    assert "```python" in code_block
+    assert "def add(a, b):" in code_block
+    assert code_block.endswith("```")
+    assert chunks[1] == "API 示例\n调用方式见上文。"
+
+
+def test_chunk_size_budget_includes_heading_chain():
+    """标题链计入 chunk_size 预算：块总长（链头+正文）不超过 chunk_size。"""
+    text = (
+        "# 校园指南\n\n"
+        "## 校车时刻\n\n"
+        + "工作日班次说明。" * 100  # 超长段落 → 递归拆分
+    )
+    chunks = _kb()._chunk_text(text, chunk_size=150, overlap=20)
+    assert len(chunks) >= 2
+    for c in chunks:
+        assert len(c) <= 150, f"块超预算: {len(c)} > 150"
+
+
+def test_table_without_heading_still_protected():
+    """无标题文档中的表格同样保护（链头为空时退化但表格仍原子）。"""
+    text = (
+        "| 课程 | 时间 |\n"
+        "| --- | --- |\n"
+        "| 高数 | 周一 |\n"
+        "\n"
+        "课表以教务系统为准。"
+    )
+    chunks = _kb()._chunk_text(text, chunk_size=500, overlap=60)
+    assert len(chunks) == 2
+    assert chunks[0] == "| 课程 | 时间 |\n| --- | --- |\n| 高数 | 周一 |"
+    assert chunks[1] == "课表以教务系统为准。"

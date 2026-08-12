@@ -9,11 +9,18 @@
   - 动作 IntentAction（query/request/greeting/complaint/feedback）
       —— 行为决策依据。
 
-级联识别策略：
-  1. Pattern 高置信度命中直接返回
-  2. Embedding 达到阈值且与第二候选有足够间隔时返回
-  3. 短追问优先继承历史领域
-  4. 只有低置信度请求才调用 LLM
+级联识别策略（宁多付成本、不静默误判）：
+  1. 追问形态 → 直接 LLM（带最近对话，由 LLM 结合上下文裁决）。
+     Embedding 是无上下文概念的匹配器，省略追问只能靠残留疑问词猜领域——
+     猜对是运气，猜错是静默误路由；强信号（那/再/还/别的…）无条件判追问，
+     弱信号（极短疑问句）仅当 pattern 无信号时判追问，完整问句放行免费路径。
+  2. Pattern 高置信 + Embedding 双确认 → 免费直返
+     （关键词子串可能误配，如"电子图书馆怎么登录？"被"图书馆"命中；
+     双确认要求 Embedding 方向一致且达到命中阈值 0.80 —— 低于阈值即使方向
+     一致也只是弱证据；方向分歧或未达阈值则升级 LLM 仲裁，成本仅 ms 级 bge 推理）
+  3. Embedding 达到阈值且与第二候选有足够间隔时返回
+     （与 pattern 弱信号方向矛盾时升级 LLM 仲裁，不静默路由歧义句）
+  4. 未命中或低置信度请求调用 LLM（携带最近对话）
 
 复杂度判定（意图识别的一部分）：
   - LLM 参与意图识别时顺带输出 complexity（single/parallel/dependent，同一次调用零额外成本）
@@ -21,8 +28,11 @@
   - 编排器另有"规则拿不准 → judge_complexity 升级确认"路径（见 agents/agent_orchestrator.py）
 
 追问处理（对话感知）：
-  - 无领域命中的短句（"那几点开门？"）自动从最近对话继承领域，保证追问路由正确。
-  - 结果缓存 key 加入对话历史指纹，同一句追问在不同上下文不再返回陈旧意图。
+  - 追问形态是级联的最高优先级：识别为追问（指代承接/极短省略句）就直接进
+    LLM，不做本地继承（"谢谢"也会继承领域——误路由风险大于省下的 LLM 调用
+    成本），也不让 Embedding 猜（它无上下文概念）。LLM prompt 携带最近对话，
+    由 LLM 结合上下文判断领域。
+  - 结果缓存 key 加入对话历史指纹，同一句追问在不同上下文不会命中陈旧意图。
 
 领域关键词的唯一来源在 core/domains.py，本模块与 Orchestrator、API 层共用，
 消除三处重复维护的漂移问题。
@@ -164,16 +174,20 @@ class IntentRecognizer:
         base_url: Optional[str] = None,
         model: str = "claude-3-5-sonnet-20241022",
         pattern_threshold: float = 0.90,
-        embedding_threshold: float = 0.74,
-        embedding_margin: float = 0.08,
+        embedding_threshold: float = 0.80,
+        embedding_margin: float = 0.10,
     ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
         self.client    = AsyncAnthropic(**kwargs)
         self.model     = model
-        # 阈值可用环境变量覆盖（ECHOGUIDE_INTENT_*）：默认值按旧 Embedding 模型的
-        # 分数分布标定，切换 bge 模型后分布不同，通过评测重标定（见 README）。
+        # 阈值可用环境变量覆盖（ECHOGUIDE_INTENT_*）：有 LLM 兜底时阈值宁紧勿松——
+        # 高阈值只是让"拿不准"的请求多付一次 LLM 调用，低阈值则会把低分误判静默
+        # 路由进领域 Agent（LLM 托底只保护漏判，不保护误判）。
+        # 默认值按真实 bge 标定（probe_intent_thresholds.py）：同构嵌入下模板原文
+        # 1.000、命中区最低 0.820、miss 区最高 0.655，0.80 在分离空档内且不误判；
+        # 0.85 只会把"学费怎么交？"这类高频问句白送到 LLM。
         self.pattern_threshold = float(
             os.getenv("ECHOGUIDE_INTENT_PATTERN_THRESHOLD", str(pattern_threshold)))
         self.embedding_threshold = float(
@@ -232,14 +246,33 @@ class IntentRecognizer:
                 reasoning = llm.get("reasoning", "")
                 stage = "llm"
                 complexity = self._normalize_complexity(llm.get("complexity"))
+            elif self._is_followup_shaped(message, pat.get("domain") != IntentDomain.OTHER):
+                # 追问形态 → 直接 LLM（带最近对话，由 LLM 结合上下文裁决）：
+                #   Embedding 是无上下文概念的匹配器，对省略追问只能靠残留疑问词
+                #   去猜——猜对是运气，猜错是静默误路由；强信号（那/再/还/别的…）
+                #   即使有 pattern 弱信号也不让 Embedding 猜（如"那选课呢？"），
+                #   弱信号（极短疑问句）仅当 pattern 完全无信号时判追问，
+                #   完整问句（"绩点怎么算的？"有主题词）放行 Embedding。
+                llm = await self._llm_recognize(message, history)
+                domain = llm.get("domain", IntentDomain.OTHER)
+                action = llm.get("action", action)
+                confidence = float(llm.get("confidence", 0.0))
+                reasoning = llm.get("reasoning", "")
+                stage = "llm"
+                complexity = self._normalize_complexity(llm.get("complexity"))
             elif (
                 pat.get("domain") != IntentDomain.OTHER
                 and pat.get("confidence", 0.0) >= self.pattern_threshold
             ):
-                domain = pat["domain"]
-                confidence = float(pat["confidence"])
-                reasoning = "关键词高置信度命中"
-            else:
+                # Pattern 高置信 + 双确认：关键词子串可能误配（"电子图书馆怎么
+                # 登录？"被"图书馆"命中 campus_life 直返），Embedding 方向一致
+                # 且达到命中阈值（≥embedding_threshold）才免费直返；方向分歧或
+                # 分数低于阈值（含未命中/失败）→ 升级 LLM 仲裁。
+                # 0.80 是 bge 标定的命中区/未命中区分隔线（probe_intent_thresholds.py：
+                # 命中区最低 0.820、miss 区最高 0.655）：低于它即使方向一致也只是
+                # 噪声级巧合，不能算"双确认"（宁多花钱不误判）。
+                # margin 在此不要求：pattern 已用 ≥0.90 的关键词证据消歧，
+                # margin 只约束独立 Embedding 路径的 top-2 模糊。
                 emb = await self._embedding_recognize(message) if self._embedding_enabled else {
                     "domain": IntentDomain.OTHER,
                     "action": IntentAction.OTHER,
@@ -247,21 +280,60 @@ class IntentRecognizer:
                     "margin": 0.0,
                 }
                 if (
-                    emb.get("domain") != IntentDomain.OTHER
+                    emb.get("domain") == pat["domain"]
                     and emb.get("confidence", 0.0) >= self.embedding_threshold
-                    and emb.get("margin", 0.0) >= self.embedding_margin
                 ):
-                    domain = emb["domain"]
-                    confidence = float(emb["confidence"])
-                    reasoning = "Embedding 高置信度命中"
-                    stage = "embedding"
+                    domain = pat["domain"]
+                    confidence = float(pat["confidence"])
+                    reasoning = "关键词高置信命中（Embedding 双确认）"
                 else:
-                    inherited = self._inherit_domain(message, history, IntentDomain.OTHER, action)
-                    if inherited != IntentDomain.OTHER and self._is_short_followup(message):
-                        domain = inherited
-                        confidence = 0.80
-                        reasoning = "从最近对话继承领域"
-                        stage = "history"
+                    llm = await self._llm_recognize(message, history)
+                    domain = llm.get("domain", IntentDomain.OTHER)
+                    action = llm.get("action", action)
+                    confidence = float(llm.get("confidence", 0.0))
+                    if emb.get("domain") == pat["domain"]:
+                        reason_detail = (
+                            f"Embedding 同向但分数 {emb.get('confidence', 0.0):.2f} "
+                            f"低于阈值 {self.embedding_threshold}"
+                        )
+                    else:
+                        reason_detail = (
+                            f"关键词与 Embedding 分歧（{emb.get('domain') or '未命中'}）"
+                        )
+                    reasoning = f"{reason_detail}，LLM 仲裁"
+                    stage = "llm"
+                    complexity = self._normalize_complexity(llm.get("complexity"))
+            else:
+                    emb = await self._embedding_recognize(message) if self._embedding_enabled else {
+                        "domain": IntentDomain.OTHER,
+                        "action": IntentAction.OTHER,
+                        "confidence": 0.0,
+                        "margin": 0.0,
+                    }
+                    if (
+                        emb.get("domain") != IntentDomain.OTHER
+                        and emb.get("confidence", 0.0) >= self.embedding_threshold
+                        and emb.get("margin", 0.0) >= self.embedding_margin
+                    ):
+                        # 分歧仲裁：Embedding 高置信命中但与 pattern 弱信号方向
+                        # 矛盾（如 pattern 命中 academic 而 Embedding 判 personal
+                        # 的歧义句）→ 不静默路由，升级 LLM 结合上下文裁决
+                        if (
+                            pat.get("domain") != IntentDomain.OTHER
+                            and emb["domain"] != pat["domain"]
+                        ):
+                            llm = await self._llm_recognize(message, history)
+                            domain = llm.get("domain", IntentDomain.OTHER)
+                            action = llm.get("action", action)
+                            confidence = float(llm.get("confidence", 0.0))
+                            reasoning = f"Pattern 弱命中 {pat['domain'].value} 与 Embedding {emb['domain'].value} 分歧，LLM 仲裁"
+                            stage = "llm"
+                            complexity = self._normalize_complexity(llm.get("complexity"))
+                        else:
+                            domain = emb["domain"]
+                            confidence = float(emb["confidence"])
+                            reasoning = "Embedding 高置信度命中"
+                            stage = "embedding"
                     else:
                         llm = await self._llm_recognize(message, history)
                         domain = llm.get("domain", IntentDomain.OTHER)
@@ -467,11 +539,16 @@ class IntentRecognizer:
         return ComplexitySignal(mode=mode, targets=targets, reason=reason, tasks=tasks)
 
     async def _embedding_recognize(self, message: str) -> Dict[str, Any]:
-        """策略 2：Embedding 向量相似度匹配（按领域模板）。"""
+        """策略 2：Embedding 向量相似度匹配（按领域模板）。
+
+        用户消息与模板**同构嵌入**（都不带 bge-zh 指令前缀）：领域模板是"用户
+        问法原型"，与用户消息同为 query 形态——指令前缀只该用于 RAG 检索
+        （query vs passage 异构），用在模板匹配会把同义文本的相似度从 ~1.0
+        压到 ~0.79（实测），导致阈值再紧都无法命中、Embedding 级联空转。
+        """
         try:
             await self._load_template_embeddings()
-            # 用户消息按 query 处理（bge-zh 指令前缀只加在 query 侧）
-            msg_vec = await self._embed_text(message, is_query=True)
+            msg_vec = await self._embed_text(message, is_query=False)
 
             scored: List[tuple[float, IntentDomain]] = []
             for domain, vecs in self._tpl_embeddings.items():
@@ -507,43 +584,49 @@ class IntentRecognizer:
             "confidence": max(domain_score, action_score) or 0.0,
         }
 
-    # ── 追问继承（对话感知）──────────────────────────────────────────────────
+    # ── 追问形态检测（防 Embedding 误判）───────────────────────────────────
+    # 省略追问（"那几点开门呢？"/"几点？"/"下午呢？"）没有主题词，Embedding
+    # 无上下文概念、只能靠残留疑问词猜领域——猜对是运气，猜错是静默误路由。
+    # 级联中最优先：判为追问 → 直接 LLM（带最近对话，由 LLM 结合上下文裁决）。
+    # 两级信号：
+    #   强信号（指代承接词）→ 无条件判追问——即使有 pattern 弱信号也不让
+    #     Embedding 猜（"那选课呢？"主题词弱命中 academic，但语义依赖上文）；
+    #   弱信号（极短疑问句/呢结尾）→ 仅当 pattern 完全无信号时判追问——
+    #     完整问句（"绩点怎么算的？"有主题词，Embedding 1.000 免费命中）
+    #     必须放行；"几点？""什么时候？"无主题词才进 LLM。
+    #   注意："这"不放强信号——"这学期/这周"等时间名词极常见，
+    #     "这学期选课什么时候开始？"（13 字）是完整问句，Embedding 1.000 命中。
 
-    @staticmethod
-    def _inherit_domain(
-        message: str,
-        history: Optional[List[Dict[str, str]]],
-        domain: IntentDomain,
-        action: IntentAction,
-    ) -> IntentDomain:
+    _FOLLOWUP_STRONG = ("那", "再", "还", "然后", "别的", "其他", "也", "又", "接着", "另外", "另一个", "它")
+    _FOLLOWUP_QUESTION_WORDS = ("几点", "多少", "什么", "哪", "怎么", "几号", "几")
+
+    @classmethod
+    def _is_followup_shaped(cls, message: str, has_pattern_signal: bool = False) -> bool:
         """
-        追问继承：当前消息无领域命中、且属于短句追问时，
-        从最近几轮用户消息的领域关键词中继承领域。
+        追问形态启发式（两级信号，级联最优先路由到 LLM）。
 
-        例如：上一轮"南校区食堂几点关门？" → 追问"那几点开门呢？" → campus_life。
+        - 强信号：含指代承接词（那/再/还/别的/其他/也/又/接着/另外/它…）
+          且 ≤14 字 → 承接上文话题，无条件判追问（"那几点开门呢？"/"那选课呢？"）；
+        - 弱信号（需 pattern 无信号）：
+          · 去标点后以"呢"结尾且 ≤8 字 → 省略追问（"下午呢？"）；
+          · 极短且含疑问词（≤8 字）→ 省略疑问（"几点？"/"什么时候？"）。
+        完整问句（"绩点怎么算的？"有主题词信号）、社交语（"谢谢/好的"）
+        返回 False，放行 Pattern/Embedding 免费路径。
         """
-        if domain != IntentDomain.OTHER:
-            return domain
-        if action not in (IntentAction.QUERY, IntentAction.REQUEST, IntentAction.OTHER):
-            return domain
-        if not history:
-            return domain
-
-        # 只从 user 消息里找领域线索
-        for m in reversed(history[-6:]):
-            if m.get("role") != "user":
-                continue
-            text = str(m.get("content", ""))
-            hit_domain, score = domain_hit_score(text)
-            if hit_domain is not None and hit_domain != IntentDomain.OTHER and score >= 0.55:
-                logger.info(f"追问领域继承: {message[:20]!r} → {hit_domain.value}（来自历史: {text[:20]!r}）")
-                return hit_domain
-        return domain
-
-    @staticmethod
-    def _is_short_followup(message: str) -> bool:
-        compact = re.sub(r"[\s，。！？、,.!?]", "", message or "")
-        return 0 < len(compact) <= 14
+        msg = (message or "").strip()
+        if not msg:
+            return False
+        compact = re.sub(r"[\s，。！？、,.!?]", "", msg)
+        n = len(compact)
+        if 0 < n <= 14 and any(tok in compact for tok in cls._FOLLOWUP_STRONG):
+            return True
+        if has_pattern_signal:
+            return False  # 弱信号要求 pattern 无主题词信号
+        if 0 < n <= 8 and compact.endswith("呢"):
+            return True
+        if 0 < n <= 8 and any(tok in compact for tok in cls._FOLLOWUP_QUESTION_WORDS):
+            return True
+        return False
 
     # ── 实体提取 ──────────────────────────────────────────────────────────────
 
@@ -590,7 +673,9 @@ class IntentRecognizer:
         生成文本向量：本地 bge Embedding 优先，n-gram 哈希兜底。
 
         - 优先使用 mcp.embeddings 的本地 bge 中文模型（与知识库 RAG 同源，
-          512 维）；bge-zh 指令前缀只加在 query 侧（用户消息），模板/文档侧不加；
+          512 维）。bge-zh 指令前缀只用于 RAG 检索的 query 侧（知识库文档
+          passage 侧不加）；意图识别的模板匹配必须同构嵌入（两侧都不加，
+          见 _embedding_recognize 说明），否则同义文本相似度被压到 ~0.79；
         - 模型不可用（如离线环境）时永久回退本地 n-gram 哈希向量，
           保证三路融合链路在任何环境都不中断。
         """

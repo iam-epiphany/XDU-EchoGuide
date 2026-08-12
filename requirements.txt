@@ -14,13 +14,12 @@ redis==5.2.1
 chromadb==0.5.23           # 向量数据库（长期记忆）
 
 # ── 本地向量模型（Embedding/Rerank，ONNX 轻量推理，无 torch）────────────────
-tokenizers==0.22.2         # bge tokenizer（纯 Python + Rust 绑定，无 torch）
+tokenizers==0.20.3         # bge tokenizer（chromadb 0.5.23 约束 <=0.20.3；0.22.x 会解析失败）
 onnxruntime==1.28.0        # ONNX 推理（bge-small-zh-v1.5 / bge-reranker-base）
 numpy==2.3.5               # 向量计算（chromadb 亦依赖，显式钉版本）
 
 # ── 文档解析（RAG 知识库导入）──────────────────────────────────────────────────
-pypdf==6.11.0              # PDF 文本提取（逐页，轻量纯 Python）
-python-docx==1.2.0         # Word(.docx) 段落+表格提取
+firecrawl-anydoc==0.1.8     # Firecrawl anydoc（Rust 引擎）：PDF/Word/PPT/Excel/ODF/RTF/EPUB/CSV → GFM Markdown
 
 # ── 监控 ──────────────────────────────────────────────────────────────────────
 prometheus-client==0.21.1

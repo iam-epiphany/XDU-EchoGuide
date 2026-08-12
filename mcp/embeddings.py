@@ -26,6 +26,7 @@
 """
 import logging
 import os
+import re
 import threading
 import time
 import urllib.request
@@ -87,6 +88,8 @@ def _download_file(repo_id: str, filename: str, dest: Path) -> bool:
     url = f"{_hf_base()}/{repo_id}/resolve/main/{filename}"
     tmp = dest.with_suffix(dest.suffix + ".part")
     try:
+        # 首次下载时目标子目录（如 onnx/）可能不存在，缺了 open(.part) 直接失败
+        tmp.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(url, headers={"User-Agent": "EchoGuide/1.0"})
         with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT_S) as resp, \
                 open(tmp, "wb") as out:
@@ -106,19 +109,46 @@ def _download_file(repo_id: str, filename: str, dest: Path) -> bool:
         return False
 
 
+def _external_data_refs(onnx_path: Path) -> List[str]:
+    """提取 ONNX 主文件引用的外部权重文件名（onnx-community 导出惯例）。
+
+    onnx-community 的导出把大权重放外部文件（如 model.onnx_data），主文件内
+    initializer 通过 external_data.location 引用。protobuf 二进制中文件名是
+    连续 UTF-8 字符串，正则提取即可（无需 onnx 库）；无引用返回空列表。
+    """
+    try:
+        data = onnx_path.read_bytes()
+    except OSError:
+        return []
+    return list(dict.fromkeys(
+        m.decode("utf-8") for m in re.findall(rb"[a-zA-Z0-9_\-\.]+\.onnx_data", data)))
+
+
 def _ensure_model(repo_id: str, model_priority: List[str], cache_dir: Path) -> Path:
     """确保模型文件 + tokenizer 配套文件在本地缓存，返回 ONNX 模型文件路径。
 
     - 模型文件：按优先级取第一个下载成功的（量化格式可配置）；
+    - 主文件引用的外部权重文件（如 model.onnx_data）一并下载，
+      data 缺失会缓存中毒（主文件在但 session 加载失败），下载失败则作废主文件；
     - 全部不可用或 tokenizer.json 缺失 → 抛 RuntimeError（调用方降级）。
     """
     repo_dir = cache_dir / repo_id.replace("/", "--")
+    repo_dir.mkdir(parents=True, exist_ok=True)  # 首次下载时子目录不存在，缺了会写 .part 失败
     for fname in _TOKENIZER_FILES:
         _download_file(repo_id, fname, repo_dir / fname)
     for fname in model_priority:
         dest = repo_dir / fname
-        if _download_file(repo_id, fname, dest):
+        if not _download_file(repo_id, fname, dest):
+            continue
+        ref_ok = True
+        for ref in _external_data_refs(dest):
+            ref_dest = dest.parent / ref
+            if not _download_file(repo_id, f"{Path(fname).parent}/{ref}", ref_dest):
+                ref_ok = False
+                break
+        if ref_ok:
             return dest
+        dest.unlink(missing_ok=True)  # data 缺失 → 主文件作废，避免缓存中毒
     raise RuntimeError(
         f"模型 {repo_id} 的 ONNX 文件均不可用（检查网络或 ECHOGUIDE_MODEL_CACHE_DIR）")
 

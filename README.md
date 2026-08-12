@@ -42,9 +42,8 @@ EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个�
 flowchart LR
     U["学生请求"] --> G["级联意图识别"]
     G -->|"Pattern ≥ 0.90"| C["复杂度闸门"]
-    G -->|"Embedding ≥ 0.74 且 margin ≥ 0.08"| C
-    G -->|"短追问"| H["历史领域继承"] --> C
-    G -->|"低置信度"| L["LLM 分类"] --> C
+    G -->|"Embedding ≥ 0.80 且 margin ≥ 0.10"| C
+    G -->|"未命中 / 低置信度"| L["LLM 分类（携带最近对话）"] --> C
     C -->|"单领域 / 确定性工具"| F["V4 Flash · Fast"]
     C -->|"RAG / 低置信度"| D["V4 Pro · Deep"]
     C -->|"多领域依赖"| P["Planner → DAG → Executor"]
@@ -61,7 +60,7 @@ flowchart LR
 
 Monitor 按 `academic.fast`、`academic.deep` 等真实 Profile 统计成功率、延迟和在途请求。Fast 执行失败时升级到 Deep；两种 Profile 可以分别配置 API Key、模型和端点。
 
-> 图中 Embedding 阈值 0.74 / margin 0.08 为默认值，可通过 `ECHOGUIDE_INTENT_EMBEDDING_THRESHOLD` / `_MARGIN` 覆盖（见下文「本地向量模型」）。
+> 图中 Embedding 阈值 0.80 / margin 0.10 为默认值（按真实 bge 分布标定：同构嵌入下命中区与 miss 区存在分离空档；宁紧勿松，有 LLM 兜底），可通过 `ECHOGUIDE_INTENT_EMBEDDING_THRESHOLD` / `_MARGIN` 覆盖（见下文「本地向量模型」）。
 
 ## 本地向量模型（Embedding / Rerank）
 
@@ -77,7 +76,7 @@ Monitor 按 `academic.fast`、`academic.deep` 等真实 Profile 统计成功率�
 - **统一入口 `mcp/embeddings.py`**：懒加载单例 + 5 分钟失败冷却自动重试；模型经 `ECHOGUIDE_MODEL_CACHE_DIR` 缓存（Docker 镜像构建时预下载，运行期优先读缓存，支持 `HF_ENDPOINT` 镜像）。
 - **全链路降级**：模型不可用时 Embedding 回退 ChromaDB 内置 MiniLM、Rerank 回退 LLM 打分、意图识别回退 n-gram —— collection 名随向量空间切换（`knowledge_base_v3` 等），两种模型的向量**绝不混存**，旧空间数据自动重嵌入迁移。
 - **bge-zh 指令前缀**只加在 query 侧（`embed_query`）；chromadb 0.5.x 无法区分 query/document，collection 路径默认不加前缀（`ECHOGUIDE_EMBED_PREFIX_MODE=both` 可切换）。
-- **阈值可配**：`ECHOGUIDE_INTENT_EMBEDDING_THRESHOLD` / `_MARGIN` 覆盖意图识别 Embedding 决策阈值（默认 0.74/0.08 按旧模型分数分布标定，切换 bge 后建议重标定，见下）。
+- **阈值可配**：`ECHOGUIDE_INTENT_EMBEDDING_THRESHOLD` / `_MARGIN` 覆盖意图识别 Embedding 决策阈值（默认 0.80/0.10，按真实 bge 分数分布标定；模板匹配为同构嵌入——bge-zh 指令前缀只用于 RAG 检索，见下）。
 
 量化收益（在模型缓存/联网环境运行）：
 
@@ -132,7 +131,7 @@ Executor 每次最多运行三个 Agent、六个任务；依赖缺失或出现�
 
 ## 真实 Benchmark
 
-Benchmark 使用 12 个版本化场景，覆盖五个领域、追问继承、Fast/Deep 路由、专属工具、RAG、多 Agent DAG 和 Guard。默认每个场景运行三次，并与 Always-LLM + Always-Deep 基线比较。
+Benchmark 使用 12 个版本化场景，覆盖五个领域、上下文追问（LLM 结合历史分类）、Fast/Deep 路由、专属工具、RAG、多 Agent DAG 和 Guard。默认每个场景运行三次，并与 Always-LLM + Always-Deep 基线比较。
 
 <!-- BENCHMARK:START -->
 > 实测时间：2026-08-09 16:56:50 +0800 · Commit `a85c806` · 每场景重复 3 次
@@ -166,12 +165,14 @@ Benchmark 使用 12 个版本化场景，覆盖五个领域、追问继承、Fas
 |---|---|---|---|
 | L3 Persona | 长期画像，版本历史可回滚 | ChromaDB + SQLite | 检测到背景/偏好信号时 LLM 提炼 |
 | L2 Scenario | 场景块（任务/结论/关键实体） | ChromaDB `layer=scenario` | 工作记忆压缩时生成，检索优先注入 |
-| L1 Atom | 结构化原子事实，带证据链 | SQLite `facts` | 与画像提炼同一次 LLM 调用双产出 |
+| L1 Atom | 结构化原子事实，带证据链；只存画像未覆盖的事实 | SQLite `facts` | 与画像提炼同一次 LLM 调用双产出 |
 | L0 Raw | 原始对话全量，永不丢失 | SQLite `raw_messages` | 每条消息落库，`turn_id` 为证据锚点 |
 
 设计要点：
 
 - **一次提炼双产出**：画像信号触发时，一次 LLM 调用同时产出画像（L3）与原子事实（L1），零额外成本；事实带 `source_conv/source_turn` 证据链，可下钻到 L0 原文。
+- **L1/L3 分工去重**：L3 画像负责聚合（偏好/实体），L1 事实负责画像之外的细粒度可溯源事实（决定/状态/计划/细节）——被画像条目覆盖（条目是事实子串或事实全文已在画像中）的事实不落 L1，同一信息不双写。
+- **L1 按需召回**：上下文构建时 L3 画像常驻注入（紧凑聚合），L1 事实按当前提问按需召回（共享非停用字符 bigram 才注入），不相关事实与画像均不重复注入；`memory_trace.facts_total` 透出可用事实总数。
 - **白盒可溯源**：高层结论 → 事实 → 原文逐层可查；`memory_trace` 把各层命中统计透出到 `execution`（debug 面板可见）。
 - **上下文卸载**：工具结果超过 1500 字符时完整落盘 refs 表，上下文只留摘要 + `refs/{id}` 索引，需要时 100% 找回 —— 长任务 Token 消耗显著下降。
 - **治理**：画像版本化可回滚；事实失效标记（不物理删除）；`prune` 生命周期清理（原文 TTL / 失效事实 / 版本上限）。
@@ -195,10 +196,10 @@ python evaluation/memory_benchmark.py
 
 ## Agent 工程闭环
 
-- **四层记忆金字塔（L0-L3）**：SQLite 原文层全量保留原始对话（证据链锚点）；原子事实层存结构化事实（带来源会话与轮次，可下钻溯源）；场景层在压缩时生成"场景块"并优先注入跨会话上下文；画像层版本化可回滚。工作记忆仍由 Redis 承担，超过阈值时 LLM 场景化压缩。
+- **四层记忆金字塔（L0-L3）**：SQLite 原文层全量保留原始对话（证据链锚点）；原子事实层存画像未覆盖的结构化事实（带来源会话与轮次，可下钻溯源，上下文阶段按当前提问按需召回）；场景层在压缩时生成"场景块"并优先注入跨会话上下文；画像层聚合偏好/实体、版本化可回滚。工作记忆仍由 Redis 承担，超过阈值时 LLM 场景化压缩。
 - **上下文卸载**：工具调用大结果落盘 refs 表，上下文只留摘要行 + `refs/{id}` 索引（可 100% 找回），长任务 Token 显著下降。
 - **Agentic RAG**：Deep Profile 自主调用知识检索，执行查询改写、并行召回、去重与重排；Embedding 用本地 bge-small-zh-v1.5（中文优化），重排用 bge-reranker-base 本地打分（LLM 兜底）；回答携带来源证据。
-- **知识库导入**：`/knowledge/upload` 与 `data/knowledge_docs/` 投放目录支持 txt/md/json/pdf/docx；PDF 逐页提取并给分块标注页码，Word 按文档流保留段落与表格；分块采用 LangChain 递归分隔符思路（段落 → 句子 → 逗号 → 字符），500 字/60 overlap，超长句子逐级拆开不撑爆单块；扫描件（无文本层 PDF）明确报错，不做 OCR。
+- **知识库导入**：`/knowledge/upload` 与 `data/knowledge_docs/` 投放目录支持 txt/md/json/jsonl 与 Firecrawl anydoc 全部格式（pdf/doc/docx/ppt/pptx/xls/xlsx/odt/odp/rtf/epub/csv 等，统一转 GFM Markdown，标题与表格结构保留）；分块采用 Markdown 结构感知策略（标题链注入块首、标题边界成块、表格/代码块整体保留；纯文本回退递归分隔符思路），500 字/60 overlap，超长段落逐级拆开不撑爆单块；扫描件（无文本层 PDF）明确报错，不做 OCR。
 - **动态 Skills**：五类校园 SOP 可热加载，按 Agent、关键词和对话历史注入 Prompt。
 - **双层语义缓存**：先按上下文依赖性判定缓存策略——公共事实查询进 Global 语义匹配；依赖用户画像的问题按 user_id 分区进 User 层；追问/省略句/指代等强上下文依赖请求直接 bypass 语义缓存。个人数据领域不缓存。
 - **EchoGuide Guard**：Prompt 注入检测、输入限制、用户/IP 限流、审计脱敏与失败关闭。

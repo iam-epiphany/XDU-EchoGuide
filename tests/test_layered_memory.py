@@ -15,6 +15,7 @@ import pytest
 
 from memory.conversation_memory import (
     MemoryContext, MemoryManager, Message, MsgRole,
+    _fact_relevant_to_query, _fact_subsumed_by_profile,
 )
 from memory.layered_store import LayeredStore, estimate_tokens
 
@@ -44,6 +45,41 @@ def test_memory_context_to_prompt_includes_facts():
     assert "[用户事实]\n- 用户在准备考研" in text
     assert "- 用户在南校区" in text
     assert text.index("[用户事实]") < text.index("[用户画像]")  # 事实先于画像
+
+
+# ── 纯逻辑：L1/L3 分工去重 + L1 按需召回 ────────────────────────────────────
+
+def test_fact_subsumed_by_profile():
+    """画像已覆盖的事实（条目是事实子串 / 事实全文在画像中）不落 L1。"""
+    profile = {"preferences": ["准备考研", "喜欢晚上学习"],
+               "entities": {"院系专业": ["通信工程"], "年级": ["大二"]}}
+    # 偏好条目"准备考研"是事实的规范化子串 → 已覆盖（同一信息不双写）
+    assert _fact_subsumed_by_profile("用户在准备考研", profile)
+    # 实体条目"通信工程"是事实子串 → 已覆盖（身份归 L3 聚合画像）
+    assert _fact_subsumed_by_profile("用户是通信工程学院大二学生", profile)
+    # 事实全文已在画像文本中（逐字重复）
+    assert _fact_subsumed_by_profile("准备考研", profile)
+    # 画像未覆盖的细粒度事实（决定/状态/细节）→ 保留
+    assert not _fact_subsumed_by_profile("用户决定周三下午去校医院补办校园卡", profile)
+    # 空画像 → 不覆盖；空事实 → 视为覆盖（不落库）
+    assert not _fact_subsumed_by_profile("用户在准备考研", {})
+    assert _fact_subsumed_by_profile("  ", profile)
+    # 标点差异不影响判定
+    assert _fact_subsumed_by_profile("用户，在准备考研！", profile)
+
+
+def test_fact_relevant_to_query():
+    """L1 按需召回：与查询共享 ≥1 个非停用 bigram 才注入。"""
+    fact = "用户决定周三下午去校医院补办校园卡"
+    # 共享"补办/校园/园卡"等 bigram → 相关
+    assert _fact_relevant_to_query("补办校园卡需要什么材料", fact)
+    # 无关查询 → 不注入
+    assert not _fact_relevant_to_query("食堂几点关门", fact)
+    # 只有停用 bigram（"用户"）不算相关；空查询无 bigram → 不相关
+    assert not _fact_relevant_to_query("用户", "用户在南校区")
+    assert not _fact_relevant_to_query("", fact)
+    # 时间词"今天"是停用 bigram，但共享的非停用 bigram 仍判定相关
+    assert _fact_relevant_to_query("今天去补办校园卡", fact)
 
 
 # ── LayeredStore：L0 原文 ────────────────────────────────────────────────────
@@ -235,14 +271,17 @@ def test_update_profile_dual_output(tmp_path, monkeypatch):
     mgr = _make_manager(tmp_path, monkeypatch)
     fake_profile = _FakeCollection()
     mgr._profile = fake_profile
-    mgr._client = _FakeClient(json.dumps({
+    llm_output = json.dumps({
         "preferences": ["喜欢晚上学习"],
         "entities": {"院系专业": ["通信工程"], "年级": [], "校区": [], "诉求类型": []},
         "facts": [
             {"fact": "用户在准备考研", "category": "status"},
             {"fact": "用户是通信工程学院大二学生", "category": "entity"},
         ],
-    }, ensure_ascii=False))
+    }, ensure_ascii=False)
+    # 两条相同响应：第二次调用用于验证"重复提炼去重"（原测试只给一条响应，
+    # 第二次调用因 LLM 响应耗尽而静默失败，去重实际未被真正断言）
+    mgr._client = _FakeClient(llm_output, llm_output)
 
     async def fake_wm(user_id, conv_id):
         return [
@@ -261,17 +300,19 @@ def test_update_profile_dual_output(tmp_path, monkeypatch):
         await mgr.update_profile("u1", "c1")
         # 仅 1 次 LLM 调用（画像 + 事实双产出，零额外成本）
         assert mgr.llm_call_count == 1
-        # L1 事实落库，带证据链（source_turn = 当前 L0 最大轮次）
+        # L1/L3 分工去重：画像实体"通信工程"覆盖的身份事实不落 L1，
+        # 未被画像覆盖的"用户在准备考研"保留（带证据链：source_turn 锚点）
         facts = await mgr._layered.list_facts("u1")
-        assert {f["fact"] for f in facts} == {"用户在准备考研", "用户是通信工程学院大二学生"}
+        assert {f["fact"] for f in facts} == {"用户在准备考研"}
         assert all(f["source_conv"] == "c1" for f in facts)
         assert all(f["source_turn"] >= 0 for f in facts)
         # L3 画像 upsert + 版本历史
         assert len(fake_profile.upserts) == 1
         assert await mgr._layered.count_profile_versions("u1") == 1
-        # 重复提炼去重：facts 不重复
+        # 重复提炼去重：同一事实再次提炼 → 零新增（按文本去重）
         await mgr.update_profile("u1", "c1")
-        assert await mgr._layered.count_facts("u1") == 2
+        assert mgr.llm_call_count == 2
+        assert await mgr._layered.count_facts("u1") == 1
 
     asyncio.run(scenario())
 
@@ -328,18 +369,62 @@ def test_get_context_layers_and_trace(tmp_path, monkeypatch):
     monkeypatch.setattr(mgr._redis, "get", fake_redis_get)
 
     async def scenario():
-        ctx = await mgr.get_context("u1", "c1", query="选课")
+        # L1 按需召回：与"考研"共享 bigram 的事实注入，无关的"用户在南校区"不注入
+        ctx = await mgr.get_context("u1", "c1", query="考研")
+        assert ctx.facts == ["用户在准备考研"]
         # L2 场景块排在普通片段之前（场景优先注入）
         assert ctx.relevant_history[0].startswith("场景")
         assert "普通历史片段" in ctx.relevant_history
-        # L1 事实注入（上限 8 条）
-        assert ctx.facts == ["用户在准备考研", "用户在南校区"]
-        # L0/L3 计数来自分层存储
+        # L0/L1/L3 计数来自分层存储：facts = 注入条数，facts_total = 可用总数
         trace = ctx.memory_trace["layers"]
         assert trace["scenario"] == 1 and trace["segments"] == 1
-        assert trace["facts"] == 2
+        assert trace["facts"] == 1 and trace["facts_total"] == 2
         assert trace["raw"] == 0 and trace["profile_versions"] == 0
         # 摘要来自工作记忆
         assert ctx.summary == "会话摘要：讨论选课"
+
+        # query 与 L1 事实无关联 → 不注入（L2 历史 + L3 画像仍携带上下文）
+        ctx2 = await mgr.get_context("u1", "c1", query="食堂几点关门")
+        assert ctx2.facts == []
+        assert ctx2.relevant_history[0].startswith("场景")
+
+    asyncio.run(scenario())
+
+
+def test_get_context_facts_not_duplicate_profile(tmp_path, monkeypatch):
+    """L1 与 L3 不重复注入：画像已覆盖的事实即使与 query 相关也不注入（兼容存量数据）。"""
+    mgr = _make_manager(tmp_path, monkeypatch)
+
+    async def fake_wm(user_id, conv_id):
+        return [Message(role=MsgRole.USER, content="我喜欢晚上学习")]
+
+    async def fake_search(user_id, query):
+        return (["场景：咨询学习安排"], {"scenario": 1, "segment": 0})
+
+    async def fake_facts(user_id):
+        return [
+            {"fact": "用户喜欢晚上学习"},                    # 与画像偏好逐字重复（存量数据）
+            {"fact": "用户决定周三下午去校医院补办校园卡"},    # 画像未覆盖
+        ]
+
+    async def fake_profile(user_id):
+        return {"preferences": ["喜欢晚上学习"]}
+
+    async def fake_redis_get(name):
+        return ""
+
+    monkeypatch.setattr(mgr, "_get_working_memory", fake_wm)
+    monkeypatch.setattr(mgr, "_search_episodic", fake_search)
+    monkeypatch.setattr(mgr, "_list_facts", fake_facts)
+    monkeypatch.setattr(mgr, "_get_profile", fake_profile)
+    monkeypatch.setattr(mgr._redis, "get", fake_redis_get)
+
+    async def scenario():
+        # "用户喜欢晚上学习"与画像偏好"喜欢晚上学习"重复 → 即使 query 相关也不注入
+        ctx = await mgr.get_context("u1", "c1", query="晚上学习")
+        assert ctx.facts == []
+        # 画像未覆盖且与 query 相关的事实正常注入
+        ctx2 = await mgr.get_context("u1", "c1", query="补办校园卡")
+        assert ctx2.facts == ["用户决定周三下午去校医院补办校园卡"]
 
     asyncio.run(scenario())

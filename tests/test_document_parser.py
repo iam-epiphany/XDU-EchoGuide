@@ -1,7 +1,10 @@
-"""文档解析层测试：txt/md/json/pdf/docx 解析、页码偏移与错误路径。
+"""文档解析层测试：txt/md/json/jsonl、anydoc 全格式解析与错误路径。
 
-PDF/DOCX 测试文件在测试内动态生成（pypdf 写文本页 + python-docx 写段落表格），
+PDF/DOCX/CSV 测试文件在测试内动态生成（reportlab 写 PDF、python-docx 写段落表格），
 不依赖仓库内的二进制 fixture。
+
+PDF 用英文文本：anydoc 的 PDF 引擎对合成 PDF 的中文 CID 字体提取不可靠
+（真实中文 PDF 的提取质量已由 学习文档/ 目录实测验证），单元测试只验证解析机制。
 """
 from __future__ import annotations
 
@@ -12,36 +15,23 @@ import pytest
 from mcp.document_parser import (
     SUPPORTED_EXTENSIONS,
     parse_document,
-    _extract_docx,
-    _extract_pdf,
+    _ANYDOC_EXTENSIONS,
 )
 
 
 # ── 测试内生成 PDF/DOCX 的辅助 ─────────────────────────────────────────────
 
 def make_pdf(pages_text: list[str]) -> bytes:
-    """用 pypdf 生成含文本页的 PDF（Helvetica 标准字体，纯 ASCII 文本）。"""
-    from pypdf import PdfWriter
-    from pypdf.generic import DictionaryObject, NameObject, StreamObject
+    """用 reportlab 生成含文本页的 PDF（Helvetica，ASCII 文本，可被 anydoc 提取）。"""
+    from reportlab.pdfgen import canvas
 
-    writer = PdfWriter()
-    for text in pages_text:
-        page = writer.add_blank_page(width=612, height=792)
-        stream = StreamObject()
-        safe = text.replace("\\", "\\\\").replace("(", r"\(").replace(")", r"\)")
-        stream.set_data(f"BT /F1 12 Tf 72 720 Td ({safe}) Tj ET".encode())
-        page[NameObject("/Contents")] = stream
-        page[NameObject("/Resources")] = DictionaryObject({
-            NameObject("/Font"): DictionaryObject({
-                NameObject("/F1"): DictionaryObject({
-                    NameObject("/Type"): NameObject("/Font"),
-                    NameObject("/Subtype"): NameObject("/Type1"),
-                    NameObject("/BaseFont"): NameObject("/Helvetica"),
-                })
-            })
-        })
     buf = io.BytesIO()
-    writer.write(buf)
+    c = canvas.Canvas(buf)
+    for text in pages_text:
+        c.setFont("Helvetica", 12)
+        c.drawString(72, 720, text)
+        c.showPage()
+    c.save()
     return buf.getvalue()
 
 
@@ -84,7 +74,7 @@ def test_txt_empty_raises():
         parse_document("空文档.txt", b"   \n ")
 
 
-# ── json ────────────────────────────────────────────────────────────────────
+# ── json / jsonl ────────────────────────────────────────────────────────────
 
 def test_json_array_docs():
     data = '[{"title": "校历", "content": "秋季学期开学。"}, {"title": "选课", "content": "分预选正选。"}]'.encode()
@@ -112,26 +102,51 @@ def test_json_broken_raises():
         parse_document("坏.json", b'[{"title": ')
 
 
-# ── pdf ─────────────────────────────────────────────────────────────────────
+def test_jsonl_line_docs():
+    data = ('{"title": "校历", "content": "秋季学期开学。"}\n'
+            '{"title": "选课", "content": "分预选正选。"}\n').encode()
+    docs = parse_document("知识.jsonl", data)
+    assert len(docs) == 2
+    assert docs[0]["title"] == "校历"
+    assert docs[0]["format"] == "jsonl"         # 自动补 format
+    assert docs[1]["content"] == "分预选正选。"
 
-def test_pdf_multi_page_extracts_text_and_offsets():
+
+def test_jsonl_skips_blank_lines():
+    data = ('{"title": "A", "content": "x"}\n'
+            '\n'
+            '{"title": "B", "content": "y"}\n').encode()
+    docs = parse_document("清单.jsonl", data)
+    assert [d["title"] for d in docs] == ["A", "B"]
+
+
+def test_jsonl_broken_line_raises():
+    with pytest.raises(ValueError, match="JSONL 第 2 行解析失败"):
+        parse_document("坏.jsonl", b'{"title": "A", "content": "x"}\n{"title": ')
+
+
+def test_jsonl_non_object_line_raises():
+    with pytest.raises(ValueError, match="JSONL 第 1 行应为对象"):
+        parse_document("坏.jsonl", b'["not", "an", "object"]')
+
+
+# ── pdf（anydoc）────────────────────────────────────────────────────────────
+
+def test_pdf_multi_page_extracts_text():
     pdf = make_pdf(["Page one text. ", "Page two text. "])
     docs = parse_document("政策文件.pdf", pdf)
     assert len(docs) == 1
     doc = docs[0]
     assert doc["title"] == "政策文件"
     assert doc["format"] == "pdf"
-    # 两页按 "\n\n" 拼接，偏移区间与页码对应
-    full, offsets = doc["content"], doc["page_offsets"]
-    assert full == "Page one text. \n\nPage two text. "
-    assert len(offsets) == 2
-    assert offsets[0] == (0, len("Page one text. "), 1)
-    assert offsets[1][2] == 2
-    assert offsets[1][0] == len("Page one text. ") + 2  # 跳过页分隔符
+    assert "Page one text" in doc["content"]
+    assert "Page two text" in doc["content"]
+    # 页码标注已随 pypdf 解析器移除（anydoc 输出 GFM Markdown，无 page_offsets）
+    assert "page_offsets" not in doc
 
 
 def test_pdf_scanned_no_text_layer_raises():
-    pdf = make_pdf([" "])  # 空内容页 ≈ 扫描件无文本层
+    pdf = make_pdf([" "])  # 空白页 ≈ 扫描件无文本层
     with pytest.raises(ValueError, match="扫描件|无文本层"):
         parse_document("扫描件.pdf", pdf)
 
@@ -141,7 +156,7 @@ def test_pdf_corrupt_raises():
         parse_document("损坏.pdf", b"%PDF-1.4\nthis is not a real pdf file")
 
 
-# ── docx ────────────────────────────────────────────────────────────────────
+# ── docx / csv（anydoc）─────────────────────────────────────────────────────
 
 def test_docx_paragraphs_and_tables_in_order():
     docx = make_docx(
@@ -151,9 +166,10 @@ def test_docx_paragraphs_and_tables_in_order():
     docs = parse_document("日程安排.docx", docx)
     assert len(docs) == 1
     text = docs[0]["content"]
-    assert text.startswith("第一条说明。\n第二条说明。")
-    assert "日期 | 事项" in text          # 表格行以 | 拼接，结构不丢
-    assert "9月1日 | 开学" in text
+    assert "第一条说明。" in text
+    assert "第二条说明。" in text
+    assert "| 日期 | 事项 |" in text            # anydoc 输出 GFM 表格，结构不丢
+    assert "| 9月1日 | 开学 |" in text
     assert docs[0]["format"] == "docx"
 
 
@@ -163,16 +179,28 @@ def test_docx_empty_raises():
         parse_document("空.docx", empty)
 
 
-def test_extract_docx_skips_empty_lines():
-    docx = make_docx(["段落一", "", "段落二"])
-    assert _extract_docx(docx) == "段落一\n段落二"
+def test_csv_to_markdown_table():
+    csv_bytes = "名称,价格\n奶茶,12\n".encode("utf-8")
+    docs = parse_document("价目表.csv", csv_bytes)
+    assert len(docs) == 1
+    text = docs[0]["content"]
+    assert "| 名称 | 价格 |" in text
+    assert "| 奶茶 | 12 |" in text
+    assert docs[0]["format"] == "csv"
+
+
+def test_legacy_office_extensions_accepted():
+    # .doc/.xls/.ppt 等旧格式同样走 anydoc；这里验证扩展名→格式映射完整
+    assert ".doc" in _ANYDOC_EXTENSIONS
+    assert ".xls" in _ANYDOC_EXTENSIONS
+    assert ".ppt" in _ANYDOC_EXTENSIONS
 
 
 # ── 其他 ────────────────────────────────────────────────────────────────────
 
 def test_unsupported_extension_raises():
     with pytest.raises(ValueError, match="不支持的文件格式"):
-        parse_document("表格.xlsx", b"whatever")
+        parse_document("图片.png", b"whatever")
 
 
 def test_no_extension_raises():
@@ -181,4 +209,10 @@ def test_no_extension_raises():
 
 
 def test_supported_extensions():
-    assert SUPPORTED_EXTENSIONS == {".txt", ".md", ".json", ".pdf", ".docx"}
+    assert SUPPORTED_EXTENSIONS == {
+        ".txt", ".md", ".json", ".jsonl",
+    } | set(_ANYDOC_EXTENSIONS)
+    # anydoc 声称覆盖的格式全部在支持列表内
+    for ext in (".doc", ".docx", ".docm", ".ppt", ".pptx", ".xls", ".xlsx",
+                ".xlsb", ".odt", ".ods", ".odp", ".rtf", ".epub", ".csv", ".pdf"):
+        assert ext in SUPPORTED_EXTENSIONS

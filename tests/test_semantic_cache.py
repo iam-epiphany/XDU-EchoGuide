@@ -85,10 +85,9 @@ def test_classify_fallback_user_with_context():
 
 
 def test_classify_orchestrator_signals_skip():
-    """编排信号（写入侧）→ skip：personal/历史追问继承/请求动作。"""
+    """编排信号（写入侧）→ skip：personal 领域/请求动作。"""
     ctx = "[用户画像]"
     assert classify_context_dependence("我的课表几点更新？", ctx_text=ctx, domain="personal") == "skip"
-    assert classify_context_dependence("选课什么时候开始？", ctx_text=ctx, classifier_stage="history") == "skip"
     assert classify_context_dependence("帮我查一下食堂", ctx_text=ctx, action="request") == "skip"
     assert classify_context_dependence("今天有什么安排？", ctx_text=ctx, domain="personal", action="query") == "skip"
 

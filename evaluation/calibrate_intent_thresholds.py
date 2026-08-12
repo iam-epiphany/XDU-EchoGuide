@@ -2,10 +2,10 @@
 
 背景：
   意图识别的 Embedding 级联策略用「用户消息 vs 领域模板」的余弦相似度决策：
-    - embedding_threshold（默认 0.74）：≥ 阈值才考虑 Embedding 命中；
-    - embedding_margin（默认 0.08）：与第二候选领域的间隔 ≥ 该值才可信。
-  这两个默认值按旧模型（all-MiniLM-L6-v2）的分数分布标定；切换 bge 中文模型后
-  分布改变，需要用真实模型重新测量。
+    - embedding_threshold（默认 0.80）：≥ 阈值才考虑 Embedding 命中；
+    - embedding_margin（默认 0.10）：与第二候选领域的间隔 ≥ 该值才可信。
+  有 LLM 兜底时阈值宁紧勿松（高阈值只是多付 LLM 调用，低阈值会静默误路由）；
+  默认值按真实 bge 分布标定（probe_intent_thresholds.py 与 calibrate 脚本同源）。
 
 用法：
   python evaluation/calibrate_intent_thresholds.py
@@ -17,8 +17,9 @@
   将建议值写入 .env 的 ECHOGUIDE_INTENT_EMBEDDING_THRESHOLD / _MARGIN 即可。
 
 说明：
-  - 与生产链路同款嵌入方式：用户消息走 embed_query（带 bge-zh 指令前缀）、
-    模板走 embed_documents（无前缀）；
+  - 与生产链路同款嵌入方式：意图模板匹配为**同构嵌入**（用户消息与模板都走
+    embed_documents、都不带 bge-zh 指令前缀——指令前缀只用于 RAG 检索的
+    query 侧，用在模板匹配会把同义文本相似度压到 ~0.79 导致级联空转）；
   - 需要本地模型缓存或网络（mcp.embeddings）；模型不可用时给出明确提示。
 """
 from __future__ import annotations
@@ -84,7 +85,7 @@ def main() -> int:
     for domain in _DOMAIN_TEMPLATES:
         pos_scores, neg_scores, dom_margins = [], [], []
         for q in _PROBE_QUERIES.get(domain, []):
-            qv = embedder.embed_query([q])[0]
+            qv = embedder.embed_documents([q])[0]   # 同构嵌入（与生产一致）
             pos = max(_cosine(qv, v) for _, v in tpl_index[domain])
             neg = max(
                 _cosine(qv, v) for d2, vecs in tpl_index.items()

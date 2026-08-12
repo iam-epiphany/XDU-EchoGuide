@@ -7,15 +7,17 @@
   2. 情景记忆（ChromaDB）—— 跨会话历史检索；压缩时生成"场景块"（layer=scenario）
      优先注入，普通片段次之（L2 场景层）
   3. 原子事实（SQLite）—— 从对话提炼的结构化事实，每条带来源会话与轮次，
-     可沿 turn_id 下钻回 L0 原文（L1 事实层，白盒可溯源）
-  4. 用户画像（ChromaDB + SQLite）—— 长期偏好；升级为版本历史可回滚，
-     条目带来源引用（L3 画像层）
+     可沿 turn_id 下钻回 L0 原文（L1 事实层，白盒可溯源）；
+     只存画像未覆盖的细粒度事实（决定/状态/计划/细节），上下文阶段按需召回
+  4. 用户画像（ChromaDB + SQLite）—— 长期偏好聚合，版本历史可回滚（L3 画像层）
 
 关键设计：
-  - 上下文构建时四层记忆融合，按重要性 + 时效性排序
+  - 上下文构建时四层记忆融合：L3 画像常驻注入（紧凑聚合），L1 事实按需召回
+    （与当前提问相关才注入，不与 L3 重复注入）
   - 工作记忆超过阈值时自动压缩（LLM 场景化摘要），防止 context 爆炸
   - 提炼画像时一次 LLM 调用同时产出"画像 + 原子事实"（零额外成本），
-    且只有检测到画像信号才调用 LLM（llm_call_count 统计调用率）
+    且只有检测到画像信号才调用 LLM（llm_call_count 统计调用率）；
+    被画像覆盖的事实（偏好/实体条目是其子串）不落 L1（L1/L3 分工去重）
   - Embedding 由本地 bge 中文模型生成（mcp.embeddings，ONNX，不依赖外部 API）；
     模型不可用时回退 ChromaDB 内置 all-MiniLM-L6-v2（collection 名随向量空间切换）
 """
@@ -68,6 +70,84 @@ def _has_profile_signal(messages: List["Message"]) -> bool:
     return any(_PROFILE_SIGNAL_RE.search(t or "") for t in user_texts)
 
 
+# ── L1/L3 分工去重 + L1 按需召回（纯规则，零 LLM 成本）────────────────────────
+# 分层原则（对应记忆金字塔）：L3 画像 = 聚合画像（偏好/实体，紧凑常驻注入）；
+# L1 事实 = 画像之外的细粒度可溯源事实（决定/状态/计划/细节，带证据链）。
+# 同一信息不双写：事实被画像条目覆盖（条目是事实的规范化子串，或事实全文
+# 已在画像中）则不落 L1；上下文阶段 L1 按需召回（与当前提问相关才注入），
+# 不与 L3 重复注入。
+
+
+def _norm_mem_text(text: str) -> str:
+    """记忆文本规范化：去空白与标点、小写（覆盖判定与 bigram 共用的清洗）。"""
+    if not text:
+        return ""
+    return re.sub(r"[\s\W_]+", "", str(text)).lower()
+
+
+def _profile_entries(profile: Dict[str, Any]) -> List[str]:
+    """展平画像为条目列表（preferences + entities 各字段）。"""
+    entries: List[str] = []
+    for pref in profile.get("preferences") or []:
+        if isinstance(pref, str) and pref:
+            entries.append(pref)
+    for vals in (profile.get("entities") or {}).values():
+        if isinstance(vals, list):
+            entries.extend(str(v) for v in vals if isinstance(v, str) and v)
+        elif isinstance(vals, str) and vals:
+            entries.append(vals)
+    return entries
+
+
+def _fact_subsumed_by_profile(fact: str, profile: Dict[str, Any]) -> bool:
+    """
+    事实是否已被画像覆盖（L1/L3 分工去重的判定核心）：
+      1. 事实全文是画像条目文本（preferences + entities）的规范化子串 —— 逐字重复；
+      2. 画像某条目（偏好/实体）是事实的规范化子串 —— 事实只是条目的扩充陈述。
+    任一命中即视为"画像已覆盖"：该事实不落 L1（写入侧）、不注入上下文（读取侧）。
+    注意只对偏好/实体条目判定：画像 dict 可能携带 facts 等附加键，不能整份参与。
+    """
+    nf = _norm_mem_text(fact)
+    if not nf:
+        return True
+    entries_text = _norm_mem_text("\n".join(_profile_entries(profile)))
+    if nf in entries_text:
+        return True
+    return any(
+        ne and ne in nf
+        for ne in (_norm_mem_text(e) for e in _profile_entries(profile))
+    )
+
+
+# L1 按需召回停用 bigram：高频无区分度（"用户"是事实统一主语），命中不计相关性。
+# 时间词（今天/明天）也停用 —— 事实与查询里的时间表述太常见，不承载主题相关性。
+_FACT_STOP_BIGRAMS = frozenset({
+    "用户", "我们", "你们", "他们", "这个", "那个", "什么", "怎么", "可以",
+    "需要", "就是", "已经", "现在", "没有", "不是", "如果", "因为", "所以",
+    "还有", "自己", "今天", "明天", "上次", "平时", "周末",
+})
+
+
+def _fact_bigrams(text: str) -> set:
+    """字符 bigram 集合（中文 1 字产出 1 个 bigram）。"""
+    norm = _norm_mem_text(text)
+    return {norm[i:i + 2] for i in range(len(norm) - 1)}
+
+
+def _fact_relevant_to_query(query: str, fact: str) -> bool:
+    """
+    L1 按需召回：事实与查询共享 ≥1 个非停用 bigram 即相关。
+
+    中文场景下字符 bigram 对"考研/准备""补办/校园卡"这类术语命中可靠；
+    近义改写可能漏召（可接受：L2 情景记忆 + L3 画像仍兜底）。
+    查询无有效 bigram（过短/纯停用词）时视为不相关，由调用方对空查询回退全量。
+    """
+    q_bigrams = _fact_bigrams(query) - _FACT_STOP_BIGRAMS
+    if not q_bigrams:
+        return False
+    return bool(_fact_bigrams(fact) & q_bigrams)
+
+
 @dataclass
 class Message:
     role:       MsgRole
@@ -83,7 +163,7 @@ class MemoryContext:
     relevant_history: List[str]       # 情景记忆：语义相关历史片段（L2 场景块优先）
     user_profile:     Dict[str, Any]  # 用户画像：长期偏好、常用实体（L3）
     summary:          str             # 当前会话摘要（压缩后）
-    facts:            List[str]       # 原子事实：结构化偏好/背景声明（L1）
+    facts:            List[str]       # 原子事实：按需召回的 L1 事实（与当前提问相关）
     memory_trace:     Dict[str, Any]  # 各层命中统计（透出 API/前端，白盒演示用）
 
     @staticmethod
@@ -264,7 +344,9 @@ class MemoryManager:
            轮次，可沿证据链下钻回 L0 原文）；零额外 LLM 成本；
         3. 版本治理 —— 每次提炼把画像快照写入 profile_history（L3 版本历史，
            可回滚），reason 记录触发信号；
-        4. 去重 —— 与既有 active 事实按文本去重（LLM 合并后的重复提炼不落库）。
+        4. L1/L3 分工去重 —— 被画像覆盖的事实（偏好/实体条目是其规范化子串，
+           或事实全文已在画像中）不落 L1，只保留画像之外的细粒度可溯源事实；
+           与既有 active 事实按文本去重（LLM 合并后的重复提炼不落库）。
         """
         user_id = self._safe_text(user_id)
         conv_id = self._safe_text(conv_id)
@@ -287,8 +369,8 @@ class MemoryManager:
 
 返回格式: {{"preferences": ["..."], "entities": {{"院系专业": [], "年级": [], "校区": [], "诉求类型": []}}, "facts": [{{"fact": "原子事实一句话", "category": "preference|entity|decision|status"}}]}}
 要求：preferences 去重合并，最多 20 条；entities 每个字段最多 10 条；
-facts 只提炼对话中明确表达的事实（身份背景、偏好、做出的决定、当前状态），
-不与 preferences 重复，最多 10 条。"""
+facts 只提炼「画像未覆盖」的细粒度可溯源事实（做出的决定、当前状态、具体计划、
+细节），身份背景与偏好归 preferences/entities，严禁与两者内容重复，最多 10 条。"""
         prompt = self._safe_text(prompt)
 
         try:
@@ -319,6 +401,12 @@ facts 只提炼对话中明确表达的事实（身份背景、偏好、做出�
                  "source_conv": conv_id, "source_turn": source_turn}
                 for f in facts_raw[:10] if isinstance(f, dict) and str(f.get("fact") or "").strip()
             ]
+            # L1/L3 分工去重：画像已覆盖（偏好/实体条目是事实子串等）的事实不落 L1，
+            # 避免同一信息既在画像又在事实层（LLM 输出不可信，代码侧硬约束兜底）
+            facts = [
+                f for f in facts
+                if not _fact_subsumed_by_profile(f["fact"], profile_data)
+            ]
             added = await self._layered.add_facts(user_id, facts)
             if added:
                 logger.info(f"原子事实新增 {added} 条: {user_id}")
@@ -347,7 +435,9 @@ facts 只提炼对话中明确表达的事实（身份背景、偏好、做出�
         """
         构建完整的记忆上下文（四层融合）。
 
-        query 用于从情景记忆中检索语义相关的历史片段。
+        query 用于从情景记忆中检索语义相关的历史片段，同时作为 L1 事实
+        按需召回的关联查询：无关事实不注入（L3 画像常驻注入，不与 L3 重复）；
+        query 为空时保守回退全量，不破坏无查询场景。
         """
         # 1. 工作记忆（当前会话最近消息）
         user_id = self._safe_text(user_id)
@@ -357,15 +447,23 @@ facts 只提炼对话中明确表达的事实（身份背景、偏好、做出�
         recent = await self._get_working_memory(user_id, conv_id)
 
         # 2. 情景记忆（跨会话语义检索，L2 场景块优先）
+        search_query = query or (recent[-1].content if recent else "")
         history, layer_counts = await self._search_episodic(
-            user_id, query or (recent[-1].content if recent else "")
+            user_id, search_query
         )
 
-        # 3. 原子事实（L1，结构化偏好/背景，带证据链）
-        facts = await self._list_facts(user_id)
-
-        # 4. 用户画像（L3）
+        # 3. 用户画像（L3，聚合画像 —— 常驻注入；先读：L1 过滤依赖画像）
         profile = await self._get_profile(user_id)
+
+        # 4. 原子事实（L1，细粒度可溯源事实 —— 按需召回）
+        #    两层过滤：① 画像已覆盖的事实不注入（兼容存量数据，与 L3 不重复）；
+        #    ② 与当前提问相关才注入（query 为空时保守回退全量）。
+        facts = await self._list_facts(user_id)
+        injected_facts = [
+            f["fact"] for f in facts
+            if not _fact_subsumed_by_profile(f["fact"], profile)
+            and (not search_query or _fact_relevant_to_query(search_query, f["fact"]))
+        ][:8]
 
         # 5. 会话摘要（如果已压缩过）
         summary = await self._redis.get(self._summary_key(user_id, conv_id)) or ""
@@ -374,7 +472,8 @@ facts 只提炼对话中明确表达的事实（身份背景、偏好、做出�
         memory_trace = {
             "layers": {
                 "raw": await self._layered.count_raw(user_id),
-                "facts": len(facts),
+                "facts": len(injected_facts),
+                "facts_total": len(facts),
                 "scenario": layer_counts["scenario"],
                 "segments": layer_counts["segment"],
                 "profile_versions": await self._layered.count_profile_versions(user_id),
@@ -386,7 +485,7 @@ facts 只提炼对话中明确表达的事实（身份背景、偏好、做出�
             relevant_history=history,
             user_profile=profile,
             summary=summary,
-            facts=[f["fact"] for f in facts[:8]],
+            facts=injected_facts,
             memory_trace=memory_trace,
         )
 

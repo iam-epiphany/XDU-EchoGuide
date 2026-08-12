@@ -1569,7 +1569,9 @@ class AgentOrchestrator:
         )
         if any(marker in req.message.lower() for marker in deterministic_markers):
             return ProfileName.FAST
-        if req.classifier_stage == "llm" or (req.confidence and req.confidence < 0.74):
+        # 置信度低于 Embedding 命中线（0.80）视为低置信度 → DEEP，
+        # 与 intent_recognizer 的 embedding_threshold 联动（改阈值时同步改这里）
+        if req.classifier_stage == "llm" or (req.confidence and req.confidence < 0.80):
             return ProfileName.DEEP
         return ProfileName.FAST
 

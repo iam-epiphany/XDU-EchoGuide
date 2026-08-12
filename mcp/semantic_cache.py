@@ -77,15 +77,14 @@ def classify_context_dependence(
     ctx_text: str = "",
     domain: Optional[str] = None,
     action: Optional[str] = None,
-    classifier_stage: Optional[str] = None,
 ) -> str:
     """
     判断请求的上下文依赖性（纯函数，读写两侧共用同一规则）。
 
     规则优先级（命中即返回，越靠前越保守）：
       1. 编排信号（写入侧有编排结果时传入；读取侧为 None）：
-           personal/other 领域、追问继承 stage="history"、请求/投诉/反馈
-           动作 → skip（个人数据/状态改变不适合缓存）；
+           personal/other 领域、请求/投诉/反馈动作 → skip
+           （个人数据/状态改变不适合缓存）；
       2. 追问/指代/省略信号（优先于第一人称）：
            含指代词（那/这/它）且 ≤ 12 字 → skip（答案依赖上文话题）；
            以"呢"结尾且 ≤ 8 字 → skip；
@@ -107,8 +106,6 @@ def classify_context_dependence(
 
     # 1. 编排信号（仅写入侧有编排结果时可用）
     if domain in ("personal", "other"):
-        return DEP_SKIP
-    if classifier_stage == "history":
         return DEP_SKIP
     if action in ("request", "complaint", "feedback"):
         return DEP_SKIP

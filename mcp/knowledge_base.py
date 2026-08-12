@@ -6,6 +6,11 @@ RAG 知识库 —— 基于 ChromaDB 的真实检索实现。
   2. 语义检索：根据 query 检索最相关的文档片段，支持相关性阈值与领域过滤
   3. 与 MCP 工具框架集成：作为 knowledge_search 工具的真实 handler
 
+分块设计（Markdown 结构感知，见 _chunk_text）：
+  - 纯文本（无标题/表格/代码块）回退为递归分隔符切分，行为与原实现一致
+  - 带结构文档：标题链注入块首（解决"裸文本块"指代丢失）、标题边界优先成块、
+    表格与代码块整体保留不拆散；块长（含注入链）不超过 chunk_size
+
 ChromaDB 在这里的角色：
   - memory/ 中用于存储对话记忆（情景记忆 + 用户画像）
   - 这里用于存储知识库文档（RAG 检索）
@@ -25,7 +30,8 @@ Embedding 模型（v3 起）：
   - 分块带 overlap（60 字），避免跨块句子被拦腰截断导致召回不全
   - min_score 相关性阈值：低分噪音不进 prompt，避免误导 LLM
   - domain 元数据过滤：领域问题只检索对应领域的文档片段
-  - PDF 文档切块时记录每块的页码区间（page_start/page_end），供引用核验
+  - PDF 等文档经 anydoc 转为 Markdown 入库（结构保留）；旧版 pypdf 解析的
+    page_offsets（页码区间标注）仍兼容，见 add_documents
 """
 import asyncio
 import bisect
@@ -33,6 +39,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -214,8 +221,9 @@ class KnowledgeBase:
         documents 格式: [{"title": "...", "content": "...", "domain": "..."}, ...]
         长文档自动语义分块（每片约 500 字，带 60 字 overlap）。
 
-        PDF 文档（document_parser 产出）可携带 page_offsets:
+        旧版 PDF 解析（pypdf）产物可携带 page_offsets:
         [(start, end, page), ...]，切块后每块记录 page_start/page_end 元数据。
+        （新版 anydoc 解析不再产出该字段，此分支向后兼容保留。）
         """
         ids, docs, metas = [], [], []
 
@@ -393,17 +401,166 @@ class KnowledgeBase:
 
     def _chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 60) -> List[str]:
         """
-        语义分块（带 overlap）：
+        Markdown 结构感知分块。
 
-        - 按分隔符优先级递归切分（段落 > 换行 > 句号 > 逗号 > 空格 > 字符），
-          尽量保留段落与句子边界；超长句子会被逐级拆开，不会撑爆单块
-        - 每块开头带上上一块末尾 overlap 字（首尾重叠），避免跨块语义断裂
+        - 纯文本（无标题/表格/代码块）：回退为递归分隔符切分（段落 > 换行 >
+          句号 > 逗号 > 空格 > 字符），带 overlap，行为与原实现一致
+        - 带结构文档（anydoc 输出 GFM Markdown）：
+            * 标题链注入：每块块首带「文档标题 > 小节标题」链，解决裸文本块
+              的指代丢失（"该校/此规定"等）；链长计入 chunk_size 预算
+            * 标题是硬边界：标题处强制封块开新块
+            * 表格与代码块是原子单元：整体成块不拆散，避免结构破坏
+            * 段落粒度成块（不再按句/逗号切），超长段落才递归拆分
         """
         if not text.strip():
             return []
-        if len(text) <= chunk_size:
-            return [text]
-        return [chunk for chunk, _, _ in self._split_recursive(text, self._CHUNK_SEPARATORS, chunk_size, overlap)]
+        units = self._parse_markdown_units(text)
+        if all(kind == "para" for kind, _ in units):
+            # 纯文本：保持原切分行为（回归兼容）
+            if len(text) <= chunk_size:
+                return [text]
+            return [c for c, _, _ in self._split_recursive(text, self._CHUNK_SEPARATORS, chunk_size, overlap)]
+        # 结构文档（含短文档）统一走组装：短文档也注入链头/保护原子单元
+        return self._assemble_structured_chunks(units, chunk_size, overlap)
+
+    # ── Markdown 结构感知分块 ────────────────────────────────────────────────
+
+    _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
+
+    @classmethod
+    def _parse_markdown_units(cls, text: str) -> List[Tuple[str, str]]:
+        """把 Markdown 文本拆成结构单元序列 (kind, text)。
+
+        kind ∈ {"heading", "table", "code", "para"}：
+          - heading：ATX 标题行（^#{1,6} 开头，保留井号用于层级判断）
+          - table：连续以 | 开头的行（GFM 表格，含 | --- | 分隔行）
+          - code：``` 围栏包裹的代码块
+          - para：其余文本按空行分段（与纯文本切分的段落边界一致）
+        """
+        units: List[Tuple[str, str]] = []
+        lines = text.split("\n")
+        n = len(lines)
+        i = 0
+        while i < n:
+            line = lines[i]
+            if cls._HEADING_RE.match(line):
+                units.append(("heading", line.strip()))
+                i += 1
+            elif line.lstrip().startswith("|"):
+                rows = []
+                while i < n and lines[i].lstrip().startswith("|"):
+                    rows.append(lines[i].strip())
+                    i += 1
+                units.append(("table", "\n".join(rows)))
+            elif line.lstrip().startswith("```"):
+                block = [line.strip()]
+                i += 1
+                while i < n and not lines[i].lstrip().startswith("```"):
+                    block.append(lines[i].rstrip())
+                    i += 1
+                if i < n:  # 闭合围栏（未闭合则吞掉到文末）
+                    block.append(lines[i].strip())
+                    i += 1
+                units.append(("code", "\n".join(block)))
+            else:
+                buf = []
+                while (
+                    i < n
+                    and lines[i].strip()
+                    and not cls._HEADING_RE.match(lines[i])
+                    and not lines[i].lstrip().startswith("|")
+                    and not lines[i].lstrip().startswith("```")
+                ):
+                    buf.append(lines[i].rstrip())
+                    i += 1
+                while i < n and not lines[i].strip():
+                    i += 1  # 跳过空行（段落分隔）
+                if buf:
+                    units.append(("para", "\n".join(buf)))
+        return units
+
+    def _assemble_structured_chunks(
+        self,
+        units: List[Tuple[str, str]],
+        chunk_size: int,
+        overlap: int,
+    ) -> List[str]:
+        """结构单元 → 最终分块。
+
+        - 维护标题栈：heading 更新链并强制封块；链头注入下一块块首
+        - para 单元按段落粒度贪心合并，放不下时封块（块间带 overlap），
+          超长段落递归拆分（拆分片段每片独立成块，均带链头）
+        - table / code 原子单元整体成块（不参与合并，不做 overlap）
+        """
+        chunks: List[str] = []
+        chain: List[Tuple[int, str]] = []   # (标题级别, 去井号标题)
+        pend: List[str] = []                # 当前块正文（段落列表）
+        buf_head = ""                       # 当前块的标题链
+        last_tail = ""                      # 上一块正文尾部 overlap 字
+
+        def head_text() -> str:
+            return " > ".join(title for _, title in chain)
+
+        def close_block(keep_overlap: bool) -> None:
+            nonlocal pend, last_tail
+            if not pend:
+                return
+            body = "\n\n".join(pend)
+            chunks.append(f"{buf_head}\n{body}" if buf_head else body)
+            # overlap 仅在同一标题链的相邻块间携带（跨标题语义边界不重叠）
+            last_tail = body[-overlap:] if keep_overlap and len(body) > overlap else ""
+            pend = []
+
+        def emit_atomic(text: str) -> None:
+            chunks.append(f"{buf_head}\n{text}" if buf_head else text)
+
+        for kind, unit in units:
+            if kind == "heading":
+                close_block(keep_overlap=False)
+                level = len(unit) - len(unit.lstrip("#"))
+                title = unit.lstrip("#").strip()
+                while chain and chain[-1][0] >= level:
+                    chain.pop()
+                chain.append((level, title))
+                buf_head = head_text()
+                continue
+
+            if kind in ("table", "code"):
+                close_block(keep_overlap=False)
+                emit_atomic(unit)
+                continue
+
+            # para：段落粒度贪心合并
+            effective = chunk_size - len(buf_head)
+            if pend and len("\n\n".join(pend + [unit])) <= effective:
+                pend.append(unit)
+                continue
+
+            # 放不下当前块：封块并尝试携带 overlap
+            if pend:
+                close_block(keep_overlap=True)
+            if last_tail:
+                if len(last_tail) + 2 + len(unit) <= effective:
+                    pend = [last_tail + "\n\n" + unit]
+                    last_tail = ""
+                    continue
+                emit_atomic(last_tail)   # overlap 尾巴单独成块（不丢内容）
+                last_tail = ""
+
+            if len(unit) > effective:
+                # 超长段落：递归拆分（带 overlap），每片独立成块
+                for sub, _, _ in self._split_recursive(
+                    unit, self._CHUNK_SEPARATORS, effective, overlap
+                ):
+                    chunks.append(f"{buf_head}\n{sub}" if buf_head else sub)
+            else:
+                pend = [unit]
+
+        close_block(keep_overlap=False)
+        # 尾部残留的 overlap 尾巴（无后续段落承接）单独成块
+        if last_tail:
+            chunks.append(f"{buf_head}\n{last_tail}" if buf_head else last_tail)
+        return chunks
 
     def _chunk_with_pages(
         self,
