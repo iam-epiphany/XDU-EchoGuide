@@ -30,6 +30,11 @@ from core.intent_recognizer import IntentAction, IntentDomain, IntentRecognizer
 
 logger = logging.getLogger(__name__)
 
+# 不达标样本日志的截断长度：评测用例为内部数据集，问题保留 200 字符便于复盘，
+# Agent 回答可能很长，截断 800 字符控制单条日志体积。
+_LOG_QUESTION_MAX = 200
+_LOG_RESPONSE_MAX = 800
+
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
 
@@ -139,7 +144,10 @@ Agent 响应: {response}
                     raise ValueError("Judge 输出缺少 JSON")
                 return QualityScores(**data)
             except Exception as ex:
-                logger.warning(f"LLM Judge 第 {attempt + 1} 次失败: {ex}")
+                logger.warning(
+                    f"LLM Judge 第 {attempt + 1} 次失败: {ex} "
+                    f"(question={str(question)[:_LOG_QUESTION_MAX]!r})"
+                )
                 if attempt == 0:
                     # 重试时提示必须输出严格 JSON，减少格式漂移
                     prompt = (
@@ -227,16 +235,18 @@ Agent 回答: {response}
         prompt = self.FAITHFULNESS_PROMPT.format(
             question=question, context=context[:3000], response=response
         )
-        return await self._judge_scalar(prompt, "faithfulness")
+        return await self._judge_scalar(prompt, "faithfulness", question=question)
 
     async def judge_answer_correctness(self, question: str, response: str, golden: str) -> tuple[float, bool]:
         """答案正确性：与标准答案的一致性（需要用例提供 golden_answer）。"""
         prompt = self.ANSWER_CORRECTNESS_PROMPT.format(
             question=question, golden=golden[:2000], response=response
         )
-        return await self._judge_scalar(prompt, "correctness")
+        return await self._judge_scalar(prompt, "correctness", question=question)
 
-    async def _judge_scalar(self, prompt: str, key: str) -> tuple[float, bool]:
+    async def _judge_scalar(
+        self, prompt: str, key: str, question: str = "",
+    ) -> tuple[float, bool]:
         """单指标 Judge：输出 {"key": 0.0-1.0}。返回 (分数, 是否失败)。
 
         失败兜底 0.5 并显式标记，与 judge() 的 judge_failed 语义一致，
@@ -256,7 +266,10 @@ Agent 回答: {response}
                     raise ValueError(f"Judge 输出缺少 {key}")
                 return max(0.0, min(1.0, float(data[key]))), False
             except Exception as ex:
-                logger.warning(f"Judge({key}) 第 {attempt + 1} 次失败: {ex}")
+                logger.warning(
+                    f"Judge({key}) 第 {attempt + 1} 次失败: {ex} "
+                    f"(question={str(question)[:_LOG_QUESTION_MAX]!r})"
+                )
                 if attempt == 0:
                     prompt = prompt + "\n\n注意：上次输出无法解析。请只输出一个 JSON 对象。"
         return 0.5, True
@@ -735,6 +748,42 @@ class EndToEndEvaluator:
             history.append({"role": "assistant", "content": actual_answer})
 
             test_id = f"dialog_{case_idx}" if len(questions) == 1 else f"dialog_{case_idx}_turn_{turn_idx}"
+
+            # 不达标样本留痕：Judge 自身失败单独记录（评判故障 ≠ 质量差），
+            # 质量不达标则连同问题/回答/低分指标一并落日志，供事后复盘。
+            # Judge 失败时分数是 0.5 兜底，必须排除在"低分指标"外避免误读。
+            failed_flag_of = {
+                "faithfulness": "faithfulness_failed",
+                "answer_correctness": "answer_correctness_failed",
+            }
+            if scores.judge_failed:
+                logger.warning(
+                    f"[Eval] Judge 失败 test_id={test_id} conv_id={conv_id} "
+                    f"question={str(question)[:_LOG_QUESTION_MAX]!r} error={scores.error}"
+                )
+            else:
+                failed_flags = [
+                    k for k in ("faithfulness_failed", "answer_correctness_failed")
+                    if metadata.get(k)
+                ]
+                low = {
+                    k: round(v, 3)
+                    for k, v in score_dict.items()
+                    if k != "overall" and isinstance(v, float) and v < self.PASS_THRESHOLD
+                    and not metadata.get(failed_flag_of.get(k, ""), False)
+                }
+                if not passed or low or failed_flags:
+                    logger.warning(
+                        f"[Eval] 质量不达标 test_id={test_id} conv_id={conv_id} user_id={user_id} "
+                        f"question={str(question)[:_LOG_QUESTION_MAX]!r} "
+                        f"overall={scores.overall:.3f} 低分指标={low} "
+                        f"judge_failed_flags={failed_flags or None} "
+                        f"agent_type={orch_result.agent_type.value} "
+                        f"intent={(orch_result.intent.value if orch_result.intent else None)} "
+                        f"judge_model={self._judge_model} "
+                        f"response={str(actual_answer or '')[:_LOG_RESPONSE_MAX]!r}"
+                    )
+
             results.append(EvalResult(
                 test_id=test_id,
                 passed=passed,

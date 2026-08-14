@@ -25,7 +25,8 @@ if _ROOT not in sys.path:
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile, File, Form, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field, model_validator
@@ -534,6 +535,19 @@ def require_admin(user: AuthUser = Depends(require_user)) -> AuthUser:
     if user.role != "admin":
         raise HTTPException(403, "需要管理员权限")
     return user
+
+
+def require_observability(user: AuthUser = Depends(require_user)) -> AuthUser:
+    """
+    观测接口权限：管理员始终可看；演示环境（ECHOGUIDE_OBSERVABILITY_PUBLIC=1）
+    下登录用户也可看。
+
+    权衡：trace 含用户消息内容，生产必须保持 admin-only（默认 fail-closed）。
+    该开关只应在本地演示/开发环境开启，与 ECHOGUIDE_BENCHMARK_ENABLED 同类。
+    """
+    if user.role == "admin" or os.getenv("ECHOGUIDE_OBSERVABILITY_PUBLIC", "0") == "1":
+        return user
+    raise HTTPException(403, "需要管理员权限")
 
 
 def _cookie_secure() -> bool:
@@ -1050,7 +1064,7 @@ async def mcp_info():
 
 
 @app.get("/traces", tags=["观测"])
-async def traces_list(limit: int = 20, _admin: AuthUser = Depends(require_admin)):
+async def traces_list(limit: int = 20, _admin: AuthUser = Depends(require_observability)):
     """最近的全链路 trace（排障/演示用）。"""
     from core.tracing import list_traces
 
@@ -1058,7 +1072,7 @@ async def traces_list(limit: int = 20, _admin: AuthUser = Depends(require_admin)
 
 
 @app.get("/traces/{trace_id}", tags=["观测"])
-async def trace_detail(trace_id: str, _admin: AuthUser = Depends(require_admin)):
+async def trace_detail(trace_id: str, _admin: AuthUser = Depends(require_observability)):
     """单条 trace 详情：request → intent → agent → tool → LLM 逐跳耗时。"""
     from core.tracing import get_trace
 
@@ -1069,7 +1083,7 @@ async def trace_detail(trace_id: str, _admin: AuthUser = Depends(require_admin))
 
 
 @app.get("/monitor")
-async def monitor_summary(_admin: AuthUser = Depends(require_admin)):
+async def monitor_summary(_admin: AuthUser = Depends(require_observability)):
     """实时监控摘要：Agent 成功率、工具统计、告警、优化建议。"""
     if _monitor is None:
         raise HTTPException(503, "服务未就绪")
@@ -1526,6 +1540,38 @@ async def _cli():
         await mem.add_message(user_id, conv_id, MsgRole.ASSISTANT, result.response)
 
         print(f"\nEchoGuide [{result.agent_type.value}]: {result.response}\n")
+
+
+# ── 同源托管：单端口同时提供前端页面与 API（本地/单进程模式）──────────────────
+# 前端 dist 存在时自动启用：/api/* 剥离前缀转给真实路由（与 Vite/nginx 代理
+# 语义一致），其余路径走 SPA 回退到 index.html。ECHOGUIDE_SERVE_STATIC=0 关闭。
+# 中间件在文件末尾注册（晚于 EchoGuard）：Starlette 后注册者先执行，保证
+# /api 前缀在 Guard 看到请求前剥离（Guard 路径白名单基于真实路由）。
+_FRONTEND_DIST = pathlib.Path(_ROOT) / "frontend" / "dist"
+
+
+@app.middleware("http")
+async def _strip_api_prefix(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        scope = request.scope
+        scope["path"] = scope["path"][4:]
+        raw = scope.get("raw_path")
+        if raw:
+            scope["raw_path"] = raw[4:]
+    return await call_next(request)
+
+
+if os.getenv("ECHOGUIDE_SERVE_STATIC", "1") == "1" and _FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="frontend_assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str):
+        """SPA 回退：存在的静态文件直接返回，其余一律 index.html（前端路由接管）。"""
+        root = _FRONTEND_DIST.resolve()
+        target = (root / full_path).resolve()
+        if full_path and target.is_file() and target.is_relative_to(root):
+            return FileResponse(target)
+        return FileResponse(root / "index.html")
 
 
 if __name__ == "__main__":

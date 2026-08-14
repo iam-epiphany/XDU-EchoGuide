@@ -171,6 +171,7 @@ Benchmark 使用 12 个版本化场景，覆盖五个领域、上下文追问（
 设计要点：
 
 - **一次提炼双产出**：画像信号触发时，一次 LLM 调用同时产出画像（L3）与原子事实（L1），零额外成本；事实带 `source_conv/source_turn` 证据链，可下钻到 L0 原文。
+- **增量提炼**（对齐 TencentDB-Agent-Memory）：`extract_marks` 水位记录上次提炼的最大轮次，信号命中只提炼水位之后的新消息（L0 原文区间）+ 既有画像合并，老消息不重复喂 LLM；首次提炼水位为 0 取全量（预热）；无增量跳过；同会话并发提炼串行化，提炼成功才推进水位（失败幂等重试）。
 - **L1/L3 分工去重**：L3 画像负责聚合（偏好/实体），L1 事实负责画像之外的细粒度可溯源事实（决定/状态/计划/细节）——被画像条目覆盖（条目是事实子串或事实全文已在画像中）的事实不落 L1，同一信息不双写。
 - **L1 按需召回**：上下文构建时 L3 画像常驻注入（紧凑聚合），L1 事实按当前提问按需召回（共享非停用字符 bigram 才注入），不相关事实与画像均不重复注入；`memory_trace.facts_total` 透出可用事实总数。
 - **白盒可溯源**：高层结论 → 事实 → 原文逐层可查；`memory_trace` 把各层命中统计透出到 `execution`（debug 面板可见）。
@@ -190,6 +191,7 @@ python evaluation/memory_benchmark.py
 | L1 事实证据链溯源 | 100%（每条可下钻到 L0 原文） |
 | refs 卸载找回 | 100%（完整结果可恢复） |
 | L3 画像版本回滚 | OK（3 版可回滚到最老版） |
+| 增量提炼 | 首次全量预热 OK，后续仅提炼新消息（老消息重复输入 0 条） |
 | 画像提炼触发 | 仅信号句触发 LLM（模拟对话信号率 50%，普通提问不提炼） |
 
 > Token 估算口径：中文 1 字符 ≈ 1 token、ASCII 4 字符 ≈ 1 token（相对对比用，实际消耗以模型 API usage 为准）。
@@ -216,6 +218,8 @@ Copy-Item .env.example .env
 # 编辑 .env，填写 ANTHROPIC_API_KEY
 # 本地向量模型（bge Embedding / Rerank）首次运行自动下载到
 # ECHOGUIDE_MODEL_CACHE_DIR（Docker 镜像构建时已预下载，无需手动操作）
+# 天气查询：默认 Open-Meteo（境外免 Key，国内可能不通）；建议在 dev.qweather.com
+# 注册免费订阅并填写 QWEATHER_API_KEY，即自动切换为和风天气主源（失败时回退 Open-Meteo）
 ```
 
 生产环境（`APP_ENV=production`）**必须设置 `JWT_SECRET_KEY`**（会话签名密钥），
@@ -231,27 +235,44 @@ ECHOGUIDE_FAST_MODEL=deepseek-v4-flash
 ECHOGUIDE_DEEP_MODEL=deepseek-v4-pro
 ```
 
-### 2. 本地运行
+### 2. 本地运行（推荐：单端口，前后端一体）
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt
-python -m uvicorn api.main:app --port 8000
-```
 
-另一个终端：
-
-```powershell
+# ① 构建前端静态产物（dist 由后端同源托管，只需构建一次）
 Set-Location frontend
 npm install
-npm run dev
+npm run build
+Set-Location ..
+
+# ② 启动（.env 已配置本地默认：API_PORT=8100 + ECHOGUIDE_SERVE_STATIC=1）
+# 需本机 Redis（首次）：
+docker run -d --name echoguide-redis -p 6379:6379 redis:7-alpine redis-server --requirepass echoguide123
+python -m api.main
 ```
 
-Vite 开发代理默认转发到 `http://localhost:8000`（与上方 uvicorn 端口一致）；
-Docker 部署时后端对外端口为 8100，可用 `VITE_PYTHON_API_URL=http://localhost:8100` 覆盖。
+访问 **http://localhost:8100** —— 同一个端口同时提供前端页面与 `/api/*` 接口
+（后端剥离 `/api` 前缀后转发真实路由，语义与 Vite/nginx 代理一致；无跨域）。
+ChromaDB 无需单独启动：本机无服务时自动降级本地嵌入式持久化
+（`CHROMA_PERSIST_DIRECTORY`，默认 `D:/Agent-Project/XDU-EchoGuide/data/chroma`）。
+调试面板：`http://localhost:8100/?debug=1`（展开 Profile / 分类阶段 / 工具 / DAG / Trace ID）。
+
+### 3. 本地开发模式（前端热更新）
+
+需要改前端代码时，用 Vite dev 替代静态托管（后端仍跑 8100）：
+
+```powershell
+# 终端 1：后端（ECHOGUIDE_SERVE_STATIC=0 时 8100 只提供 API）
+python -m api.main
+# 终端 2：前端热更新（代理 /api → 8100）
+Set-Location frontend
+VITE_PYTHON_API_URL=http://localhost:8100 npm run dev
+```
 
 访问 `http://localhost:5175`；技术演示模式为 `http://localhost:5175/?debug=1`。
 
-### 3. Docker Compose
+### 4. Docker Compose
 
 ```powershell
 docker compose up -d --build

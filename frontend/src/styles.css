@@ -1161,3 +1161,122 @@ select:focus-visible {
     animation: none;
   }
 }
+
+/* ── 可观测性：监控 / Trace ────────────────────────────────────────────────── */
+
+.obs-modal {
+  width: min(860px, 100%);
+}
+
+.obs-sub {
+  margin: 16px 0 8px;
+  font-size: 13px;
+  color: var(--xdu-navy);
+}
+
+.obs-error {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(220, 53, 69, 0.1);
+  color: #c0392b;
+  font-size: 13px;
+}
+
+.obs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.obs-table th,
+.obs-table td {
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.obs-table th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.obs-table td.bad {
+  color: #c0392b;
+  font-weight: 600;
+}
+
+.obs-table td.span-meta {
+  white-space: normal;
+  word-break: break-all;
+  color: var(--text-muted);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.obs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.obs-list.traces li {
+  margin-bottom: 6px;
+}
+
+.obs-alert {
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border-radius: 10px;
+  background: rgba(230, 126, 34, 0.1);
+  color: #a4580b;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.trace-row {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) 90px 64px 84px;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12.5px;
+  text-align: left;
+  color: inherit;
+}
+
+.trace-row:hover {
+  border-color: var(--xdu-navy);
+}
+
+.trace-id {
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--xdu-navy);
+  font-size: 11.5px;
+}
+
+.trace-detail {
+  margin: 6px 0 4px 8px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--xdu-navy-light);
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 0 10px 10px 0;
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+
+.kb-button.mini {
+  padding: 4px 10px;
+  font-size: 12px;
+}

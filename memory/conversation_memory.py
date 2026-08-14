@@ -225,6 +225,9 @@ class MemoryManager:
         # 记忆模块自身的 LLM 调用计数（画像提炼 + 摘要压缩），供评测统计调用率
         self.llm_call_count = 0
 
+        # 增量提炼并发锁（每 user:conv 一把，防连续对话时后台任务重叠提炼同一区间）
+        self._extract_locks: Dict[str, "asyncio.Lock"] = {}
+
         self._redis = redis.from_url(redis_url, decode_responses=True)
         # ChromaDB：优先连接独立服务（docker compose 模式），连不上则降级为本地嵌入式
         try:
@@ -346,7 +349,12 @@ class MemoryManager:
            可回滚），reason 记录触发信号；
         4. L1/L3 分工去重 —— 被画像覆盖的事实（偏好/实体条目是其规范化子串，
            或事实全文已在画像中）不落 L1，只保留画像之外的细粒度可溯源事实；
-           与既有 active 事实按文本去重（LLM 合并后的重复提炼不落库）。
+           与既有 active 事实按文本去重（LLM 合并后的重复提炼不落库）；
+        5. 增量提炼（对齐 TencentDB-Agent-Memory）—— extract_marks 水位记录
+           上次提炼的最大 turn，信号命中只提炼上次之后的新消息（L0 原文区间），
+           老消息不重复喂 LLM；首次提炼水位为 0 取全量（预热）；无增量跳过；
+           同会话后台任务按 user:conv 串行化并在锁内重读水位（防并发重复）；
+           提炼成功才推进水位（失败不推进，下次幂等重试）。
         """
         user_id = self._safe_text(user_id)
         conv_id = self._safe_text(conv_id)
@@ -357,7 +365,33 @@ class MemoryManager:
             logger.debug(f"无画像信号，跳过提炼: {user_id}")
             return
 
-        text = self._safe_text("\n".join(f"{m.role.value}: {m.content}" for m in messages[-10:]))
+        lock = self._extract_locks.setdefault(f"{user_id}:{conv_id}", asyncio.Lock())
+        async with lock:
+            await self._extract_incremental(user_id, conv_id, messages)
+
+    async def _extract_incremental(
+        self, user_id: str, conv_id: str, messages: List["Message"]
+    ) -> None:
+        """锁内执行：取增量区间 → 一次 LLM 双产出 → 落库 → 推进水位。"""
+        last_turn = await self._layered.get_extract_mark(user_id, conv_id)
+        max_turn = await self._layered.get_last_turn(user_id, conv_id)
+        incremental = await self._layered.get_raw_range(user_id, conv_id, last_turn + 1)
+        if not incremental:
+            if max_turn > 0:
+                # L0 有记录但水位后无新消息 → 上次已提炼到顶，跳过（防并发/重复提炼）
+                logger.debug(f"无增量消息，跳过提炼: {user_id}")
+                return
+            # L0 完全无记录（写失败告警后的异常兜底）→ 回退工作记忆全量提炼
+            incremental = messages
+
+        if isinstance(incremental[0], dict):  # L0 原始行（get_raw_range 返回字典）
+            text = self._safe_text("\n".join(
+                f"{r.get('role', '')}: {r.get('content', '')}" for r in incremental
+            ))
+        else:  # 回退路径：工作记忆 Message 对象
+            text = self._safe_text("\n".join(
+                f"{m.role.value}: {m.content}" for m in incremental
+            ))
         existing = await self._get_profile(user_id)
         existing_text = self._safe_text(json.dumps(existing, ensure_ascii=False)) if existing else "（无既有画像）"
         prompt = f"""从以下西电校园用户对话中提炼用户偏好、关键实体和原子事实，返回 JSON。
@@ -425,6 +459,8 @@ facts 只提炼「画像未覆盖」的细粒度可溯源事实（做出的决�
             await self._layered.save_profile_version(
                 user_id, doc_text, reason=f"signal: {conv_id}"
             )
+            # 提炼成功才推进水位（失败不推进，下次幂等重试同一区间）
+            await self._layered.set_extract_mark(user_id, conv_id, max_turn)
             logger.info(f"用户画像已更新: {user_id}（{len(prefs)} 条偏好，{added} 条新事实）")
         except Exception as ex:
             logger.warning(f"更新用户画像失败: {ex}")

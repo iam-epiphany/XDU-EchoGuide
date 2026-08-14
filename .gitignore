@@ -27,6 +27,7 @@ node_modules/
 # 本地运行数据（公开样例与评测数据可版本化）
 data/chroma/
 data/echoguide.db
+data/memory.db
 data/eval/results/
 logs/
 

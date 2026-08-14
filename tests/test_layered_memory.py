@@ -279,8 +279,8 @@ def test_update_profile_dual_output(tmp_path, monkeypatch):
             {"fact": "用户是通信工程学院大二学生", "category": "entity"},
         ],
     }, ensure_ascii=False)
-    # 两条相同响应：第二次调用用于验证"重复提炼去重"（原测试只给一条响应，
-    # 第二次调用因 LLM 响应耗尽而静默失败，去重实际未被真正断言）
+    # 两条相同响应：第二次调用用于验证"重复提炼去重"（本测试未写 L0，
+    # 走"L0 缺失回退工作记忆全量"路径，两次提炼同一窗口，去重才真正被断言）
     mgr._client = _FakeClient(llm_output, llm_output)
 
     async def fake_wm(user_id, conv_id):
@@ -337,6 +337,103 @@ def test_update_profile_skips_without_signal(tmp_path, monkeypatch):
         assert mgr.llm_call_count == 0
         assert await mgr._layered.count_facts("u1") == 0
         assert await mgr._layered.count_profile_versions("u1") == 0
+
+    asyncio.run(scenario())
+
+
+# ── 增量提炼（对齐 TencentDB-Agent-Memory）：水位标记 + 增量区间 ────────────
+
+def test_update_profile_incremental_window(tmp_path, monkeypatch):
+    """增量提炼：首次全量预热，之后只提炼水位之后的新消息（L0 原文区间）。"""
+    mgr = _make_manager(tmp_path, monkeypatch)
+    mgr._profile = _FakeCollection()
+    llm_output = json.dumps({
+        "preferences": ["喜欢晚上学习"],
+        "entities": {"院系专业": [], "年级": [], "校区": [], "诉求类型": []},
+        "facts": [{"fact": "用户在准备考研", "category": "status"}],
+    }, ensure_ascii=False)
+    mgr._client = _FakeClient(llm_output, llm_output)
+
+    async def fake_wm(user_id, conv_id):
+        return [Message(role=MsgRole.USER, content="我最近在准备考研")]
+
+    async def fake_get_profile(user_id):
+        return {}
+
+    monkeypatch.setattr(mgr, "_get_working_memory", fake_wm)
+    monkeypatch.setattr(mgr, "_get_profile", fake_get_profile)
+
+    async def scenario():
+        # 第一次提炼：水位 0 → 增量区间 = turn 1-4 全量（预热）
+        await mgr._layered.append_raw("u1", "c1", "user", "我最近在准备考研")
+        await mgr._layered.append_raw("u1", "c1", "assistant", "已记录")
+        await mgr._layered.append_raw("u1", "c1", "user", "我是通信工程学院大二的")
+        await mgr._layered.append_raw("u1", "c1", "assistant", "好的")
+        await mgr.update_profile("u1", "c1")
+        assert mgr.llm_call_count == 1
+        first_prompt = mgr._client.seen[-1]["messages"][0]["content"]
+        assert "最近在准备考研" in first_prompt
+        assert "通信工程学院大二的" in first_prompt
+        assert await mgr._layered.get_extract_mark("u1", "c1") == 4
+
+        # 第二次提炼：只取水位之后的 turn 5-6，老消息不进 prompt
+        await mgr._layered.append_raw("u1", "c1", "user", "我决定考西电的研究生")
+        await mgr._layered.append_raw("u1", "c1", "assistant", "加油")
+        await mgr.update_profile("u1", "c1")
+        assert mgr.llm_call_count == 2
+        second_prompt = mgr._client.seen[-1]["messages"][0]["content"]
+        assert "考西电的研究生" in second_prompt
+        assert "最近在准备考研" not in second_prompt
+        assert "通信工程学院大二的" not in second_prompt
+        assert await mgr._layered.get_extract_mark("u1", "c1") == 6
+
+    asyncio.run(scenario())
+
+
+def test_update_profile_skips_no_increment(tmp_path, monkeypatch):
+    """无增量消息（水位已到顶）时跳过 LLM——连续信号轮不再重复提炼。"""
+    mgr = _make_manager(tmp_path, monkeypatch)
+    mgr._profile = _FakeCollection()
+    llm_output = json.dumps({
+        "preferences": ["喜欢晚上学习"],
+        "entities": {"院系专业": [], "年级": [], "校区": [], "诉求类型": []},
+        "facts": [{"fact": "用户在准备考研", "category": "status"}],
+    }, ensure_ascii=False)
+    mgr._client = _FakeClient(llm_output, llm_output)
+
+    async def fake_wm(user_id, conv_id):
+        return [Message(role=MsgRole.USER, content="我最近在准备考研")]
+
+    async def fake_get_profile(user_id):
+        return {}
+
+    monkeypatch.setattr(mgr, "_get_working_memory", fake_wm)
+    monkeypatch.setattr(mgr, "_get_profile", fake_get_profile)
+
+    async def scenario():
+        await mgr._layered.append_raw("u1", "c1", "user", "我最近在准备考研")
+        await mgr._layered.append_raw("u1", "c1", "assistant", "已记录")
+        await mgr.update_profile("u1", "c1")
+        assert mgr.llm_call_count == 1
+        # 同一会话再次触发（信号仍在），但水位已到顶、L0 无新消息 → 跳过 LLM
+        await mgr.update_profile("u1", "c1")
+        assert mgr.llm_call_count == 1
+        assert await mgr._layered.get_extract_mark("u1", "c1") == 2
+
+    asyncio.run(scenario())
+
+
+def test_extract_mark_persistence(tmp_path):
+    """提炼水位持久化：UPSERT 推进 + 新会话默认 0（首次全量预热）。"""
+    store = LayeredStore(str(tmp_path / "memory.db"))
+
+    async def scenario():
+        assert await store.get_extract_mark("u1", "c1") == 0   # 无记录 → 0
+        await store.set_extract_mark("u1", "c1", 7)
+        assert await store.get_extract_mark("u1", "c1") == 7
+        await store.set_extract_mark("u1", "c1", 9)            # UPSERT 推进
+        assert await store.get_extract_mark("u1", "c1") == 9
+        assert await store.get_extract_mark("u1", "c2") == 0   # 新会话独立水位
 
     asyncio.run(scenario())
 

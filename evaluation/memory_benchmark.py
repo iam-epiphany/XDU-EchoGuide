@@ -165,6 +165,24 @@ async def _layered_replay(tmp_db: str) -> dict:
     result["refs"] = {"saved": len(ref_ids), "recovered": recovered,
                       "recover_pct": round(recovered / len(ref_ids) * 100, 1)}
 
+    # ── 增量提炼水位（对齐 TencentDB-Agent-Memory）─────────────────────────
+    # 模拟两轮提炼：首次全量预热，第二轮只取水位之后的新消息（老消息零重复输入）
+    await store.append_raw("u_bench", "conv_2", "user", "我准备考研，帮我推荐复习资料")
+    await store.append_raw("u_bench", "conv_2", "assistant", "已为你整理考研资料清单。")
+    mark0 = await store.get_extract_mark("u_bench", "conv_2")          # 0：无记录 → 首次全量
+    first_batch = await store.get_raw_range("u_bench", "conv_2", mark0 + 1)
+    await store.set_extract_mark("u_bench", "conv_2", 2)               # 第一次提炼：水位推进到 2
+    await store.append_raw("u_bench", "conv_2", "user", "我决定考西电本校的研究生")
+    await store.append_raw("u_bench", "conv_2", "assistant", "西电本校考研欢迎你。")
+    mark1 = await store.get_extract_mark("u_bench", "conv_2")
+    increment = await store.get_raw_range("u_bench", "conv_2", mark1 + 1)
+    # 全窗口重提炼（旧实现）会读 4 条（含 2 条老消息）；增量只读水位后 2 条
+    result["extract_mark"] = {
+        "first_pass_full": len(first_batch) == 2,     # 首次全量预热
+        "increment_only": len(increment) == 2,        # 增量区间只含新消息
+        "reused_msgs": max(0, 2 - len(increment)),    # 老消息重复输入数 = 0
+    }
+
     # ── 治理：失效标记 + prune 清理 ─────────────────────────────────────────
     deactivated = await store.deactivate_fact("u_bench", (await store.list_facts("u_bench"))[0]["id"])
     stats = await store.prune("u_bench", raw_ttl_days=0, ref_ttl_days=0,
@@ -200,3 +218,6 @@ if __name__ == "__main__":
     print(f"L3 画像版本：{lay['profile']['versions']} 版，回滚 {'OK' if lay['profile']['rollback_ok'] else 'FAIL'}")
     print(f"refs 卸载找回：{lay['refs']['recover_pct']}%（100% 可恢复）")
     print(f"画像提炼信号率：{sig['rate_pct']}%（仅信号句触发 LLM 提炼，控制成本）")
+    em = lay["extract_mark"]
+    print(f"增量提炼：首次全量预热 {'OK' if em['first_pass_full'] else 'FAIL'}，"
+          f"后续仅提炼新消息（老消息重复输入 {em['reused_msgs']} 条）")

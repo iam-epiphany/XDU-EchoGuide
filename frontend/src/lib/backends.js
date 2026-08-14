@@ -29,6 +29,22 @@ export async function requestKnowledgeStats(settings) {
   return requestJson(backendMeta(settings).baseUrl, '/knowledge/stats')
 }
 
+// ── 可观测性（监控 / Trace）──────────────────────────────────────────────────
+// 权限：管理员始终可看；演示环境（后端 ECHOGUIDE_OBSERVABILITY_PUBLIC=1）
+// 下登录用户也可看（trace 含用户消息，生产保持 admin-only）。
+
+export async function requestMonitorSummary(settings) {
+  return requestJson(backendMeta(settings).baseUrl, '/monitor')
+}
+
+export async function requestTraces(settings, limit = 20) {
+  return requestJson(backendMeta(settings).baseUrl, `/traces?limit=${limit}`)
+}
+
+export async function requestTraceDetail(settings, traceId) {
+  return requestJson(backendMeta(settings).baseUrl, `/traces/${encodeURIComponent(traceId)}`)
+}
+
 export async function requestSearch(settings, query, topK = 5) {
   const params = new URLSearchParams({ query, top_k: String(topK) })
   return requestJson(backendMeta(settings).baseUrl, `/search?${params}`, { method: 'POST' })

@@ -82,9 +82,13 @@ services:
     env_file:
       - .env
     environment:
-      # 容器内固定值，覆盖 .env 中的本地路径
+      # 容器内固定值，覆盖 .env 中的本地值（本地模式用 8100/localhost，
+      # 容器内必须用 8000/内部服务名，见 .env 头部说明）
       - TZ=Asia/Shanghai
+      - API_PORT=8000
       - REDIS_URL=redis://:${REDIS_PASSWORD:-echoguide123}@redis:6379/0
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma
       - EVAL_BASELINE_PATH=/app/data/eval/baseline.json
       - ECHOGUIDE_SKILLS_DIR=/app/skills

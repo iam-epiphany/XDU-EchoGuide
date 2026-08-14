@@ -59,3 +59,23 @@ groups:
         annotations:
           summary: "在途请求持续偏高"
           description: "Agent 在途请求超过 8 已持续 10 分钟，可能存在卡死请求，请通过 /traces 排查。"
+
+      # 注入攻击：5 分钟内被 EchoGuard 拦截的疑似注入请求超过 2 次
+      # 指标来自 echoguide_guard/integration.py 的 guard_rejected_total{reason="injection"}，
+      # 由主应用 /metrics 暴露；日志中可按 reason=injection 与 sha256 指纹溯源。
+      - alert: EchoGuideInjectionAttack
+        expr: increase(guard_rejected_total{reason="injection"}[5m]) > 2
+        labels:
+          severity: critical
+        annotations:
+          summary: "检测到疑似注入攻击"
+          description: "5 分钟内 EchoGuard 拦截了 {{ $value | humanize }} 次疑似注入请求。请查看日志中 reason=injection 的拦截记录，按 subject/sha256 指纹定位来源。"
+
+      # 限流突发：5 分钟内限流拒绝超过 20 次，疑似刷接口或脚本滥用
+      - alert: EchoGuideRateLimitBurst
+        expr: increase(guard_rejected_total{reason="rate_limit"}[5m]) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: "请求限流触发频繁"
+          description: "5 分钟内被限流拒绝 {{ $value | humanize }} 次，疑似刷接口。日志中 reason=rate_limit 可按 subject 定位用户/令牌/IP。"

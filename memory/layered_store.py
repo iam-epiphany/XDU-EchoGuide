@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS refs (
     ts       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_refs_user ON refs(user_id);
+
+CREATE TABLE IF NOT EXISTS extract_marks (
+    user_id    TEXT NOT NULL,
+    conv_id    TEXT NOT NULL,
+    last_turn  INTEGER NOT NULL DEFAULT 0,   -- 上次提炼时的最大 turn_id（增量提炼水位）
+    ts         TEXT NOT NULL,
+    PRIMARY KEY (user_id, conv_id)
+);
 """
 
 
@@ -233,6 +241,35 @@ class LayeredStore:
                 (user_id, conv_id),
             ).fetchone()
         return row[0]
+
+    # ── 增量提炼水位（对齐 TencentDB-Agent-Memory：只提炼上次之后的新消息）──
+
+    async def get_extract_mark(self, user_id: str, conv_id: str) -> int:
+        """读取会话提炼水位（上次提炼时的最大 turn_id），无记录返回 0（首次全量预热）。"""
+        return await self._run(self._get_extract_mark_sync, user_id, conv_id)
+
+    def _get_extract_mark_sync(self, user_id: str, conv_id: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT last_turn FROM extract_marks
+                   WHERE user_id = ? AND conv_id = ?""",
+                (user_id, conv_id),
+            ).fetchone()
+        return row[0] if row else 0
+
+    async def set_extract_mark(self, user_id: str, conv_id: str, turn: int) -> None:
+        """推进提炼水位（提炼成功后才调用；失败不推进，下次幂等重试）。"""
+        await self._run(self._set_extract_mark_sync, user_id, conv_id, turn)
+
+    def _set_extract_mark_sync(self, user_id: str, conv_id: str, turn: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO extract_marks (user_id, conv_id, last_turn, ts)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, conv_id) DO UPDATE SET
+                       last_turn = excluded.last_turn, ts = excluded.ts""",
+                (user_id, conv_id, turn, datetime.now().isoformat()),
+            )
 
     async def count_raw(self, user_id: Optional[str] = None) -> int:
         return await self._run(self._count_raw_sync, user_id)
