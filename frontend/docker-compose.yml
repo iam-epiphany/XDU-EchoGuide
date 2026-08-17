@@ -1,3 +1,5 @@
+# 前端单独部署（可选）：与仓库根目录 docker-compose.yml 的主栈共用网络，
+# 使镜像内 nginx 的 upstream echoguide:8000 可解析到主栈后端服务。
 services:
   echoguide-frontend:
     build:
@@ -6,6 +8,10 @@ services:
     container_name: echoguide-frontend
     ports:
       - "5175:80"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    networks:
+      - echoguide-network
+
+networks:
+  echoguide-network:
+    external: true

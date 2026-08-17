@@ -13,6 +13,7 @@ Skill 是一段可热加载的业务能力说明，用来补充 Agent 的 system
 """
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -40,16 +41,13 @@ class Skill:
         history: Optional[Iterable[Dict[str, str]]] = None,
     ) -> bool:
         """
-        判断当前请求是否应该注入这个 Skill。
+        判断当前请求是否命中这个 Skill（v4：仅关键词驱动，领域键不再过滤）。
 
-        - agents 为空：适用于所有 Agent；否则只匹配指定 Agent。
-        - keywords 为空：作为全局 Skill 注入；否则只有命中关键词才注入。
-        - history 非空：当前消息未命中时，回溯最近几轮用户消息（追问继承）。
+        agents 字段已废弃（Skill 不按领域分类，模型看全部目录自主选择）；
+        参数保留仅为兼容旧调用方。keywords 为空 = 全局 Skill。
+        history 非空：当前消息未命中时，回溯最近几轮用户消息（追问继承）。
         """
         if not self.enabled:
-            return False
-
-        if self.agents and agent_type and agent_type.lower() not in self.agents:
             return False
 
         if not self.keywords:
@@ -78,6 +76,17 @@ class Skill:
             body = body[:max_chars].rstrip() + "\n..."
         description = f"\n说明: {self.description}" if self.description else ""
         return f"### {self.name}{description}\n{body}"
+
+    @property
+    def tool_name(self) -> str:
+        """Skill 对应的工具名（use_skill_<slug>），模型在工具循环内按需加载完整正文。
+
+        SKILL.md 用父目录名做 slug，扁平文件用文件名（如 skills/refund.md → use_skill_refund）。
+        """
+        p = Path(self.path)
+        slug = p.parent.name if p.name == "SKILL.md" else p.stem
+        slug = re.sub(r"[^0-9a-zA-Z]+", "_", slug).strip("_").lower() or "skill"
+        return f"use_skill_{slug}"
 
     def to_summary(self) -> Dict[str, Any]:
         """返回 API 可序列化摘要，避免把完整长文本默认暴露给健康检查。"""
@@ -154,61 +163,96 @@ class SkillManager:
         history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         """
-        为当前用户请求构建 Skill prompt。
+        构建 Skill 注入 prompt（v5：目录常驻 + 完整正文按需加载）。
 
-        只注入匹配的 Skill，并按总长度截断，避免挤占主对话上下文。
-        history 用于追问继承：当前消息无关键词时，回溯最近用户消息命中 Skill。
+        两段式（零 LLM 调用，只做关键词匹配与文本拼接）：
+          1. 技能目录：全部 Skill 的名称 + 描述 + 触发词 + 对应工具名
+             （模型建立"有哪些可用、如何加载"的预期）；
+          2. 命中提示：当前消息/追问历史命中关键词的 Skill 高亮（免费引导，不强制）。
+        完整 SKILL.md 正文不再注入 system prompt，由模型调用 use_skill_* 工具
+        按需加载（Claude Code 式渐进披露）——正文加载见 tool_definitions/skill_content_for。
         """
-        blocks: List[str] = []
-        matched: List[tuple[Skill, List[str]]] = []
-        remaining = self.max_prompt_chars
-        lowered_message = (message or "").lower()
+        if not self._skills:
+            return ""
 
         # 追问回溯范围：最近 2 轮用户消息
         follow_up_history = None
         if history:
             follow_up_history = [m for m in history if m.get("role") == "user"][-2:]
 
+        # 1. 技能目录（含工具名，供模型按需调用加载完整规范）
+        catalog_lines = ["可用技能目录（目录仅含摘要，调用对应工具可加载完整规范）："]
         for skill in self._skills:
-            if not skill.matches(message, agent_type, follow_up_history):
-                continue
-            matched_keywords = [
-                keyword for keyword in skill.keywords
-                if keyword_hit(keyword, lowered_message)
-            ]
-            block = skill.to_prompt_block()
-            if len(block) > remaining:
-                block = block[:remaining].rstrip() + "\n..."
-            blocks.append(block)
-            matched.append((skill, matched_keywords))
-            remaining -= len(block)
-            if remaining <= 0:
-                break
+            desc = f"（{skill.description}）" if skill.description else ""
+            kws = "、".join(skill.keywords[:6]) if skill.keywords else "全局适用"
+            catalog_lines.append(f"- {skill.name}{desc} 触发词: {kws}（工具: {skill.tool_name}）")
+        catalog = "\n".join(catalog_lines)
+        if len(catalog) > self.max_prompt_chars:
+            catalog = catalog[:self.max_prompt_chars].rstrip() + "\n..."
 
-        if not blocks:
-            logger.debug(
-                "Skills 未命中: agent=%s message=%r",
-                agent_type or "all",
-                (message or "")[:80],
+        # 2. 命中提示（免费关键词引导）
+        matched_names = []
+        for skill in self._skills:
+            if skill.matches(message, None, follow_up_history):
+                matched_names.append(skill)
+        hint = ""
+        if matched_names:
+            refs = "、".join(
+                f"{skill.name}（{skill.tool_name}）" for skill in matched_names
             )
-            return ""
+            hint = f"\n该请求可能涉及以下技能，可调用对应工具获取完整规范：{refs}"
 
-        detail = "; ".join(
-            f"{skill.name}(keywords={', '.join(keywords) if keywords else 'all'})"
-            for skill, keywords in matched
-        )
         logger.info(
-            "Skills 已注入: agent=%s matched=%s message=%r",
-            agent_type or "all",
-            detail,
+            "Skills 注入: 目录 %d 个, 命中提示 %s, message=%r",
+            len(self._skills), matched_names and "、".join(s.name for s in matched_names) or "-",
             (message or "")[:80],
         )
-
         return (
-            "以下是当前请求可用的 西电校园助手（EchoGuide）Skills。"
-            "请优先遵循这些业务规则；如果与系统角色冲突，以系统角色和安全边界为准。\n\n"
-            + "\n\n".join(blocks)
+            "以下是当前请求可用的 西电校园助手（EchoGuide）Skills。\n"
+            "请优先遵循这些业务规则；如果与系统角色冲突，以系统角色和安全边界为准。\n"
+            "需要完整规范时调用对应的 use_skill_* 工具加载。\n\n"
+            f"{catalog}{hint}"
         )
+
+    def tool_definitions(self) -> List[Dict[str, Any]]:
+        """每个启用的 Skill 生成一个只读工具声明（无参数），供模型按需加载完整正文。"""
+        defs = []
+        for skill in self._skills:
+            parts = [skill.description] if skill.description else []
+            if skill.keywords:
+                parts.append(f"触发词：{'、'.join(skill.keywords[:6])}")
+            defs.append({
+                "name": skill.tool_name,
+                "description": "；".join(parts),
+                "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            })
+        return defs
+
+    def skill_for_tool(self, tool_name: str) -> Optional[Skill]:
+        """按工具名反查 Skill（未命中返回 None），供工具执行层区分未知工具。"""
+        for skill in self._skills:
+            if skill.tool_name == tool_name:
+                return skill
+        return None
+
+    def skill_content_for(self, tool_name: str) -> str:
+        """按工具名返回 Skill 完整正文（模型工具循环内按需加载）；未知返回错误提示。"""
+        skill = self.skill_for_tool(tool_name)
+        if skill is None:
+            return f"技能 {tool_name} 不存在或已停用"
+        return skill.to_prompt_block(max_chars=12000)
+
+    @staticmethod
+    def cache_key(message: str, history: Optional[List[Dict[str, str]]] = None) -> str:
+        """Skill 注入 prompt 的缓存键（消息 + 最近 2 轮用户消息指纹）。"""
+        fp = ""
+        if history:
+            tail = "|".join(
+                str(m.get("content", "")) for m in history[-2:]
+            )
+            import hashlib
+            fp = hashlib.md5(tail.encode("utf-8")).hexdigest()[:8]
+        return f"{str(message)[:200]}#{fp}"
 
     def summary(self) -> Dict[str, Any]:
         """返回 Skill 管理器状态，用于 /skills 接口和排障。"""

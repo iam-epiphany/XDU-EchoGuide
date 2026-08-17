@@ -1,4 +1,4 @@
-"""AffairsAgent 的版本化办事流程查询工具。"""
+"""校务领域：版本化办事流程查询工具（公共工具层）。"""
 from __future__ import annotations
 
 import functools

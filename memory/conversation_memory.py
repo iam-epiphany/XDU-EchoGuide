@@ -213,12 +213,14 @@ class MemoryManager:
         base_url:     Optional[str] = None,
         model:        str = "claude-3-5-sonnet-20241022",
         layered_store: Optional[LayeredStore] = None,
+        gateway:      Optional[Any] = None,  # 统一模型调用入口（记忆提炼 LLM 调用）
     ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
         self._client = AsyncAnthropic(**kwargs)
         self._model  = model
+        self._gateway = gateway
 
         # L0/L1/L3 数据底座（SQLite，可注入以便测试替换）
         self._layered = layered_store or LayeredStore()
@@ -409,11 +411,22 @@ facts 只提炼「画像未覆盖」的细粒度可溯源事实（做出的决�
 
         try:
             self.llm_call_count += 1
-            resp = await self._client.messages.create(
-                model=self._model, max_tokens=768, temperature=0.0,
-                thinking={"type": "disabled"},
-                messages=[{"role": "user", "content": prompt}],
-            )
+            if self._gateway is not None:
+                result = await self._gateway.call(
+                    client=self._client,
+                    model=self._model,
+                    messages=[{"role": "user", "content": prompt}],
+                    span_name="memory_extract",
+                    max_tokens=768, temperature=0.0,
+                    thinking={"type": "disabled"},
+                )
+                resp = result.response
+            else:
+                resp = await self._client.messages.create(
+                    model=self._model, max_tokens=768, temperature=0.0,
+                    thinking={"type": "disabled"},
+                    messages=[{"role": "user", "content": prompt}],
+                )
             raw = resp.content[0].text
             s, e = raw.find("{"), raw.rfind("}") + 1
             profile_data = json.loads(raw[s:e])
@@ -561,11 +574,22 @@ facts 只提炼「画像未覆盖」的细粒度可溯源事实（做出的决�
         )
         try:
             self.llm_call_count += 1
-            resp = await self._client.messages.create(
-                model=self._model, max_tokens=256, temperature=0.0,
-                thinking={"type": "disabled"},
-                messages=[{"role": "user", "content": prompt}],
-            )
+            if self._gateway is not None:
+                result = await self._gateway.call(
+                    client=self._client,
+                    model=self._model,
+                    messages=[{"role": "user", "content": prompt}],
+                    span_name="memory_summarize",
+                    max_tokens=256, temperature=0.0,
+                    thinking={"type": "disabled"},
+                )
+                resp = result.response
+            else:
+                resp = await self._client.messages.create(
+                    model=self._model, max_tokens=256, temperature=0.0,
+                    thinking={"type": "disabled"},
+                    messages=[{"role": "user", "content": prompt}],
+                )
             summary = self._safe_text(resp.content[0].text).strip()
         except Exception:
             summary = f"对话包含 {len(to_compress)} 条消息（摘要生成失败）"

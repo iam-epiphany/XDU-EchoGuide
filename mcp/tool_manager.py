@@ -144,12 +144,14 @@ class MCPToolManager:
         base_url: Optional[str] = None,
         model: str = "claude-3-5-sonnet-20241022",
         rerank_backend: Optional[str] = None,
+        gateway: Optional[Any] = None,  # 统一模型调用入口（改写/重排兜底 LLM 调用）
     ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
         self._client = AsyncAnthropic(**kwargs)
         self._model  = model
+        self._gateway = gateway
         # 重排后端（构造参数优先，否则读环境变量）：
         #   local（默认）= 本地 bge-reranker 毫秒级打分，不可用自动降级 LLM；
         #   llm = LLM 打分（旧行为，秒级延迟 + token 成本）；
@@ -305,14 +307,23 @@ class MCPToolManager:
 返回 JSON 数组，例如: ["子查询1", "子查询2", "子查询3"]"""
         prompt = self._clean_text(prompt)
         try:
-            resp = await asyncio.wait_for(
-                self._client.messages.create(
+            async def _one():
+                if self._gateway is not None:
+                    result = await self._gateway.call(
+                        client=self._client,
+                        model=self._model,
+                        messages=[{"role": "user", "content": prompt}],
+                        span_name="rewrite_query",
+                        max_tokens=256, temperature=0.3,
+                        thinking={"type": "disabled"},
+                    )
+                    return result.response
+                return await self._client.messages.create(
                     model=self._model, max_tokens=256, temperature=0.3,
                     thinking={"type": "disabled"},
                     messages=[{"role": "user", "content": prompt}],
-                ),
-                timeout=15.0,
-            )
+                )
+            resp = await asyncio.wait_for(_one(), timeout=15.0)
             raw = resp.content[0].text
             s, e = raw.find("["), raw.rfind("]") + 1
             queries = json.loads(raw[s:e])
@@ -448,14 +459,23 @@ class MCPToolManager:
         prompt = self._clean_text(prompt)
 
         try:
-            resp = await asyncio.wait_for(
-                self._client.messages.create(
+            async def _one():
+                if self._gateway is not None:
+                    result = await self._gateway.call(
+                        client=self._client,
+                        model=self._model,
+                        messages=[{"role": "user", "content": prompt}],
+                        span_name="rerank_llm",
+                        max_tokens=256, temperature=0.0,
+                        thinking={"type": "disabled"},
+                    )
+                    return result.response
+                return await self._client.messages.create(
                     model=self._model, max_tokens=256, temperature=0.0,
                     thinking={"type": "disabled"},
                     messages=[{"role": "user", "content": prompt}],
-                ),
-                timeout=15.0,
-            )
+                )
+            resp = await asyncio.wait_for(_one(), timeout=15.0)
             raw = resp.content[0].text
             s, e = raw.find("["), raw.rfind("]") + 1
             order: List[int] = json.loads(raw[s:e])

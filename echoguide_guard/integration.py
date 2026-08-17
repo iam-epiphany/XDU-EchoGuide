@@ -43,6 +43,18 @@ _INJECTION_PATTERNS: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
 )
 _INJECTION_RE = re.compile("|".join(p.pattern for _, p in _INJECTION_PATTERNS), re.IGNORECASE)
 
+
+def find_injection_text(message: str) -> Optional[str]:
+    """
+    对单条文本做 Prompt 注入检测（供 Agent Runtime 层复用）。
+
+    返回命中的注入类别名（_INJECTION_PATTERNS 的 name），未命中返回 None。
+    与 HTTP 层使用同一套模式，保证两层判定一致。
+    """
+    hit = EchoGuardMiddleware._find_injection([message])
+    return hit[0] if hit else None
+
+
 # 攻击/滥用计数：默认 REGISTRY 注册，由主应用 /metrics 暴露（generate_latest）
 _guard_rejected = Counter(
     "guard_rejected_total",

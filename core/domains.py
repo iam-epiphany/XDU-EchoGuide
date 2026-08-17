@@ -72,14 +72,6 @@ DOMAIN_KEYWORDS: Dict[IntentDomain, List[str]] = {
     ],
 }
 
-# 领域关键词对应的 Agent 类型（供路由 / 协作检测共用）
-DOMAIN_AGENT_MAP: Dict[IntentDomain, str] = {
-    IntentDomain.ACADEMIC:    "academic",
-    IntentDomain.CAMPUS_LIFE: "campus_life",
-    IntentDomain.AFFAIRS:     "affairs",
-    IntentDomain.IT_HELP:     "it_help",
-    IntentDomain.PERSONAL:    "personal",
-}
 
 # 动作关键词（领域无关的通用模式，只用于 action 维度兜底）
 ACTION_KEYWORDS: Dict[IntentAction, List[str]] = {

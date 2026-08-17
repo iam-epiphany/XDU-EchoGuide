@@ -1,6 +1,6 @@
 ---
 name: 学业咨询规范
-description: 适用于 EchoGuide AcademicAgent 的选课、课表、考试、成绩、绩点、重修、转专业、保研等学业问题答复规范
+description: 适用于 EchoGuide 学业领域请求的选课、课表、考试、成绩、绩点、重修、转专业、保研等答复规范
 keywords: 选课,课表,考试,成绩,绩点,学分,重修,保研,转专业,挂科,补考,培养方案,先修课,教务,培养计划
 agents: academic
 enabled: true

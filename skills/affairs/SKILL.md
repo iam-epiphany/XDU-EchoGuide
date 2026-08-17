@@ -1,6 +1,6 @@
 ---
 name: 校务办事规范
-description: 适用于 EchoGuide AffairsAgent 的校历、请假、奖学金、助学金、证明开具、学费缴纳、学籍注册等校务办事流程答复规范
+description: 适用于 EchoGuide 校务咨询领域的校历、请假、奖学金、助学金、证明开具、学费缴纳、学籍注册等校务办事流程答复规范
 keywords: 校历,请假,奖学金,助学金,证明,在读证明,缴费,学费,注册,学籍,学生处,教务处,办事,流程,盖章
 agents: affairs
 enabled: true

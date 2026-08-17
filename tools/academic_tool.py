@@ -1,4 +1,4 @@
-"""AcademicAgent 的确定性学业计算工具。"""
+"""学业领域：确定性加权计算工具（公共工具层）。"""
 from __future__ import annotations
 
 from typing import Any, Dict, List

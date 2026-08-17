@@ -25,4 +25,6 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
       - working-directory: frontend
         run: npm run build
-      - run: docker compose config --quiet
+      # .env 被 .gitignore 排除不在仓库中；与 deploy.sh 一致，从示例文件生成
+      # 后再校验 compose 配置（compose 内所有变量均有默认值兜底）
+      - run: cp .env.example .env && docker compose config --quiet

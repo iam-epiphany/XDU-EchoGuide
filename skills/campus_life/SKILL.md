@@ -1,6 +1,6 @@
 ---
 name: 校园生活向导规范
-description: 适用于 EchoGuide CampusLifeAgent 的宿舍、食堂、校车、校园卡、快递、水电、社团、运动等校园生活问题答复规范
+description: 适用于 EchoGuide 校园生活领域的宿舍、食堂、校车、校园卡、快递、水电、社团、运动等校园生活问题答复规范
 keywords: 食堂,宿舍,校车,校园卡,快递,水电,超市,运动场,社团,充值,挂失,补办,门禁,报修,南校区,北校区,通勤,班车,餐厅,早餐,午餐,晚餐
 agents: campus_life
 enabled: true

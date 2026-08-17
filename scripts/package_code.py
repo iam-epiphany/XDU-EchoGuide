@@ -13,7 +13,7 @@ package_code.py — 一键打包 EchoGuide 主要代码为 zip，供网页版 AI
 排除内容（"主要代码"之外的都去掉）:
     .git / .venv / node_modules / dist / __pycache__ / 缓存与 IDE 目录
     .env（密钥，.env.example 保留）、*.db / *.onnx / *.bin / 图片 / PDF
-    assets（README 截图）、_docs_gen（文档生成器）、学习文档（PDF 包装资料）
+    assets（README 截图）、_docs_gen（文档生成器，仅本地）、学习文档（PDF 成品，仅本地）
     frontend 仅保留源码与构建配置，不含 node_modules / dist / package-lock
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ EXCLUDE_DIR_NAMES = {
     ".git", ".venv", "venv", "__pycache__", ".pytest_cache",
     ".idea", ".zcode", ".ruff_cache", ".mypy_cache",
     "node_modules", "dist", "logs",
-    "assets", "_docs_gen", "学习文档",   # 截图 / 文档生成器 / PDF 包装资料
+    "assets", "_docs_gen", "学习文档",   # 截图 / 文档生成器 / PDF 成品（均本地维护，不入包）
 }
 
 EXCLUDE_FILE_NAMES = {
@@ -56,7 +56,7 @@ TEXT_SUFFIXES = {
 # 顶层目录职责速查（写入摘要，帮 AI 快速理解结构）
 DIR_NOTES = {
     "api":          "FastAPI 入口：/chat、/mcp、/knowledge、/search、认证、SSE 与评测接口",
-    "agents":       "五个领域 Agent、复杂度闸门、Planner/DAG/Executor/Synthesizer",
+    "agents":       "QA/Executor 职责角色、领域挂载、复杂度闸门、Planner/DAG/Executor/Synthesizer、出口校验",
     "core":         "级联意图识别、领域词表、Skills 与 Trace",
     "tools":        "个人/校园/学业/事务/IT 确定性工具",
     "mcp":          "工具管理器、Agentic RAG、MCP 协议与语义缓存",
@@ -146,7 +146,7 @@ def build_summary(files, total_lines):
     L.append("| MCP 协议层 | `mcp/protocol.py` | JSON-RPC 2.0 / Streamable HTTP：initialize / tools/list / tools/call |")
     L.append("| 工具框架 | `mcp/tool_manager.py` | 工具注册、熔断、TTL 缓存、查询改写→并行召回→去重→重排链路 |")
     L.append("| Agentic RAG | `mcp/knowledge_base.py` | ChromaDB 检索；本地 bge Embedding/Rerank 在 `mcp/embeddings.py` |")
-    L.append("| 多 Agent | `agents/` | 五个领域 Agent、复杂度闸门、Planner/DAG/Executor/Synthesizer |")
+    L.append("| Agent 编排 | `agents/` | QA/Executor 职责角色、领域挂载、复杂度闸门、Planner/DAG/Executor/Synthesizer、出口校验 |")
     L.append("| 意图识别 | `core/` | 级联意图识别（Pattern→Embedding→LLM）与 Fast/Deep 复杂度闸门 |")
     L.append("| 个人数据 | `personal/store.py` | SQLite 课表/待办/DDL，按 user_id 隔离 |")
     L.append("| 分层记忆 | `memory/` | L0 原文 / L1 事实 / L2 场景 / L3 画像 + 上下文卸载 |")

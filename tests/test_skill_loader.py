@@ -63,39 +63,80 @@ def test_loads_all_campus_skills():
         tmp.cleanup()
 
 
-def test_keyword_matching_routes_to_correct_agent():
+def test_keyword_matching_hints_relevant_skill():
+    """v5：目录常驻（含工具名）+ 关键词命中提示，正文经 use_skill_* 工具按需加载。"""
     tmp, mgr = _make_manager()
     try:
-        # 选课消息命中 academic skill
-        assert mgr.prompt_for("这学期选课什么时候开始？", "academic")
-        # 食堂消息命中 campus_life skill
-        assert mgr.prompt_for("南校区食堂几点关门？", "campus_life")
-        # 无关消息不注入
-        assert not mgr.prompt_for("今天天气怎么样", "academic")
-        # 非对应 Agent 不注入（关键词命中但 agents 不匹配）
-        assert not mgr.prompt_for("选课时间？", "campus_life")
+        # 选课消息：目录含工具名，且命中提示高亮学业规范并给出加载入口
+        prompt = mgr.prompt_for("这学期选课什么时候开始？")
+        assert "学业咨询规范" in prompt
+        assert "use_skill_academic" in prompt
+        assert "该请求可能涉及以下技能，可调用对应工具获取完整规范" in prompt
+        # 食堂消息：命中提示高亮校园生活规范
+        prompt = mgr.prompt_for("南校区食堂几点关门？")
+        assert "校园生活向导规范" in prompt
+        assert "use_skill_campus_life" in prompt
+        # 无关消息：目录常驻但无命中提示，且完整正文不再注入
+        prompt = mgr.prompt_for("今天天气怎么样")
+        assert "use_skill_academic" in prompt
+        assert "该请求可能涉及以下技能" not in prompt
+        assert "选课分预选" not in prompt
+        # agents 字段已废弃：关键词命中的消息不再因领域键被过滤
+        assert mgr.prompt_for("选课时间？", "campus_life")
+    finally:
+        tmp.cleanup()
+
+
+def test_tool_definitions_expose_each_skill():
+    """每个启用的 Skill 生成一个只读工具声明（无参数，描述含触发词）。"""
+    tmp, mgr = _make_manager()
+    try:
+        defs = mgr.tool_definitions()
+        assert {d["name"] for d in defs} == {"use_skill_academic", "use_skill_campus_life"}
+        for d in defs:
+            assert d["input_schema"] == {
+                "type": "object", "properties": {}, "additionalProperties": False,
+            }
+        academic = next(d for d in defs if d["name"] == "use_skill_academic")
+        assert "触发词：选课、课表、考试、成绩" in academic["description"]
+        assert "选课等学业问题答复规范" in academic["description"]
+    finally:
+        tmp.cleanup()
+
+
+def test_skill_content_for_returns_full_body():
+    """use_skill_* 工具加载完整正文；未知工具返回错误提示（工具名派生自目录名）。"""
+    tmp, mgr = _make_manager()
+    try:
+        content = mgr.skill_content_for("use_skill_academic")
+        assert "### 学业咨询规范" in content
+        assert "选课分预选、正选、退改选阶段" in content
+        assert "校园生活向导规范" not in content
+        assert mgr.skill_content_for("use_skill_not_exists") == "技能 use_skill_not_exists 不存在或已停用"
     finally:
         tmp.cleanup()
 
 
 def test_followup_question_inherits_skill_via_history():
-    """追问感知回归：'那几点开门呢？' 自身无关键词，但结合历史仍注入 campus skill。"""
+    """追问感知回归：'那几点开门呢？' 自身无关键词，但结合历史仍高亮 campus skill。"""
     tmp, mgr = _make_manager()
     try:
         history = [
             {"role": "user", "content": "南校区食堂几点关门？"},
             {"role": "assistant", "content": "南校区食堂一般晚上七点关门。"},
         ]
-        # 不带历史：不注入（旧版缺陷）
-        assert not mgr.prompt_for("那几点开门呢？", "campus_life")
-        # 带历史：注入 campus_life skill（追问继承）
-        assert mgr.prompt_for("那几点开门呢？", "campus_life", history=history)
+        # 不带历史：无命中提示（追问继承失效时不高亮）
+        assert "该请求可能涉及以下技能" not in mgr.prompt_for("那几点开门呢？")
+        # 带历史：命中提示高亮校园生活规范（追问继承）
+        prompt = mgr.prompt_for("那几点开门呢？", history=history)
+        assert "该请求可能涉及以下技能" in prompt
+        assert "校园生活向导规范" in prompt
     finally:
         tmp.cleanup()
 
 
 def test_ascii_keyword_word_boundary_matching():
-    """子串误命中回归：'api' 不命中 'capital'。"""
+    """子串误命中回归：'api' 不命中 'capital'（命中提示维度）。"""
     tmp = tempfile.TemporaryDirectory()
     root = Path(tmp.name)
     _write_skill(
@@ -116,9 +157,11 @@ enabled: true
     mgr = SkillManager(root_dir=str(root))
     mgr.load()
     try:
-        assert not mgr.prompt_for("capital 是什么意思", "it_help")
-        assert not mgr.prompt_for("capital", "it_help")
-        assert mgr.prompt_for("调用 api 报错", "it_help")
+        # capital 不命中 api（整词边界），命中提示不出现
+        assert "该请求可能涉及以下技能" not in mgr.prompt_for("capital 是什么意思")
+        assert "该请求可能涉及以下技能" not in mgr.prompt_for("capital")
+        # 调用 api 报错 → 命中提示出现
+        assert "该请求可能涉及以下技能" in mgr.prompt_for("调用 api 报错")
     finally:
         tmp.cleanup()
 
@@ -128,7 +171,8 @@ def test_prompt_injection_mentions_echoguide_and_rules():
     try:
         prompt = mgr.prompt_for("选课什么时候开始", "academic")
         assert "EchoGuide" in prompt
-        assert "预选" in prompt
+        # v5：正文不再注入 system prompt（"预选"只出现在 SKILL.md 正文里）
+        assert "预选" not in prompt
     finally:
         tmp.cleanup()
 
@@ -181,5 +225,6 @@ enabled: false
     mgr.load()
     try:
         assert mgr.summary()["count"] == 0
+        assert mgr.tool_definitions() == []  # 停用 Skill 不出现在工具声明里
     finally:
         tmp.cleanup()

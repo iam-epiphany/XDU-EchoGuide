@@ -10,12 +10,13 @@ from core.domains import IntentAction, IntentDomain
 from core.intent_recognizer import ComplexitySignal
 from agents.agent_orchestrator import (
     ACTION_GUIDANCE,
-    AGENT_TOOL_ALLOWLIST,
+    DOMAIN_PERSONA,
     AgentOrchestrator,
     AgentResponse,
     AgentStats,
     AgentType,
     BaseAgent,
+    ProfileName,
     Request,
     SharedState,
     Task,
@@ -40,30 +41,34 @@ def _req(message: str, domain=None, action=None) -> Request:
     )
 
 
-def test_pool_registers_five_campus_agents():
-    """个人助理领域扩展后，Agent 池应包含五大领域。"""
+def test_pool_registers_responsibility_roles():
+    """按职责拆分：QA（问答）/ EXECUTOR（执行）两个职责角色，各 Fast/Deep 双实例。"""
     orch = _orchestrator()
     pool = orch._pool
-    assert set(pool.keys()) == {
-        AgentType.ACADEMIC,
-        AgentType.CAMPUS_LIFE,
-        AgentType.AFFAIRS,
-        AgentType.IT_HELP,
-        AgentType.PERSONAL,
+    assert set(pool.keys()) == {AgentType.QA, AgentType.EXECUTOR}
+    assert len(pool[AgentType.QA]) == 2
+    assert len(pool[AgentType.EXECUTOR]) == 2
+
+
+def test_role_for_selects_executor_on_request():
+    """角色选择：REQUEST → EXECUTOR（含写工具面）；其余动作 → QA（只读）。"""
+    orch = _orchestrator()
+    assert orch._role_for(_req("帮我记个待办", action=IntentAction.REQUEST)) == AgentType.EXECUTOR
+    assert orch._role_for(_req("食堂几点关门", action=IntentAction.QUERY)) == AgentType.QA
+    assert orch._role_for(_req("你好", action=IntentAction.GREETING)) == AgentType.QA
+    assert orch._role_for(_req("查一下", action=None)) == AgentType.QA
+
+
+def test_domain_persona_covers_all_domains_and_other():
+    """领域人格覆盖五大领域 + OTHER（通用接待），这是领域分类的唯一产物。"""
+    assert set(DOMAIN_PERSONA.keys()) == {
+        IntentDomain.ACADEMIC, IntentDomain.CAMPUS_LIFE, IntentDomain.AFFAIRS,
+        IntentDomain.IT_HELP, IntentDomain.PERSONAL, IntentDomain.OTHER,
     }
 
 
-def test_campus_domains_route_to_corresponding_agents():
-    orch = _orchestrator()
-    assert orch._route(IntentDomain.ACADEMIC) == AgentType.ACADEMIC
-    assert orch._route(IntentDomain.CAMPUS_LIFE) == AgentType.CAMPUS_LIFE
-    assert orch._route(IntentDomain.AFFAIRS) == AgentType.AFFAIRS
-    assert orch._route(IntentDomain.IT_HELP) == AgentType.IT_HELP
-    assert orch._route(IntentDomain.PERSONAL) == AgentType.PERSONAL
-
-
 def test_personal_schedule_question_routes_to_personal_agent():
-    """"今天有什么课"类个人日程问题应路由到 PersonalAgent。"""
+    """"今天有什么课"类个人日程问题应挂载个人领域人格。"""
     orch = _orchestrator()
     req = _req("今天有什么课？", domain=IntentDomain.PERSONAL)
     targets = orch._collaboration_targets(req)
@@ -79,25 +84,29 @@ def test_collaboration_personal_prefers_over_academic():
     assert AgentType.ACADEMIC not in targets
 
 
-def test_request_form_domain_routes_to_domain_agent():
-    """P0 回归：请求句式（帮我/我要）路由到领域 Agent，而不是统一兜底学业 Agent。"""
+def test_request_form_domain_role_mapping():
+    """领域 → 协作任务角色映射（DAG 拆分用），不参与执行实体选择。"""
     orch = _orchestrator()
-    assert orch._route(IntentDomain.AFFAIRS) == AgentType.AFFAIRS
-    assert orch._route(IntentDomain.CAMPUS_LIFE) == AgentType.CAMPUS_LIFE
+    assert orch._DOMAIN_ROLE[IntentDomain.AFFAIRS] == AgentType.AFFAIRS
+    assert orch._DOMAIN_ROLE[IntentDomain.CAMPUS_LIFE] == AgentType.CAMPUS_LIFE
+    assert IntentDomain.OTHER not in orch._DOMAIN_ROLE
 
 
 def test_legacy_intent_category_route_compat():
-    """兼容：只传旧版 IntentCategory 也能确定性路由。"""
+    """兼容：只传旧版 IntentCategory 也能确定性推导领域（挂载键）。"""
     from core.intent_recognizer import IntentCategory
 
     orch = _orchestrator()
-    assert orch._route(orch._CATEGORY_TO_DOMAIN[IntentCategory.ACADEMIC]) == AgentType.ACADEMIC
+    assert orch._CATEGORY_TO_DOMAIN[IntentCategory.ACADEMIC] == IntentDomain.ACADEMIC
 
 
-def test_unclassified_domain_falls_back_to_academic():
+def test_other_domain_gets_generic_persona():
+    """OTHER（含 GitHub 等外部问题）挂通用人格，不再由学业人格兜底接待。"""
     orch = _orchestrator()
-    assert orch._route(IntentDomain.OTHER) == AgentType.ACADEMIC
-    assert orch._route(None) == AgentType.ACADEMIC
+    agent = orch._pool[AgentType.QA][0]
+    prompt = agent._build_system_prompt(_req("帮我搜一下 GitHub 上的 deepseek 仓库", domain=IntentDomain.OTHER))
+    assert "[领域人格]" in prompt
+    assert DOMAIN_PERSONA[IntentDomain.OTHER] in prompt
 
 
 def test_collaboration_detects_multi_domain_question():
@@ -161,47 +170,52 @@ def test_profiles_are_real_flash_and_pro_configs():
         fast_model="deepseek-v4-flash",
         deep_model="deepseek-v4-pro",
     )
-    profiles = {agent.profile.name.value: agent.profile for agent in orch._pool[AgentType.ACADEMIC]}
+    profiles = {agent.profile.name.value: agent.profile for agent in orch._pool[AgentType.QA]}
     assert profiles["fast"].model == "deepseek-v4-flash"
     assert profiles["fast"].thinking is False
     assert profiles["deep"].model == "deepseek-v4-pro"
     assert profiles["deep"].thinking is True
 
 
-def test_execute_falls_back_on_failed_agent():
+def test_execute_fast_failure_retries_deep():
+    """Fast 实例失败 → 同职责角色 Deep 重试。"""
     orch = _orchestrator()
+    pool = orch._pool[AgentType.QA]
+    fast = next(a for a in pool if a.profile.name == ProfileName.FAST)
+    deep = next(a for a in pool if a.profile.name == ProfileName.DEEP)
 
     async def run_fail(req, on_event=None):
-        return AgentResponse(agent_type=AgentType.IT_HELP, content="", success=False, latency_ms=1.0)
+        return AgentResponse(agent_type=AgentType.QA, content="", success=False, latency_ms=1.0)
 
-    # Agent 池每类型有 2 个实例：全部 patch 为失败，验证降级到 AcademicAgent 兜底
-    for agent in orch._pool[AgentType.IT_HELP]:
-        agent.handle = run_fail  # type: ignore[method-assign]
+    async def run_ok(req, on_event=None):
+        return AgentResponse(agent_type=AgentType.QA, content="deep 结果", success=True, latency_ms=1.0)
 
-    async def scenario():
-        return await orch._execute(_req("教务系统打不开", domain=IntentDomain.IT_HELP), AgentType.IT_HELP)
+    fast.handle = run_fail  # type: ignore[method-assign]
+    deep.handle = run_ok  # type: ignore[method-assign]
 
-    response = asyncio.run(scenario())
-    # IT 失败后降级到 AcademicAgent 兜底
-    assert response.agent_type == AgentType.ACADEMIC
+    req = _req("教务系统打不开", domain=IntentDomain.IT_HELP)
+    req.profile = ProfileName.FAST
+    response = asyncio.run(orch._execute(req, AgentType.QA))
+    assert response.success
+    assert response.content == "deep 结果"
 
 
 def test_routing_switches_instance_after_penalty():
-    """性能路由闭环：实例 0 被 Monitor 惩罚后，_best_agent 应切换到实例 1。"""
+    """Fast/Deep 实例选择闭环：实例 0 被 Monitor 惩罚后，_best_agent 应切换到实例 1。"""
     orch = _orchestrator()
-    pool = orch._pool[AgentType.ACADEMIC]
-    assert len(pool) == 2  # 每类型双实例
+    pool = orch._pool[AgentType.QA]
+    assert len(pool) == 2  # 双实例
 
     # 初始同分：max 稳定取第一个实例
-    assert orch._best_agent(AgentType.ACADEMIC) is pool[0]
+    assert orch._best_agent(AgentType.QA) is pool[0]
 
     # Monitor 对实例 0 施加惩罚后，实例 1 接管
-    orch.update_routing_penalties({"academic_0": 0.9})
-    assert orch._best_agent(AgentType.ACADEMIC) is pool[1]
+    orch.update_routing_penalties({"qa_0": 0.9})
+    assert orch._best_agent(AgentType.QA) is pool[1]
 
     # 惩罚清除后回到实例 0
-    orch.update_routing_penalties({"academic_0": 0.0})
-    assert orch._best_agent(AgentType.ACADEMIC) is pool[0]
+    orch.update_routing_penalties({"qa_0": 0.0})
+    assert orch._best_agent(AgentType.QA) is pool[0]
 
 
 def test_routing_score_prefers_high_success_low_latency():
@@ -359,13 +373,13 @@ def test_parallel_executor_runs_waves_and_injects_shared_state():
     orch = _orchestrator()
     req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
 
-    calls: list = []  # (agent_type, context)
+    calls: list = []  # (任务角色领域, context)
 
     async def fake_execute(task_req, agent_type, on_event=None):
-        calls.append((agent_type.value, task_req.context or ""))
+        calls.append((task_req.domain.value, task_req.context or ""))
         return AgentResponse(
-            agent_type=agent_type,
-            content=f"{agent_type.value} 的结果",
+            agent_type=AgentType(task_req.domain.value),
+            content=f"{task_req.domain.value} 的结果",
             success=True,
         )
 
@@ -394,7 +408,8 @@ def test_parallel_synthesizer_failure_degrades_to_concat():
     req = _req("南校区食堂几点关门，顺便帮我查下图书馆开放时间")
 
     async def fake_execute(task_req, agent_type, on_event=None):
-        return AgentResponse(agent_type=agent_type, content=f"{agent_type.value} 回答", success=True)
+        label = AgentType(task_req.domain.value) if task_req.domain else AgentType.QA
+        return AgentResponse(agent_type=label, content=f"{label.value} 回答", success=True)
 
     orch._execute = fake_execute
     result = asyncio.run(orch.run_parallel(req, [AgentType.CAMPUS_LIFE, AgentType.AFFAIRS]))
@@ -430,39 +445,149 @@ def _fake_tool_manager():
     return tm
 
 
-def test_build_tools_respects_agent_allowlist():
-    """工具权限边界：每个 Agent 只暴露职责内工具（最小权限）。"""
-    from agents.agent_orchestrator import AGENT_TOOL_ALLOWLIST
-
+def test_build_tools_qa_role_readonly_surface():
+    """QA 职责角色：公共工具层 − 写工具（角色级只读边界，与领域无关）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    for agent_type, agents in orch._pool.items():
-        for agent in agents:
-            names = {t["name"] for t in agent._build_tools()}
-            assert names == AGENT_TOOL_ALLOWLIST[agent_type]
-
-    # 典型断言：Personal 有个人工具；Academic 无个人工具
-    personal = orch._pool[AgentType.PERSONAL][0]
-    names = {t["name"] for t in personal._build_tools()}
-    assert {"query_schedule", "add_todo", "query_ddl"} <= names
-    academic = orch._pool[AgentType.ACADEMIC][0]
-    names = {t["name"] for t in academic._build_tools()}
-    assert "knowledge_search" in names and "query_schedule" not in names
+    agent = orch._pool[AgentType.QA][0]
+    names = {t["name"] for t in agent._build_tools()}
+    assert names == {
+        "knowledge_search", "query_schedule", "query_todo", "query_ddl",
+        "query_campus_info", "get_weather", "calculate_weighted_score",
+        "query_affairs_process", "diagnose_it_issue",
+    }
+    assert "add_todo" not in names and "complete_todo" not in names
 
 
-def test_execute_tool_rejects_out_of_scope_tool():
-    """防御纵深：Agent 尝试调用权限外工具被直接拒绝，不执行。"""
+def test_build_tools_executor_role_full_surface():
+    """Executor 职责角色：全量公共工具层（含写工具）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    academic = orch._pool[AgentType.ACADEMIC][0]
+    agent = orch._pool[AgentType.EXECUTOR][0]
+    names = {t["name"] for t in agent._build_tools()}
+    assert {"add_todo", "complete_todo"} <= names
+    assert "diagnose_it_issue" in names
 
-    data, error = asyncio.run(academic._execute_tool("query_schedule", {"date": "今天"}, _req("hi")))
+
+def test_execute_tool_respects_instance_allowlist_override():
+    """实例级 _tool_allowlist 覆盖公共层（测试/定制）：范围外工具直接拒绝。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    agent = orch._pool[AgentType.QA][0]
+    agent._tool_allowlist = {"knowledge_search"}
+
+    data, error = asyncio.run(agent._execute_tool("query_schedule", {"date": "今天"}, _req("hi")))
     assert data is None
     assert "权限" in error
 
-    # 权限内工具正常走执行链（无 handler 结果时返回失败但非权限拒绝）
-    data, error = asyncio.run(academic._execute_tool("knowledge_search", {"query": "选课"}, _req("hi")))
+    # 覆盖范围内工具正常走执行链（无 handler 结果时返回失败但非权限拒绝）
+    data, error = asyncio.run(agent._execute_tool("knowledge_search", {"query": "选课"}, _req("hi")))
     assert "权限" not in (error or "")
+
+
+# ── Skill 工具（渐进披露：完整 SKILL.md 按需加载）─────────────────────────────
+
+def _fake_skill_manager():
+    """临时目录 SkillManager：academic / campus_life 两个 Skill，构造即加载。"""
+    import tempfile
+    from pathlib import Path
+
+    from core.skill_loader import SkillManager
+
+    tmp = tempfile.TemporaryDirectory()
+    root = Path(tmp.name)
+    for slug, name, desc, kws in [
+        ("academic", "学业咨询规范", "选课等学业问题答复规范", "选课,课表,考试"),
+        ("campus_life", "校园生活向导规范", "食堂校车等生活问题答复规范", "食堂,校车"),
+    ]:
+        d = root / slug
+        d.mkdir()
+        (d / "SKILL.md").write_text(
+            f"""---
+name: {name}
+description: {desc}
+keywords: {kws}
+enabled: true
+---
+
+# {name}
+{name}的完整正文。""",
+            encoding="utf-8",
+        )
+    mgr = SkillManager(root_dir=str(root))
+    mgr.load()
+    return tmp, mgr
+
+
+def test_build_tools_exposes_skill_tools():
+    """Skill 工具（use_skill_*）追加进公共工具层，与 MCP 工具并存。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    tmp, mgr = _fake_skill_manager()
+    try:
+        orch.set_skill_manager(mgr)
+        agent = orch._pool[AgentType.QA][0]
+        names = {t["name"] for t in agent._build_tools(_req("选课什么时候开始", action=IntentAction.QUERY))}
+        assert "use_skill_academic" in names
+        assert "use_skill_campus_life" in names
+        assert "knowledge_search" in names  # MCP 工具不受影响
+    finally:
+        tmp.cleanup()
+
+
+def test_build_tools_skill_tools_hidden_on_greeting():
+    """GREETING/FEEDBACK 动作下 Skill 工具与普通工具一起隐藏（Action 门禁一致）。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    tmp, mgr = _fake_skill_manager()
+    try:
+        orch.set_skill_manager(mgr)
+        agent = orch._pool[AgentType.QA][0]
+        assert agent._build_tools(_req("你好", action=IntentAction.GREETING)) == []
+        assert agent._build_tools(_req("这个建议很好", action=IntentAction.FEEDBACK)) == []
+    finally:
+        tmp.cleanup()
+
+
+def test_execute_tool_serves_skill_content_locally():
+    """use_skill_* 被 _execute_tool 拦截：完整正文本地返回，不经过 MCPToolManager。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    tmp, mgr = _fake_skill_manager()
+    try:
+        orch.set_skill_manager(mgr)
+        agent = orch._pool[AgentType.QA][0]
+        data, error = asyncio.run(agent._execute_tool("use_skill_academic", {}, _req("选课")))
+        assert error is None
+        assert "学业咨询规范的完整正文" in data
+        # 未知 Skill 工具返回错误文本
+        data, error = asyncio.run(agent._execute_tool("use_skill_unknown", {}, _req("选课")))
+        assert data is None
+        assert "不存在" in error
+        # 普通工具路径不受影响（无 handler → 执行失败但非权限拒绝）
+        data, error = asyncio.run(agent._execute_tool("query_schedule", {"date": "今天"}, _req("hi")))
+        assert "权限" not in (error or "")
+    finally:
+        tmp.cleanup()
+
+
+def test_execute_tool_skill_tools_respect_allowlist():
+    """实例级 _tool_allowlist 同样约束 Skill 工具（防御纵深）。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    tmp, mgr = _fake_skill_manager()
+    try:
+        orch.set_skill_manager(mgr)
+        agent = orch._pool[AgentType.QA][0]
+        agent._tool_allowlist = {"use_skill_academic"}
+        data, error = asyncio.run(agent._execute_tool("use_skill_campus_life", {}, _req("食堂")))
+        assert data is None
+        assert "权限" in error
+        data, error = asyncio.run(agent._execute_tool("use_skill_academic", {}, _req("选课")))
+        assert error is None
+        assert "学业咨询规范的完整正文" in data
+    finally:
+        tmp.cleanup()
 
 
 # ── Action 层执行策略（domain 决定 Agent，action 决定 How）────────────────────
@@ -490,68 +615,91 @@ def test_action_allows_tool_policy_matrix():
 
 
 def test_build_tools_query_action_readonly():
-    """QUERY：PERSONAL Agent 只暴露只读工具，不暴露写工具（add_todo/complete_todo）。"""
+    """QUERY：只暴露只读工具，不暴露写工具（Action 层门禁）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    personal = orch._pool[AgentType.PERSONAL][0]
+    agent = orch._pool[AgentType.EXECUTOR][0]  # 写权限角色也被 QUERY 动作拦下写工具
 
-    names = {t["name"] for t in personal._build_tools(_req("看看我的待办", action=IntentAction.QUERY))}
+    names = {t["name"] for t in agent._build_tools(_req("看看我的待办", action=IntentAction.QUERY))}
     assert "query_todo" in names and "query_schedule" in names
     assert "add_todo" not in names and "complete_todo" not in names
 
 
-def test_build_tools_request_action_full_allowlist():
-    """REQUEST：PERSONAL Agent 暴露完整 allowlist（含执行类工具）。"""
+def test_build_tools_request_action_full_surface():
+    """REQUEST：Executor 角色暴露完整公共工具层（含执行类工具）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    personal = orch._pool[AgentType.PERSONAL][0]
+    agent = orch._pool[AgentType.EXECUTOR][0]
 
-    names = {t["name"] for t in personal._build_tools(_req("帮我记个待办", action=IntentAction.REQUEST))}
-    assert names == AGENT_TOOL_ALLOWLIST[AgentType.PERSONAL]
+    names = {t["name"] for t in agent._build_tools(_req("帮我记个待办", action=IntentAction.REQUEST))}
     assert "add_todo" in names
+    assert "query_schedule" in names and "diagnose_it_issue" in names
+
+
+def test_build_tools_qa_role_blocks_writes_even_on_request():
+    """角色级只读边界（防御纵深）：QA 角色在 REQUEST 动作下也不暴露写工具。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    agent = orch._pool[AgentType.QA][0]
+
+    names = {t["name"] for t in agent._build_tools(_req("帮我记个待办", action=IntentAction.REQUEST))}
+    assert "query_schedule" in names
+    assert "add_todo" not in names and "complete_todo" not in names
 
 
 def test_build_tools_greeting_feedback_no_tools():
     """GREETING / FEEDBACK：原则上不开放任何工具。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    campus = orch._pool[AgentType.CAMPUS_LIFE][0]
+    agent = orch._pool[AgentType.QA][0]
 
-    assert campus._build_tools(_req("你好", action=IntentAction.GREETING)) == []
-    assert campus._build_tools(_req("这个建议很好", action=IntentAction.FEEDBACK)) == []
+    assert agent._build_tools(_req("你好", action=IntentAction.GREETING)) == []
+    assert agent._build_tools(_req("这个建议很好", action=IntentAction.FEEDBACK)) == []
 
 
 def test_build_tools_complaint_other_readonly():
     """COMPLAINT / OTHER：保守策略，只开放只读工具。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    personal = orch._pool[AgentType.PERSONAL][0]
+    agent = orch._pool[AgentType.QA][0]
 
     for action in (IntentAction.COMPLAINT, IntentAction.OTHER):
-        names = {t["name"] for t in personal._build_tools(_req("不满", action=action))}
+        names = {t["name"] for t in agent._build_tools(_req("不满", action=action))}
         assert "query_todo" in names
         assert "add_todo" not in names and "complete_todo" not in names
 
 
 def test_execute_tool_query_blocks_write_tool():
-    """防御纵深：QUERY 动作下 Agent 直接调用写工具 → 拒绝（含"权限"），不执行。"""
+    """防御纵深：QUERY 动作下写权限角色调用写工具 → 拒绝（Action 门禁），不执行。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    personal = orch._pool[AgentType.PERSONAL][0]
+    agent = orch._pool[AgentType.EXECUTOR][0]
 
-    data, error = asyncio.run(personal._execute_tool(
+    data, error = asyncio.run(agent._execute_tool(
         "add_todo", {"content": "买饭卡"}, _req("查一下我的待办", action=IntentAction.QUERY)))
     assert data is None
     assert "权限" in error
 
 
-def test_execute_tool_request_allows_write_tool():
-    """REQUEST 动作下写工具正常走执行链（不被权限拦截）。"""
+def test_execute_tool_qa_role_blocks_write_tool():
+    """角色级只读边界（防御纵深）：QA 角色即使 REQUEST 动作也拒绝写工具。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    personal = orch._pool[AgentType.PERSONAL][0]
+    agent = orch._pool[AgentType.QA][0]
 
-    data, error = asyncio.run(personal._execute_tool(
+    data, error = asyncio.run(agent._execute_tool(
+        "add_todo", {"content": "买饭卡"}, _req("帮我记个待办", action=IntentAction.REQUEST)))
+    assert data is None
+    assert "权限" in error
+
+
+def test_execute_tool_request_allows_write_tool():
+    """REQUEST 动作下 Executor 角色写工具正常走执行链（不被权限拦截）。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    agent = orch._pool[AgentType.EXECUTOR][0]
+
+    data, error = asyncio.run(agent._execute_tool(
         "add_todo", {"content": "买饭卡"}, _req("帮我记个待办", action=IntentAction.REQUEST)))
     assert error is None  # 放行：fake handler 返回 []
     assert data == []
@@ -560,24 +708,40 @@ def test_execute_tool_request_allows_write_tool():
 def test_system_prompt_injects_action_guidance():
     """Action 指引注入 system prompt：各动作注入对应行为指令，None 不注入。"""
     orch = _orchestrator()
-    academic = orch._pool[AgentType.ACADEMIC][0]
+    agent = orch._pool[AgentType.QA][0]
 
-    prompt = academic._build_system_prompt(_req("hi", action=IntentAction.QUERY))
+    prompt = agent._build_system_prompt(_req("hi", action=IntentAction.QUERY))
     assert "[意图指引]" in prompt
     assert ACTION_GUIDANCE[IntentAction.QUERY] in prompt
 
-    prompt = academic._build_system_prompt(_req("hi", action=IntentAction.REQUEST))
+    prompt = agent._build_system_prompt(_req("hi", action=IntentAction.REQUEST))
     assert "积极调用工具解决问题" in prompt
 
-    prompt = academic._build_system_prompt(_req("hi", action=IntentAction.COMPLAINT))
+    prompt = agent._build_system_prompt(_req("hi", action=IntentAction.COMPLAINT))
     assert "识别具体问题点" in prompt
 
-    prompt = academic._build_system_prompt(_req("hi", action=IntentAction.GREETING))
+    prompt = agent._build_system_prompt(_req("hi", action=IntentAction.GREETING))
     assert "无需调用工具" in prompt
 
     # None：不注入意图指引段（保持原有 prompt 结构）
-    prompt = academic._build_system_prompt(_req("hi"))
+    prompt = agent._build_system_prompt(_req("hi"))
     assert "[意图指引]" not in prompt
+
+
+def test_system_prompt_mounts_domain_persona():
+    """领域人格按 domain 挂载（领域是顾问）：IT 人格含诊断工具指引；无领域不注入。"""
+    orch = _orchestrator()
+    agent = orch._pool[AgentType.QA][0]
+
+    prompt = agent._build_system_prompt(_req("hi", domain=IntentDomain.IT_HELP))
+    assert "[领域人格]" in prompt
+    assert "diagnose_it_issue" in prompt
+
+    prompt = agent._build_system_prompt(_req("hi", domain=IntentDomain.OTHER))
+    assert DOMAIN_PERSONA[IntentDomain.OTHER] in prompt
+
+    prompt = agent._build_system_prompt(_req("hi", domain=None))
+    assert "diagnose_it_issue" not in prompt  # 无领域：不注入任何领域人格内容
 
 
 def test_run_task_backfill_blocked_on_query_action():
@@ -653,12 +817,12 @@ def test_complexity_from_llm_drops_unknown_domains():
     assert orch._complexity_from_llm(_signal("weird"), req) is None
 
 
-def test_complexity_from_llm_single_uses_route_fallback():
+def test_complexity_from_llm_single_uses_role_fallback():
     orch = _orchestrator()
     req = _req("随便聊聊", domain=IntentDomain.CAMPUS_LIFE)
     decision = orch._complexity_from_llm(_signal("single", []), req)
     assert decision is not None and decision.mode == "single"
-    assert decision.targets == [AgentType.CAMPUS_LIFE]
+    assert decision.targets == [AgentType.QA]
 
 
 def test_complexity_from_llm_dependent_builds_tasks():
@@ -760,7 +924,7 @@ def test_run_reuses_llm_complexity_when_stage_llm():
     orch = _orchestrator()
     req = _req("食堂几点关门，顺便查下明天课表")
 
-    async def fake_recognize(message, history=None, force_llm=False):
+    async def fake_recognize(message, history=None, force_llm=False, state=None):
         return IntentResult(
             domain=IntentDomain.CAMPUS_LIFE, action=IntentAction.QUERY,
             intent=None, confidence=0.6, entities={}, reasoning="llm",
@@ -778,7 +942,8 @@ def test_run_reuses_llm_complexity_when_stage_llm():
     orch._execute = fake_execute
     result = asyncio.run(orch.run(req))
     assert result.execution["mode"] == "parallel"
-    assert {AgentType.CAMPUS_LIFE, AgentType.PERSONAL} <= set(calls)
+    # 任务按执行职责角色运行（QUERY 请求 → QA），任务角色标签只做挂载
+    assert set(calls) == {AgentType.QA}
 
 
 def test_run_upgrade_path_adopts_llm_judgment():
@@ -788,14 +953,14 @@ def test_run_upgrade_path_adopts_llm_judgment():
     orch = _orchestrator()
     req = _req("教务系统打不开，没法选课了")   # 多领域词但无连接词 → 升级信号
 
-    async def fake_recognize(message, history=None, force_llm=False):
+    async def fake_recognize(message, history=None, force_llm=False, state=None):
         return IntentResult(
             domain=IntentDomain.IT_HELP, action=IntentAction.QUERY,
             intent=None, confidence=0.95, entities={}, reasoning="pattern",
             latency_ms=1.0, classifier_stage="pattern",
         )
 
-    async def fake_judge(message, history=None):
+    async def fake_judge(message, history=None, complexity_only=False, state=None):
         return _signal("parallel", ["it_help", "academic"], reason="两个领域")
 
     async def fake_execute(task_req, agent_type, on_event=None):
@@ -816,14 +981,14 @@ def test_run_upgrade_path_falls_back_when_llm_invalid():
     orch = _orchestrator()
     req = _req("教务系统打不开，没法选课了")
 
-    async def fake_recognize(message, history=None, force_llm=False):
+    async def fake_recognize(message, history=None, force_llm=False, state=None):
         return IntentResult(
             domain=IntentDomain.IT_HELP, action=IntentAction.QUERY,
             intent=None, confidence=0.95, entities={}, reasoning="pattern",
             latency_ms=1.0, classifier_stage="pattern",
         )
 
-    async def fake_judge(message, history=None):
+    async def fake_judge(message, history=None, complexity_only=False, state=None):
         return None   # LLM 不可用
 
     async def fake_execute(task_req, agent_type, on_event=None):
@@ -848,4 +1013,4 @@ def test_run_single_agent_benchmark_forces_single():
     orch._execute = fake_execute
     result = asyncio.run(orch.run(req))
     assert result.execution["mode"] == "single"
-    assert result.agent_type == AgentType.CAMPUS_LIFE
+    assert result.agent_type == AgentType.QA

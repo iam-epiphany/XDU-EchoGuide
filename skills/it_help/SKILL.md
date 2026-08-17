@@ -1,6 +1,6 @@
 ---
 name: 校园IT支持规范
-description: 适用于 EchoGuide ITHelpAgent 的教务系统、校园网、VPN、学校邮箱、统一身份认证等校园信息系统排障与配置规范
+description: 适用于 EchoGuide IT 支持领域的教务系统、校园网、VPN、学校邮箱、统一身份认证等校园信息系统排障与配置规范
 keywords: 教务系统,校园网,vpn,邮箱,统一身份认证,登录不上,报错,密码重置,验证码,网络连不上,无法访问,账号,激活,配置,证书
 agents: it_help
 enabled: true

@@ -25,7 +25,7 @@
 | `/api/python` | `http://localhost:8100` |
 | `/api/java` | `http://localhost:8080` |
 
-Docker 模式下，Nginx 会通过 `host.docker.internal` 访问宿主机上的 Python / Java 服务。
+Docker Compose 模式下，Nginx 在容器网络内转发到 EchoGuide 后端服务（`echoguide:8000`，见仓库根目录 `docker-compose.yml`），无需直连宿主机。
 
 ## 本地运行
 
@@ -57,13 +57,10 @@ npm run dev
 
 ## Docker 部署
 
-先构建前端静态文件：
+镜像内已包含前端构建（Dockerfile 多阶段构建），无需预先执行 `npm run build`。
 
-```bash
-npm run build
-```
-
-再构建并启动容器：
+仅部署前端容器（挂到仓库根目录 `docker-compose.yml` 的主栈网络上，
+nginx 的 `echoguide:8000` upstream 才能解析到主栈后端）：
 
 ```bash
 docker compose up -d --build
@@ -80,6 +77,9 @@ http://localhost:5175
 ```bash
 docker compose down
 ```
+
+完整部署（后端 + Redis + ChromaDB + Prometheus + Nginx 统一入口）见仓库根目录
+`docker-compose.yml`，统一入口为 `http://localhost:8088`。
 
 ## 后端启动参考
 

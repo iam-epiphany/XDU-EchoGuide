@@ -167,6 +167,8 @@ def _build_runtime() -> None:
     from core.skill_loader import SkillManager
     from personal.service import PersonalService
     from personal.store import PersonalStore
+    from runtime.policy import ExecutionPolicy
+    from runtime.runtime import AgentRuntime
     from tools import with_service
     from tools.academic_tool import calculate_weighted_score_handler
     from tools.affairs_tool import query_affairs_process_handler
@@ -191,6 +193,12 @@ def _build_runtime() -> None:
     )
     _skill_manager.load()
 
+    # Agent Runtime + 统一模型调用入口（ModelGateway）：意图识别 / Agent 工具循环 /
+    # 合成 / 出口校验 / 记忆提炼 / 查询改写重排的 LLM 调用统一经 gateway 进出，
+    # 计数、token 统计、预算与 Trace 口径一致。
+    _runtime = AgentRuntime(policy=ExecutionPolicy.from_env())
+    _gateway = _runtime.model_gateway
+
     # Agent 编排器（内部持有意图识别器，供评测器复用，避免双实例缓存分家）
     _orchestrator = AgentOrchestrator(
         api_key=cfg["api_key"],
@@ -203,6 +211,7 @@ def _build_runtime() -> None:
         deep_api_key=cfg["deep_api_key"],
         deep_base_url=cfg["deep_base_url"],
         deep_model=cfg["deep_model"],
+        runtime=_runtime,
     )
 
     # 记忆管理器（Redis 工作记忆 + ChromaDB 情景记忆/用户画像 + SQLite 分层存储）
@@ -214,6 +223,7 @@ def _build_runtime() -> None:
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url"),
         model=cfg["model"],
+        gateway=_gateway,
     )
     # 分层记忆存储注入编排器（上下文卸载落盘与 MemoryManager 共享同一实例）
     _orchestrator.set_memory_store(_memory.layered_store)
@@ -225,6 +235,7 @@ def _build_runtime() -> None:
         model=cfg["model"],
         # 结果重排后端：local=本地 bge-reranker（默认，不可用自动降级 LLM）
         rerank_backend=os.getenv("ECHOGUIDE_RERANK_BACKEND", "local"),
+        gateway=_gateway,
     )
     _kb = KnowledgeBase(
         chroma_host=os.getenv("CHROMA_HOST", "chromadb"),
@@ -463,6 +474,43 @@ def _build_runtime() -> None:
     )
 
 
+async def _setup_external_mcp() -> None:
+    """接入外部 MCP 工具源（默认关闭）。
+
+    把远程 MCP server（如 GitHub 官方 remote server）的只读工具注册进
+    工具管理器；连接失败只记日志，服务照常启动（全链路降级哲学）。
+    ECHOGUIDE_EXTERNAL_MCP_EXPOSE_AGENTS 非空时把注册的工具加入公共工具层
+    （任何请求可见，仍受 Action 读写门禁）；空 = 只注册不暴露
+    （agent_exposed=False，对 LLM 不可见，仅注册在工具管理器）。
+    """
+    if os.getenv("ECHOGUIDE_EXTERNAL_MCP_ENABLED", "0") != "1":
+        return
+    try:
+        from mcp.external_client import ExternalMCPSource
+
+        if _tool_manager is None:
+            logger.warning("外部 MCP 工具源跳过：工具管理器未初始化")
+            return
+        source = ExternalMCPSource(
+            url=os.getenv("ECHOGUIDE_EXTERNAL_MCP_URL", "https://api.githubcopilot.com/mcp/"),
+            token=os.getenv("ECHOGUIDE_EXTERNAL_MCP_TOKEN") or None,
+            proxy=os.getenv("ECHOGUIDE_EXTERNAL_MCP_PROXY") or None,
+            prefix=os.getenv("ECHOGUIDE_EXTERNAL_MCP_PREFIX", "github").strip() or "github",
+        )
+        whitelist_raw = os.getenv("ECHOGUIDE_EXTERNAL_MCP_TOOL_WHITELIST", "").strip()
+        whitelist = {t.strip() for t in whitelist_raw.split(",") if t.strip()} or None
+        registered = await source.setup(_tool_manager, tool_whitelist=whitelist)
+        if not registered:
+            logger.warning("外部 MCP 工具源未注册任何工具（检查 URL/Token 或工具过滤）")
+            return
+        expose_raw = os.getenv("ECHOGUIDE_EXTERNAL_MCP_EXPOSE_AGENTS", "").strip()
+        if expose_raw:
+            # v2：外部工具进公共工具层（领域不再构成工具门禁，兼容旧值语义）
+            _orchestrator.expose_external_tools(registered)
+    except Exception as ex:
+        logger.error("外部 MCP 工具源接入失败（不影响服务启动）: %s", ex)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _monitor, _memory
@@ -473,6 +521,7 @@ async def lifespan(app: FastAPI):
         logger.warning("生产环境未配置 ECHOGUIDE_GUARD_TOKEN；浏览器登录仍可用，机器调用不具备服务令牌")
 
     _build_runtime()
+    await _setup_external_mcp()
     await _monitor.start()
 
     logger.info("EchoGuide 西电校园智慧助手已就绪")
@@ -656,7 +705,11 @@ def _benchmark_strategy(request: Optional[Request]) -> str:
 async def health():
     if _orchestrator is None:
         raise HTTPException(503, "服务未就绪")
-    return {"status": "ok", "agents": _orchestrator.get_stats()}
+    return {
+        "status": "ok",
+        "agents": _orchestrator.get_stats(),
+        "verification": _orchestrator.verification_stats(),
+    }
 
 
 @app.get("/skills", tags=["Skills"])
@@ -1513,6 +1566,7 @@ async def _cli():
     from memory.conversation_memory import MsgRole
 
     _build_runtime()
+    await _setup_external_mcp()
     orch = _orchestrator
     mem  = _memory
 

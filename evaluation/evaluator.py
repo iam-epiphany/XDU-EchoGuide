@@ -545,7 +545,7 @@ class EndToEndEvaluator:
           - 单轮: [{"question": "..."}]
           - 多轮: [{"turns": ["第一轮", "第二轮", ...]}]
           - 可选字段: golden_answer（Answer Correctness 用）
-        routing_cases: 路由评测用例 [{"turns": [...], "expected_agent": "campus_life"}]
+        routing_cases: 意图领域评测用例 [{"turns": [...], "expected_agent": "campus_life"}]（expected_agent 兼容命名，比较实际识别领域）
         retrieval_cases: RAG 检索硬指标用例 [{"query": ..., "relevant_titles": [...]}]
           需要 knowledge_base（检索端 HitRate@K/Recall@K/MRR）。
         dataset: 用例来源标识（内置/自定义），写入 provenance。
@@ -583,11 +583,11 @@ class EndToEndEvaluator:
                         if k in r.scores:
                             all_scores[k].append(r.scores[k])
 
-        # 3. 路由评测（追问继承 / 请求句式是否路由到正确 Agent）
+        # 3. 意图领域评测（追问继承 / 请求句式是否正确识别领域）
         if routing_cases:
             routing_results = await self._evaluate_routing_cases(routing_cases)
             results.extend(routing_results)
-            all_scores["routing_accuracy"] = [
+            all_scores["routing_accuracy"] = [  # 兼容键名：实为领域识别准确率
                 r.scores.get("accuracy", 0.0) for r in routing_results
             ]
 
@@ -796,11 +796,15 @@ class EndToEndEvaluator:
 
     async def _evaluate_routing_cases(self, cases: List[Dict[str, Any]]) -> List[EvalResult]:
         """
-        路由评测：多轮对话跑完编排器，比较实际 Agent 与期望 Agent。
+        意图领域评测：多轮对话跑完编排器，比较实际识别领域与期望领域。
+
+        v3 语义：执行实体是职责角色（qa/executor），领域只作为挂载键；
+        本评测验证"领域分类是否正确"（expected_agent 字段保留兼容命名，
+        取值仍为领域值 academic/campus_life/...）。
 
         重点覆盖两类历史缺陷：
-          1. 请求句式（"我要请假怎么走流程"）必须路由到领域 Agent
-          2. 追问（"那几点开门呢？"）必须继承上一轮领域，不落到默认 Agent
+          1. 请求句式（"我要请假怎么走流程"）必须识别为对应领域
+          2. 追问（"那几点开门呢？"）必须继承上一轮领域，不落回默认
         """
         from agents.agent_orchestrator import Request as OrcReq
 
@@ -826,18 +830,17 @@ class EndToEndEvaluator:
                     history=history[-6:] if history else None,
                 )
                 orch_result = await self._orchestrator.run(orch_req)
-                actual_agent = orch_result.agent_type.value
+                actual_domain = orch_result.domain.value if orch_result.domain else ""
                 history.append({"role": "user", "content": question})
                 history.append({"role": "assistant", "content": orch_result.response})
 
-                turn_ok = actual_agent == expected_agent
+                turn_ok = actual_domain == expected_agent
                 passed = passed and turn_ok
                 details.append({
                     "turn": turn_idx,
                     "question": question,
                     "expected_agent": expected_agent,
-                    "actual_agent": actual_agent,
-                    "domain": orch_result.domain.value if orch_result.domain else None,
+                    "actual_domain": actual_domain,
                     "ok": turn_ok,
                 })
 
@@ -845,9 +848,9 @@ class EndToEndEvaluator:
                 test_id=f"routing_{idx}",
                 passed=passed,
                 scores={"accuracy": 1.0 if passed else 0.0},
-                detail=f"期望 {expected_agent} → {'全部命中' if passed else '存在偏离'}: " +
+                detail=f"期望领域 {expected_agent} → {'全部命中' if passed else '存在偏离'}: " +
                        "; ".join(
-                           f"turn{d['turn']}: {d['actual_agent']}{'(✓)' if d['ok'] else '(✗)'}"
+                           f"turn{d['turn']}: {d['actual_domain']}{'(✓)' if d['ok'] else '(✗)'}"
                            for d in details
                        ),
                 metadata={"case": details},

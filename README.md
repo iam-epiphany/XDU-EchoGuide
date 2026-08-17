@@ -2,7 +2,7 @@
 
 EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个可观测、可评测的 Agent Runtime。它不把所有请求都送进同一条昂贵链路：课表、校车、办事清单和故障诊断走 **DeepSeek V4 Flash 快速路径**；政策检索、低置信度问题和跨领域依赖任务进入 **DeepSeek V4 Pro 深度路径**。
 
-项目保留多 Agent、四层分层记忆（L0-L3 金字塔 + 上下文卸载）、Agentic RAG、动态 Skills、MCP、语义缓存、Guard、Trace、Monitor 与 LLM-as-Judge，但每项技术都有明确触发条件和可复现实测，而不是停留在架构图中。
+项目保留按需多 Agent 协作、四层分层记忆（L0-L3 金字塔 + 上下文卸载）、Agentic RAG、动态 Skills、MCP、语义缓存、Guard、Trace、Monitor、出口校验与 LLM-as-Judge，但每项技术都有明确触发条件和可复现实测，而不是停留在架构图中。
 
 ## 三类核心任务
 
@@ -10,7 +10,7 @@ EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个�
 |---|---|---|
 | 个人校园状态 | “我今天有什么课？”“还有哪些 DDL？” | 读取登录用户的课表、待办与考试数据 |
 | 确定性校园服务 | “算一下加权成绩”“校园卡怎么补办”“校园网认证后打不开网页” | 调用领域专属工具，返回可测试的结构化结果 |
-| 复杂校园任务 | “明天下午有空就安排我去补办校园卡，并记个待办” | Planner 生成依赖 DAG，多个 Agent 分波执行并合成结果 |
+| 复杂校园任务 | “明天下午有空就安排我去补办校园卡，并记个待办” | Planner 生成依赖 DAG，QA/Executor 职责角色按任务分波执行并合成结果 |
 
 ## 真实网页实测
 
@@ -41,16 +41,23 @@ EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个�
 ```mermaid
 flowchart LR
     U["学生请求"] --> G["级联意图识别"]
-    G -->|"Pattern ≥ 0.90"| C["复杂度闸门"]
-    G -->|"Embedding ≥ 0.80 且 margin ≥ 0.10"| C
-    G -->|"未命中 / 低置信度"| L["LLM 分类（携带最近对话）"] --> C
+    G -->|"① 追问形态（指代承接 / 省略句）"| L["LLM 分类 / 仲裁（携带最近对话）"]
+    G -->|"② Pattern ≥ 0.90 且 Embedding 同向 ≥ 0.80（双确认）"| C["复杂度闸门"]
+    G -->|"③ Embedding ≥ 0.80 且 margin ≥ 0.10"| C
+    G -->|"④ 未命中 / 低置信度 / 双确认失败 / 方向分歧"| L
+    L --> C
     C -->|"单领域 / 确定性工具"| F["V4 Flash · Fast"]
     C -->|"RAG / 低置信度"| D["V4 Pro · Deep"]
     C -->|"多领域依赖"| P["Planner → DAG → Executor"]
     P --> D
-    F --> T["Tools / MCP"]
-    D --> T
-    T --> R["回答 + Execution Meta + Trace"]
+    F --> Q["QA Agent<br/>只读工具面"]
+    D --> Q
+    F --> E["Executor Agent<br/>含写工具面"]
+    D --> E
+    Q --> T["Tools / MCP 公共工具层"]
+    E --> T
+    T --> V["Verifier / Grounding<br/>规则 + 可选 LLM"]
+    V --> R["回答 + Execution Meta + Trace"]
 ```
 
 | Profile | 模型 | 思考模式 | 输出预算 | RAG 策略 | 典型任务 |
@@ -58,9 +65,9 @@ flowchart LR
 | Fast | `deepseek-v4-flash` | 关闭 | 768 | Top-K 3，不改写、不重排 | 课表、天气、校车、确定性工具 |
 | Deep | `deepseek-v4-pro` | 开启，effort=high | 1536 | Top-K 5，查询改写 + 本地 bge 重排（LLM 兜底） | 政策问答、复杂请求、多 Agent |
 
-Monitor 按 `academic.fast`、`academic.deep` 等真实 Profile 统计成功率、延迟和在途请求。Fast 执行失败时升级到 Deep；两种 Profile 可以分别配置 API Key、模型和端点。
+Monitor 按 `qa.fast`、`executor.deep` 等职责角色 × Profile 统计成功率、延迟和在途请求。Fast 执行失败时升级到 Deep；两种 Profile 可以分别配置 API Key、模型和端点。
 
-> 图中 Embedding 阈值 0.80 / margin 0.10 为默认值（按真实 bge 分布标定：同构嵌入下命中区与 miss 区存在分离空档；宁紧勿松，有 LLM 兜底），可通过 `ECHOGUIDE_INTENT_EMBEDDING_THRESHOLD` / `_MARGIN` 覆盖（见下文「本地向量模型」）。
+> 图中 Pattern 阈值 0.90、Embedding 阈值 0.80 / margin 0.10 为默认值（按真实 bge 分布标定：同构嵌入下命中区与 miss 区存在分离空档；宁紧勿松，有 LLM 兜底），可通过 `ECHOGUIDE_INTENT_PATTERN_THRESHOLD` / `ECHOGUIDE_INTENT_EMBEDDING_THRESHOLD` / `_MARGIN` 覆盖（见下文「本地向量模型」）。
 
 ## 本地向量模型（Embedding / Rerank）
 
@@ -85,39 +92,51 @@ python evaluation/compare_embedders.py             # 旧 MiniLM vs 新 bge：Hit
 python evaluation/calibrate_intent_thresholds.py   # 按 bge 分数分布重标定意图识别阈值
 ```
 
-## 多 Agent 的合理触发边界
+## 职责角色与按需多 Agent 协作
 
-简单问题始终走单 Agent。只有两类请求进入协作：
+执行实体按**职责**拆分（领域不再构成 Agent，只做人格/Skills 挂载键）：
+
+| 职责角色 | 工具面 | 行为规范 | 选择时机 |
+|---|---|---|---|
+| **QA Agent**（问答） | 公共工具层 − 写工具（角色级只读边界） | 政策先检索、回答带引用、不编造 | 除 REQUEST 外的所有动作 |
+| **Executor Agent**（执行） | 公共工具层全量（含写） | 写操作回执、失败如实说明 | `request` 动作 |
+
+写权限双层门禁：角色级（QA 永远调不动写工具）+ Action 级（QUERY/GREETING 等动作拒写）。
+
+协作只进入两类请求：
 
 - `parallel`：显式包含“同时、还要、并且、另外、顺便”等复合语义，并命中两个以上领域。
 - `dependent`：命中必须使用前序结果的任务规则。
 
-依赖任务示例：
+依赖任务示例（任务角色标签沿用领域值，执行实体为 QA/Executor）：
 
 ```mermaid
 flowchart LR
-    S["PersonalAgent<br/>query_schedule"] --> A["PersonalAgent<br/>add_todo"]
-    P["AffairsAgent<br/>query_affairs_process"] --> A
+    S["Personal 角色<br/>query_schedule"] --> A["Personal 角色<br/>add_todo"]
+    P["Affairs 角色<br/>query_affairs_process"] --> A
     A --> Y["Deep Synthesizer"]
 ```
 
-Executor 每次最多运行三个 Agent、六个任务；依赖缺失或出现循环时直接失败并记录计划错误，不会绕过 DAG 执行。
+DAG 每个任务是独立上下文的执行实体，依赖缺失或出现循环时直接失败并记录计划错误，不会绕过 DAG 执行。
 
-## 五个 Agent 与真实能力差异
+## 领域挂载（顾问，不是门卫）
 
-| Agent | 专属能力 | 工具权限 |
+v4：LLM 意图识别不再输出领域——领域只由**免费关键词路径**（消息命中 → 历史回溯）产出，用于人格挂载与观测。所有工具进入公共工具层（不按领域剪裁），执行实体只有 QA/Executor 两个职责角色：
+
+| 领域（免费关键词产出） | 挂载的人格要点 | 挂载的 Skills |
 |---|---|---|
-| AcademicAgent | 学业政策 RAG、加权学分成绩计算 | `knowledge_search`、`calculate_weighted_score` |
-| AffairsAgent | 版本化办事材料、步骤、部门与来源 | `knowledge_search`、`query_affairs_process` |
-| ITHelpAgent | 校园网、VPN、统一认证、教务系统诊断树 | `knowledge_search`、`diagnose_it_issue` |
-| CampusLifeAgent | 校车、楼宇、场馆、图书馆、天气 | `knowledge_search`、`query_campus_info`、`get_weather` |
-| PersonalAgent | 登录用户课表、待办、DDL 与考试 | `query_schedule`、`query_todo`、`add_todo`、`complete_todo`、`query_ddl` |
+| academic | 教务规则、先检索再回答、来源链接与适用范围 | `skills/academic/` |
+| campus_life | 位置/时段、天气先调工具、短追问继承 | `skills/campus_life/` |
+| affairs | 办事流程/材料/入口为主，以最新通知为准 | `skills/affairs/` |
+| it_help | 诊断树优先、步骤化排障、引导联系信息化处 | `skills/it_help/` |
+| personal | 数据只来自工具、按时间组织、引导导入课表 | `skills/personal/` |
+| other | 通用接待（GitHub 等外部问题不再由学业人格兜底） | — |
 
-工具在模型可见范围和执行层分别校验权限。个人工具只接受服务端签名 Cookie 中的身份，客户端提交的 `user_id` 不作为可信身份。
+个人工具（课表/待办）的约束是**数据归属 + 写门禁**（user_id 由服务端签名 Cookie 注入，客户端提交的 `user_id` 不作为可信身份；写操作受角色级 + Action 级双重门禁），与领域无关——这正是"GitHub 挂哪个领域"问题的结构性答案：工具只声明读写属性，不选领域。
 
 ## 意图 Action 与执行策略
 
-路由只看领域（domain = 谁处理）；动作（action = 怎么处理）控制同一 Agent 的执行策略：
+意图识别产出「领域 × 动作」：domain 只挂载人格/Skills（顾问），action 决定职责角色（REQUEST→Executor，其余→QA）与执行策略：
 
 | action | 工具权限 | Prompt 行为指引 |
 |---|---|---|
@@ -127,7 +146,7 @@ Executor 每次最多运行三个 Agent、六个任务；依赖缺失或出现�
 | `greeting` / `feedback` | 原则上不开放工具 | 简洁回应，避免无意义工具调用 |
 | `other` | 只读工具（保守） | 仅基于已有信息回答，不执行修改操作 |
 
-状态修改类工具登记于 `WRITE_TOOLS`（新增写工具必须登记，否则只读动作下会被误开放），过滤在工具暴露层、执行层与协作补执行三处同时生效。
+状态修改类工具登记于 `WRITE_TOOLS`（新增写工具必须登记，否则只读动作下会被误开放），过滤在角色级（QA 永不暴露/执行）、Action 级（QUERY 等动作拒写）与协作补执行三处同时生效。
 
 ## 真实 Benchmark
 
@@ -202,12 +221,74 @@ python evaluation/memory_benchmark.py
 - **上下文卸载**：工具调用大结果落盘 refs 表，上下文只留摘要行 + `refs/{id}` 索引（可 100% 找回），长任务 Token 显著下降。
 - **Agentic RAG**：Deep Profile 自主调用知识检索，执行查询改写、并行召回、去重与重排；Embedding 用本地 bge-small-zh-v1.5（中文优化），重排用 bge-reranker-base 本地打分（LLM 兜底）；回答携带来源证据。
 - **知识库导入**：`/knowledge/upload` 与 `data/knowledge_docs/` 投放目录支持 txt/md/json/jsonl 与 Firecrawl anydoc 全部格式（pdf/doc/docx/ppt/pptx/xls/xlsx/odt/odp/rtf/epub/csv 等，统一转 GFM Markdown，标题与表格结构保留）；分块采用 Markdown 结构感知策略（标题链注入块首、标题边界成块、表格/代码块整体保留；纯文本回退递归分隔符思路），500 字/60 overlap，超长段落逐级拆开不撑爆单块；扫描件（无文本层 PDF）明确报错，不做 OCR。
-- **动态 Skills**：五类校园 SOP 可热加载，按 Agent、关键词和对话历史注入 Prompt。
+- **动态 Skills**：五类校园 SOP 可热加载，技能目录（name + description + 触发词）+ 关键词命中提示常驻 system prompt，完整 SKILL.md 经 `use_skill_*` 工具在工具循环内按需加载（Claude Code 式渐进披露，正文不进系统提示避免截断与膨胀）；关键词免费高亮引导，追问继承沿用对话历史。
 - **双层语义缓存**：先按上下文依赖性判定缓存策略——公共事实查询进 Global 语义匹配；依赖用户画像的问题按 user_id 分区进 User 层；追问/省略句/指代等强上下文依赖请求直接 bypass 语义缓存。个人数据领域不缓存。
 - **EchoGuide Guard**：Prompt 注入检测、输入限制、用户/IP 限流、审计脱敏与失败关闭。
 - **可观测性**：SSE 展示工具过程；`execution` 返回安全执行摘要；Trace 记录逐跳耗时；Prometheus 采集真实成功率/延迟指标，`config/alerts/` 提供告警规则，Monitor 反馈到 Profile 路由。
 - **评测**：意图 Accuracy/Macro-F1、RAG HitRate/Recall/MRR、引用正确率、回答忠实性、回归基线和双模型 Judge。
 - **MCP**：`POST /mcp` 提供 Streamable HTTP tools 子集。浏览器与 MCP 均使用签名登录 Cookie；未登录客户端只能调用公开工具。
+
+## Agent Runtime（Harness 收口）
+
+模型之外的整套控制面统一收口为 `runtime/` 一层（`Agent = Model + Harness` 的 Harness）：
+
+| 组件 | 职责 |
+|---|---|
+| `RunState` | 单次运行状态：身份、trace_id、step/tool/tool_round/retry 计数器、**input/output tokens 累计**、错误记录、middleware 扩展位；摘要并入 execution（debug 面板可见） |
+| `ExecutionPolicy` | 执行预算：协作 Agent 上限、任务 DAG 上限、工具轮次（Fast/Deep 分级上限 3/5，原统一 2；保险丝，模型不请求工具即停）+ 无进展检测（连续 N 轮同名同参工具调用强制收尾，防死循环双保险）、**真实模型调用次数上限（`max_model_calls`，0=仅计数不强限）**、工具调用总数、降级次数、合成 token、Runtime Guard、出口校验 LLM 开关（可通过 `ECHOGUIDE_RUNTIME_*` 环境变量覆盖） |
+| `RuntimeMiddleware` | 生命周期钩子（before/after × run/model/tool/finish）；before 正序、拦截异常短路，after 逆序必执行 |
+| `ModelGateway` | **统一模型调用入口**：意图识别、Agent 工具循环、合成器、出口校验、记忆提炼、查询改写/重排兜底的 LLM 调用全部经 `gateway.call()/call_stream()` 进出——每次真实模型调用触发一次 `before_model → provider → after_model`（step/token 计数、预算检查、瞬时失败重试、`llm_call` Trace span） |
+| `AgentRuntime` | 运行入口：`run(state, core)` 在中间件链内执行编排器核心；Guard 拦截时 core 不执行、返回拒绝结果 |
+
+默认中间件链（按执行顺序）：`TraceMiddleware`（trace_id 对齐）→ `GuardMiddleware`（消息长度 + Prompt 注入检测，CLI/内部调用同样受保护）→ `BudgetMiddleware`（step/tool 计数，超限中止）→ `SkillMiddleware`（按消息指纹解析并缓存，注入点全链路一致）。
+
+真实执行边界：模型级钩子由 `ModelGateway` 在**每次真实模型调用**时触发（一个 `agent.handle()` 内部 LLM→Tool→LLM 的三次调用，`step_count` 记 3、token 逐次累加——不再是 handle 次数）；`BaseAgent._execute_tool` 在工具调用前后触发 `before_tool/after_tool`（`tool_round_count` 按真实工具轮递增）；`Request.state` 贯通单 Agent 与并行协作任务。Fast→Deep 降级受 `policy.max_retries` 约束（默认 1）。预算配置可通过 `ECHOGUIDE_RUNTIME_*` 环境变量覆盖（见 `.env.example`）。
+
+```bash
+python -m pytest tests/test_runtime.py -q   # Runtime 离线测试（无服务依赖）
+```
+
+## 出口校验（Verifier / Grounding）
+
+回答返回用户前做事实核查，两层：
+
+- **规则校验（免费、全量）**：引用存在性（claim `[n]` 但无工具证据）、写操作落账（声称"已添加/已完成"但未调用写工具）、实体一致性（回答中的日期/时间/电话/金额必须出现在工具证据或时间上下文中）；
+- **LLM 判定（可选，`ECHOGUIDE_RUNTIME_VERIFIER_LLM=1`）**：仅 DEEP/执行路径付一次廉价 Fast 模型调用，判断回答是否被工具证据支撑；不通过追加免责声明，异常 fail-open 不阻断。
+
+校验只标注不阻断（honest-by-design）：flags 进 `execution.verification` 与 `/health` 的 `verification` 计数；单请求路径在角色执行后校验，协作路径对合成后的最终回复校验。
+
+```bash
+python -m pytest tests/test_verifier.py -q   # 规则校验 / LLM 判定 / 编排器集成离线测试
+```
+
+## 外部 MCP 工具源（默认关闭）
+
+把远程 MCP server（如 GitHub 官方 remote MCP server）的工具作为**工具源**接入，与 `mcp/protocol.py` 的服务端对称：那边把本地工具暴露给外部 MCP 客户端，这里用 httpx 手写极简 Streamable HTTP 客户端（零新依赖）把外部工具拉进来，包装成 `Tool` 注册进工具管理器——**自动获得熔断、超时、降级、缓存与上下文卸载等既有工程能力**。
+
+接入策略（全链路降级哲学）：
+
+- **默认只读（宁紧勿松）**：只读命名白名单（`get_*`/`list_*`/`search_*`/`query_*`/`fetch_*`/`read_*` 前缀及 `*_read` 后缀）直接放行；写关键词黑名单（create/update/delete/write/push/fork/run 等）直接拒绝；两者都不命中的未知命名保守跳过（真实 GitHub server 的 `push_files`/`issue_write`/`fork_repository` 即靠此拦截）——不依赖 WRITE_TOOLS（那是给本地工具登记的）；
+- **前缀隔离**：外部工具以 `github_*` 前缀注册，避免与本地工具重名冲突；
+- **双重不可见 → 公共工具层**：注册的工具默认 `agent_exposed=False`（LLM 不可见）；`ECHOGUIDE_EXTERNAL_MCP_EXPOSE_AGENTS` 非空时加入公共工具层——v2 起工具不按领域剪裁，任何请求可见，写操作仍受 Action 读写门禁（对齐 MCP readOnlyHint/RBAC）；
+- **失败降级**：连接失败/超时/鉴权失败只记日志，服务照常启动，无外部依赖可用时行为与旧版完全一致。
+
+```dotenv
+ECHOGUIDE_EXTERNAL_MCP_ENABLED=1
+ECHOGUIDE_EXTERNAL_MCP_URL=https://api.githubcopilot.com/mcp/   # GitHub 官方 remote server
+ECHOGUIDE_EXTERNAL_MCP_TOKEN=github_pat_xxx                      # 服务端持有，绝不写入前端
+ECHOGUIDE_EXTERNAL_MCP_PREFIX=github
+# ECHOGUIDE_EXTERNAL_MCP_PROXY=http://127.0.0.1:7897            # 国内网络不通时走代理
+# ECHOGUIDE_EXTERNAL_MCP_TOOL_WHITELIST=                         # 只注册名单内工具（空 = 只读过滤）
+# ECHOGUIDE_EXTERNAL_MCP_EXPOSE_AGENTS=1                         # 非空 = 加入公共工具层（空 = 不暴露）
+```
+
+离线测试（用项目自带 MCPServer 做协议对端，ASGITransport 直连，零网络、可入 CI）：
+
+```bash
+python -m pytest tests/test_external_mcp.py -q   # 握手/映射/只读过滤/降级/暴露策略
+```
+
+真实验证：配置 PAT 与 `ECHOGUIDE_EXTERNAL_MCP_EXPOSE_AGENTS=1` 后启动，在 `/chat` 问“帮我搜一下 GitHub 上的 deepseek 仓库”，debug 面板会展示 `github_search_repositories` 工具调用（领域路由不再参与工具可见性）。
 
 ## 快速启动
 
@@ -223,7 +304,7 @@ Copy-Item .env.example .env
 ```
 
 生产环境（`APP_ENV=production`）**必须设置 `JWT_SECRET_KEY`**（会话签名密钥），
-缺失或保持占位值时服务将拒绝启动（fail-closed）。首次启动可用
+缺失或仍为默认开发密钥时服务将拒绝启动（fail-closed）。首次启动可用
 `ECHOGUIDE_ADMIN_PASSWORD` 播种管理员账号（仅对新建数据库生效）。
 
 默认 DeepSeek 配置：
@@ -291,13 +372,13 @@ ECHOGUIDE_BENCHMARK_ENABLED=1
 运行 Smoke：
 
 ```powershell
-python -m evaluation.demo_benchmark --base-url http://localhost:8000 --smoke
+python -m evaluation.demo_benchmark --base-url http://localhost:8100 --smoke
 ```
 
 运行完整三轮真实 Benchmark 并更新 README：
 
 ```powershell
-python -m evaluation.demo_benchmark --base-url http://localhost:8000 --repeat 3 --update-readme
+python -m evaluation.demo_benchmark --base-url http://localhost:8100 --repeat 3 --update-readme
 ```
 
 安装浏览器并生成五张真实网页截图：
@@ -341,10 +422,11 @@ CI 运行全部离线回归、前端构建、依赖审计和 Docker Compose 配�
 ## 项目结构
 
 ```text
-agents/        Fast/Deep 五领域 Agent、复杂度闸门、Planner/DAG/Executor/Synthesizer
+agents/        QA/Executor 职责角色、领域人格挂载、复杂度闸门、Planner/DAG/Executor/Synthesizer、出口校验
 api/           FastAPI、认证、SSE、execution 元数据、MCP 与管理接口
 core/          级联意图识别、领域词表、Skills 与 Trace
-tools/         个人、校园、Academic、Affairs、IT 确定性工具
+runtime/       Agent Runtime（Harness）：RunState / ExecutionPolicy / Middleware 链 / ModelGateway 统一模型入口
+tools/         个人、校园、学业、校务、IT 确定性工具（公共工具层）
 data/public/   版本化校园公开信息、办事流程和 IT 诊断树
 memory/        分层记忆（L0 原文 / L1 事实 / L2 场景 / L3 画像历史）与工作记忆
 mcp/           工具管理器、Agentic RAG、协议和语义缓存
