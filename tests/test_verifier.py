@@ -5,13 +5,13 @@ LLM 判定用 AsyncMock 伪客户端，不触网；规则校验为纯函数直�
 from __future__ import annotations
 
 import asyncio
-import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from agents.agent_orchestrator import (
-    AgentOrchestrator, AgentResponse, AgentType, Request,
+    AgentOrchestrator, AgentResponse, Request,
 )
+from agents.roles import Role
 from agents.verifier import ResponseVerifier
 from core.domains import IntentAction, IntentDomain
 
@@ -60,31 +60,6 @@ def test_write_claim_with_tool_clean():
         _req(), "已添加待办：买饭卡。", ["add_todo"], [], "fast", WRITE_TOOLS,
     ))
     assert "write_claim_without_tool" not in result.flags
-
-
-def test_unverified_facts_flagged_and_matching_clean():
-    v = ResponseVerifier()
-    # 回答里出现证据里没有的电话 → flag
-    result = _run(v.verify(_req(), "咨询电话 13812345678。", [], [], "fast", WRITE_TOOLS))
-    assert "unverified_facts" in result.flags
-    # 电话出现在证据里 → 不 flag
-    evidence = [{"title": "t", "content": "咨询电话 13812345678", "source_url": ""}]
-    result = _run(v.verify(_req(), "咨询电话 13812345678。", [], evidence, "fast", WRITE_TOOLS))
-    assert "unverified_facts" not in result.flags
-
-
-def test_time_context_dates_not_flagged():
-    """回答复述今天的日期（系统注入的时间上下文）不算未验证事实。"""
-    from personal.time_context import build_time_context
-
-    v = ResponseVerifier()
-    ctx = build_time_context()
-    m = re.search(r"\d{4}-\d{1,2}-\d{1,2}", ctx)
-    if not m:
-        return  # 时间上下文不含具体日期（环境差异）：跳过
-    month, day = int(m.group(0)[5:7]), int(m.group(0)[8:10])
-    result = _run(v.verify(_req(), f"今天是 {month}月{day}日。", [], [], "fast", WRITE_TOOLS))
-    assert "unverified_facts" not in result.flags
 
 
 def test_plain_answer_grounded():
@@ -169,7 +144,7 @@ def test_orchestrator_run_attaches_verification_meta():
 
     async def fake_execute(task_req, agent_type, on_event=None):
         return AgentResponse(
-            agent_type=AgentType.QA, content="[1] 已添加待办：买饭卡。", success=True,
+            role=agent_type, content="[1] 已添加待办：买饭卡。", success=True,
         )
 
     orch._execute = fake_execute

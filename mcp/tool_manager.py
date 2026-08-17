@@ -24,7 +24,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, FrozenSet, List, Optional
 
 from anthropic import AsyncAnthropic
 
@@ -122,6 +122,7 @@ class Tool:
     use_rewrite: bool = False                # 调用时是否自动走「查询改写→并行召回→去重→重排」链路
     fallback:    Optional[Callable] = None    # sync/async (params, context, error) -> Any
     agent_exposed: bool = True               # 是否暴露给 Agent 的 function calling
+    write: bool = False                      # 状态修改类工具声明（读写门禁据此推导，不手工维护黑名单）
 
     # 运行时状态（不参与构造）
     stats:   ToolStats    = field(default_factory=ToolStats, init=False)
@@ -170,6 +171,14 @@ class MCPToolManager:
 
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)
+
+    def write_tools(self) -> FrozenSet[str]:
+        """读写门禁的写工具集合：由各工具自身声明的 write 属性推导。
+
+        新增状态修改类工具只需声明 write=True，无需再维护任何黑名单
+        （旧版 WRITE_TOOLS 手工登记，新增写工具容易漏登记被只读动作误开放）。
+        """
+        return frozenset(name for name, t in self._tools.items() if t.write)
 
     # ── 核心调用 ──────────────────────────────────────────────────────────────
 

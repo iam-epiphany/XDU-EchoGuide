@@ -703,7 +703,7 @@ class EndToEndEvaluator:
             metadata: Dict[str, Any] = {
                 "question": question,
                 "response": actual_answer,
-                "agent_type": orch_result.agent_type.value,
+                "agent_type": orch_result.agent_type,
                 "intent": orch_result.intent.value if orch_result.intent else None,
                 "turn": turn_idx,
                 "conv_id": conv_id,
@@ -778,7 +778,7 @@ class EndToEndEvaluator:
                         f"question={str(question)[:_LOG_QUESTION_MAX]!r} "
                         f"overall={scores.overall:.3f} 低分指标={low} "
                         f"judge_failed_flags={failed_flags or None} "
-                        f"agent_type={orch_result.agent_type.value} "
+                        f"agent_type={orch_result.agent_type} "
                         f"intent={(orch_result.intent.value if orch_result.intent else None)} "
                         f"judge_model={self._judge_model} "
                         f"response={str(actual_answer or '')[:_LOG_RESPONSE_MAX]!r}"

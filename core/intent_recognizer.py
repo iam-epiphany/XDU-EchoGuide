@@ -1,13 +1,17 @@
 """
-亮点：端到端意图识别（层次化意图 Hierarchical Intent）
+亮点：端到端意图识别（领域 domain × 动作 action）
 
-从「单维扁平意图」升级为「领域 domain × 动作 action」二维体系：
-
+职责收口（v4 决策闭环）：Intent 只负责"理解用户想做什么"——
   - 领域 IntentDomain（academic/campus_life/affairs/it_help/other）
-      —— 路由的唯一依据。修复了旧版 P0 缺陷：请求句式（"帮我…/我要…"）被
-         few-shot 标成通用 REQUEST 后丢失领域信息，校务问题被学业 Agent 回答。
+      —— 人格/Skills 挂载键（顾问），不做 Agent 路由（执行实体只有
+         QA/EXECUTOR 职责角色，见 agents/roles.py）。
   - 动作 IntentAction（query/request/greeting/complaint/feedback）
-      —— 行为决策依据。
+      —— 行为决策依据（角色选择 + 工具读写门禁）。
+  - needs_knowledge —— 是否需要知识检索（由 Verifier 消费：判定需要
+    但最终执行链无检索证据时标记异常）。
+
+复杂度判定（single/parallel/dependent、任务链）已从本模块移出，
+统一交给 Planner（agents/workflow.py）——意图不再负责"怎么拆任务"。
 
 级联识别策略（宁多付成本、不静默误判）：
   1. 追问形态 → 直接 LLM（带最近对话，由 LLM 结合上下文裁决）。
@@ -22,16 +26,11 @@
      （与 pattern 弱信号方向矛盾时升级 LLM 仲裁，不静默路由歧义句）
   4. 未命中或低置信度请求调用 LLM（携带最近对话）
 
-复杂度判定（意图识别的一部分）：
-  - LLM 参与意图识别时顺带输出 complexity（single/parallel/dependent，同一次调用零额外成本）
-  - mode=dependent 时 LLM 直接输出任务依赖链（tasks），合法性由编排器校验，非法回落关键词规则
-  - 编排器另有"规则拿不准 → judge_complexity 升级确认"路径（见 agents/agent_orchestrator.py）
-
 追问处理（对话感知）：
   - 追问形态是级联的最高优先级：识别为追问（指代承接/极短省略句）就直接进
     LLM，不做本地继承（"谢谢"也会继承领域——误路由风险大于省下的 LLM 调用
     成本），也不让 Embedding 猜（它无上下文概念）。LLM prompt 携带最近对话，
-    由 LLM 结合上下文判断领域。
+    由 LLM 结合上下文判断动作。
   - 结果缓存 key 加入对话历史指纹，同一句追问在不同上下文不会命中陈旧意图。
 
 领域关键词的唯一来源在 core/domains.py，本模块与 Orchestrator、API 层共用，
@@ -100,32 +99,10 @@ class IntentResult:
     action:     IntentAction     # 动作（行为依据：角色选择 + 写门禁）
     intent:     IntentCategory   # 兼容字段（domain 优先，其次 action）
     confidence: float
-    entities:   Dict[str, List[str]]
     reasoning:  str
     latency_ms: float
     classifier_stage: str = "llm"
-    complexity: Optional["ComplexitySignal"] = None  # LLM 参与识别时顺带判定的复杂度
-    skills_to_reference: List[str] = field(default_factory=list)  # LLM 建议参考的 Skill（观测/评测）
-    needs_knowledge: bool = True                     # LLM 判定是否需要知识检索（观测/评测）
-
-
-@dataclass
-class ComplexitySignal:
-    """
-    LLM 输出的复杂度判定（意图识别的一部分）。
-
-    只有 LLM 参与了意图识别（classifier_stage == "llm"）或走升级路径时才存在；
-    模式判定与领域/动作同一次 LLM 调用产出，不额外付费。
-    tasks 是 LLM 原始任务链（dict 列表），合法性由编排器校验（本模块只做形状解析）。
-    """
-    mode: str                                        # single / parallel / dependent
-    targets: List[str] = field(default_factory=list) # 涉及的领域值（如 "campus_life"）
-    reason: str = ""
-    tasks: Optional[List[Dict[str, Any]]] = None     # dependent 时的任务链（原始 dict）
-
-
-# 复杂度模式枚举值（LLM 输出校验用）
-COMPLEXITY_MODES = ("single", "parallel", "dependent")
+    needs_knowledge: bool = False                # 是否需要知识检索（Verifier 消费）
 
 
 # ── Few-shot 模板 ─────────────────────────────────────────────────────────────
@@ -139,8 +116,8 @@ _DOMAIN_TEMPLATES: Dict[IntentDomain, List[str]] = {
 }
 
 _ACTION_TEMPLATES: Dict[IntentAction, List[str]] = {
-    IntentAction.QUERY:       ["西电校历这学期什么时候放假？", "图书馆几点开门？", "南校区快递站在哪？"],
-    IntentAction.REQUEST:     ["帮我查一下选课时间", "帮我查一下校园卡余额"],
+    IntentAction.QUERY:       ["西电校历这学期什么时候放假？", "图书馆几点开门？", "南校区快递站在哪？", "帮我查一下选课时间"],
+    IntentAction.REQUEST:     ["帮我添加一个补办校园卡的待办", "把这个待办标记完成", "记一下明天交实验报告"],
     IntentAction.GREETING:    ["你好", "嗨", "在吗", "早上好"],
     IntentAction.COMPLAINT:   ["宿舍热水一直不来！", "校车等了半小时还没来", "食堂排队太久了"],
     IntentAction.FEEDBACK:    ["这个助手很实用！", "回答得很清楚，谢谢", "帮我大忙了"],
@@ -219,7 +196,7 @@ class IntentRecognizer:
         state: Optional[Any] = None,  # RunState（有则经 ModelGateway 统计模型调用）
     ) -> IntentResult:
         """
-        识别用户意图（领域 + 动作）。
+        识别用户意图（领域 + 动作 + 是否需要知识检索）。
 
         history 格式：[{"role": "user"/"assistant", "content": "..."}]
         缓存 key 包含最近对话指纹 —— 同一句追问在不同上下文不会命中陈旧结果。
@@ -241,9 +218,7 @@ class IntentRecognizer:
             confidence = 0.0
             reasoning = ""
             stage = "pattern"
-            complexity = None   # 只有 LLM 参与识别时才可能携带复杂度信号
-            skills_to_reference: List[str] = []
-            needs_knowledge = True
+            needs_knowledge = False
 
             if force_llm:
                 llm = await self._llm_recognize(message, history, state=state)
@@ -251,13 +226,11 @@ class IntentRecognizer:
                 confidence = float(llm.get("confidence", 0.0))
                 reasoning = llm.get("reasoning", "")
                 stage = "llm"
-                complexity = self._normalize_complexity(llm.get("complexity"))
-                skills_to_reference = llm.get("skills_to_reference") or []
-                needs_knowledge = bool(llm.get("needs_knowledge", True))
+                needs_knowledge = bool(llm.get("needs_knowledge", False))
                 domain = self._domain_fallback(message, history)  # LLM 不输出领域：免费回填
             elif self._is_followup_shaped(message, pat.get("domain") != IntentDomain.OTHER):
                 # 追问形态 → 直接 LLM（带最近对话，由 LLM 结合上下文裁决 action 与
-                # 查询理解；领域不再由 LLM 输出，改由历史关键词回溯免费回填）：
+                # 查询理解；领域由历史关键词回溯免费回填）：
                 #   Embedding 是无上下文概念的匹配器，对省略追问只能靠残留疑问词
                 #   去猜——猜对是运气，猜错是静默误判；强信号（那/再/还/别的…）
                 #   即使有 pattern 弱信号也不让 Embedding 猜（如"那选课呢？"），
@@ -268,9 +241,7 @@ class IntentRecognizer:
                 confidence = float(llm.get("confidence", 0.0))
                 reasoning = llm.get("reasoning", "")
                 stage = "llm"
-                complexity = self._normalize_complexity(llm.get("complexity"))
-                skills_to_reference = llm.get("skills_to_reference") or []
-                needs_knowledge = bool(llm.get("needs_knowledge", True))
+                needs_knowledge = bool(llm.get("needs_knowledge", False))
                 domain = self._domain_fallback(message, history)  # 追问继承：历史关键词回溯
             elif (
                 pat.get("domain") != IntentDomain.OTHER
@@ -313,9 +284,7 @@ class IntentRecognizer:
                         )
                     reasoning = f"{reason_detail}，LLM 仲裁"
                     stage = "llm"
-                    complexity = self._normalize_complexity(llm.get("complexity"))
-                    skills_to_reference = llm.get("skills_to_reference") or []
-                    needs_knowledge = bool(llm.get("needs_knowledge", True))
+                    needs_knowledge = bool(llm.get("needs_knowledge", False))
                     domain = self._domain_fallback(message, history)  # LLM 不输出领域：免费回填
             else:
                     emb = await self._embedding_recognize(message) if self._embedding_enabled else {
@@ -341,9 +310,7 @@ class IntentRecognizer:
                             confidence = float(llm.get("confidence", 0.0))
                             reasoning = f"Pattern 弱命中 {pat['domain'].value} 与 Embedding {emb['domain'].value} 分歧，LLM 仲裁"
                             stage = "llm"
-                            complexity = self._normalize_complexity(llm.get("complexity"))
-                            skills_to_reference = llm.get("skills_to_reference") or []
-                            needs_knowledge = bool(llm.get("needs_knowledge", True))
+                            needs_knowledge = bool(llm.get("needs_knowledge", False))
                             domain = self._domain_fallback(message, history)  # LLM 不输出领域：免费回填
                         else:
                             domain = emb["domain"]
@@ -356,24 +323,17 @@ class IntentRecognizer:
                         confidence = float(llm.get("confidence", 0.0))
                         reasoning = llm.get("reasoning", "")
                         stage = "llm"
-                        complexity = self._normalize_complexity(llm.get("complexity"))
-                        skills_to_reference = llm.get("skills_to_reference") or []
-                        needs_knowledge = bool(llm.get("needs_knowledge", True))
+                        needs_knowledge = bool(llm.get("needs_knowledge", False))
                         domain = self._domain_fallback(message, history)  # LLM 不输出领域：免费回填
-
-            entities = self._extract_entities_local(message)
 
         result = IntentResult(
             domain=domain,
             action=action,
             intent=self._legacy_intent(domain, action),
             confidence=round(confidence, 4),
-            entities=entities,
             reasoning=reasoning,
             latency_ms=(time.monotonic() - t0) * 1000,
             classifier_stage=stage,
-            complexity=complexity,
-            skills_to_reference=list(dict.fromkeys(skills_to_reference))[:8],
             needs_knowledge=needs_knowledge,
         )
 
@@ -391,38 +351,6 @@ class IntentRecognizer:
             tpls.append(message)
             self._tpl_embeddings.pop(correct, None)  # 下次重新计算
             logger.info(f"学习新样本 → {correct.value}: {message[:40]}")
-
-    async def judge_complexity(
-        self,
-        message: str,
-        history: Optional[List[Dict[str, str]]] = None,
-        state: Optional[Any] = None,
-    ) -> Optional[ComplexitySignal]:
-        """
-        复杂度专用判断（升级路径）：意图识别走完免费规则仍"拿不准"时，
-        编排器调用本方法做一次轻量 LLM 确认（只问复杂度，不重复问领域/动作）。
-
-        不写缓存 —— 升级路径低频，且结论依赖上下文，避免污染意图缓存。
-        返回 None 表示 LLM 不可用或输出非法，调用方应回落关键词规则。
-        """
-        llm = await self._llm_recognize(message, history, complexity_only=True, state=state)
-        return self._normalize_complexity(llm.get("complexity"))
-
-    # ── 三路识别策略 ──────────────────────────────────────────────────────────
-
-    # 复杂度判定指引：意图识别与复杂度专用调用共用同一段说明，保证口径一致。
-    # 刻意要求"普通问题不要过度拆分"——复杂度误判的成本不对称（误判复杂比漏判贵）。
-    _COMPLEXITY_GUIDE = (
-        "同时判断请求复杂度 complexity（普通问题不要过度拆分，绝大多数请求都是 single）：\n"
-        '- mode: "single"（单个领域、无依赖的普通问题）\n'
-        '- mode: "parallel"（涉及多个校园领域、可并行处理，如"食堂几点关门，顺便帮我查下明天的课表"）\n'
-        '- mode: "dependent"（多个诉求有先后依赖，需要先查再办，如"我明天下午有空，想去办校园卡，帮我记个待办"）\n'
-        "- targets: 涉及的领域值列表，可选值: academic, campus_life, affairs, it_help, personal\n"
-        '- 只有 mode == "dependent" 时才输出 tasks 任务链，每个任务格式:\n'
-        '  {"id": "t1", "agent": "<领域值>", "goal": "<任务目标>", '
-        '"message": "<给该领域助手的自包含请求>", "depends_on": ["<前置任务id>"]}\n'
-        "  depends_on 引用前面已定义任务的 id；无前置依赖的任务省略或为空数组。"
-    )
 
     # ── 领域回填（LLM 不再输出领域）──────────────────────────────────────────
     # v4：领域只用于人格挂载与观测，全部由免费路径产出——
@@ -448,16 +376,15 @@ class IntentRecognizer:
         self,
         message: str,
         history: Optional[List[Dict[str, str]]],
-        complexity_only: bool = False,
         state: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
-        策略 1：LLM 查询理解（Few-shot + 上下文）。
+        LLM 查询理解（Few-shot + 上下文）。
 
-        - 正常模式：输出 action + entities + skills_to_reference + needs_knowledge
-          + complexity（v4：不再输出领域——领域由免费路径回填，Skill 选择交给模型）；
-        - complexity_only=True：只输出 complexity（编排器"规则拿不准"时的升级路径，
-          轻量 prompt，不重复问动作/查询理解）。
+        输出 action + confidence + reasoning + needs_knowledge
+        （v4：不再输出领域——领域由免费路径回填；不再输出复杂度——任务
+        拆分统一交给 Planner；不再输出 entities/skills_to_reference——
+        本地 SkillManager 自己判断，不维护第二套 Skill Router）。
         """
         message = self._clean_text(message)
 
@@ -468,26 +395,19 @@ class IntentRecognizer:
                 for m in history[-3:]
             )
 
-        if complexity_only:
-            prompt = f"""你是西电校园智慧助手（EchoGuide）的复杂度分析模块。判断用户请求是否需要多个校园领域助手协作、是否存在先后依赖。
-{ctx}
-用户消息: "{message}"
+        action_examples = []
+        for action, tpls in _ACTION_TEMPLATES.items():
+            for t in tpls[:2]:
+                action_examples.append(f'  消息: "{t}" → action: {action.value}')
+        examples_text = "\n".join(action_examples[:12])
 
-{self._COMPLEXITY_GUIDE}
-返回格式（仅 JSON，不要其他文字）:
-{{"complexity": {{"mode": "<single/parallel/dependent>", "targets": [...], "reason": "<一句话>", "tasks": [...]}}}}
-"""
-        else:
-            action_examples = []
-            for action, tpls in _ACTION_TEMPLATES.items():
-                for t in tpls[:2]:
-                    action_examples.append(f'  消息: "{t}" → action: {action.value}')
-            examples_text = "\n".join(action_examples[:12])
-
-            prompt = f"""你是西电校园智慧助手（EchoGuide）的查询理解模块。分析用户消息并输出结构化 JSON（v4：不需要输出领域）。
+        prompt = f"""你是西电校园智慧助手（EchoGuide）的查询理解模块。分析用户消息并输出结构化 JSON（v4：不需要输出领域，也不需要判断任务复杂度）。
 
 动作 action 可选值: {", ".join(a.value for a in IntentAction)}
-（query=查询信息；request=请求系统执行操作（写待办/日程等）；greeting=问候；complaint=投诉不满；feedback=反馈）
+定义：
+- query = 查询、咨询、分析，不产生系统状态修改（"帮我查一下课表"是 query，即使有"帮我"）
+- request = 需要系统真正执行写操作或产生副作用（"帮我添加一个补办校园卡的待办"、"把这个待办标记完成"是 request）
+- greeting/complaint/feedback = 问候/投诉不满/正面反馈
 
 动作示例:
 {examples_text}
@@ -495,16 +415,13 @@ class IntentRecognizer:
 {ctx}
 用户消息: "{message}"
 
-{self._COMPLEXITY_GUIDE}
 返回格式（仅 JSON，不要其他文字）:
-{{"action": "<动作值>", "confidence": <0-1>, "reasoning": "<一句话说明>", "entities": {{"term": ["时间词"], "content": ["待办内容/主体"]}}, "skills_to_reference": ["<建议参考的技能名，无则空数组>"], "needs_knowledge": true, "complexity": {{"mode": "<single/parallel/dependent>", "targets": [...], "reason": "<一句话>", "tasks": [...]}}}}
+{{"action": "<动作值>", "confidence": <0-1>, "reasoning": "<一句话说明>", "needs_knowledge": <true/false>}}
 
 要求：
-- action 表示用户希望系统做什么（查询/操作/问候/投诉/反馈等）。
-- entities 抽取用户消息里的关键实体（时间、待办内容、地点等），没有的字段给空数组。
-- skills_to_reference 从系统提示中的技能目录选择建议参考的技能名（如"学业咨询规范"），不确定就空数组。
+- action 表示用户希望系统做什么（查询/操作/问候/投诉/反馈等）；只有明确需要系统写数据或产生副作用才是 request。
 - needs_knowledge 表示该问题是否需要检索校园知识库（政策/流程/规则类 true；闲聊/个人数据操作 false）。
-- 追问（如"那几点开门？"）应结合最近对话推断 action，并给出 entities。"""
+- 追问（如"那几点开门？"）应结合最近对话推断 action。"""
         prompt = self._clean_text(prompt)
 
         try:
@@ -532,72 +449,20 @@ class IntentRecognizer:
             raw = resp.content[0].text
             s, e = raw.find("{"), raw.rfind("}") + 1
             data = json.loads(raw[s:e])
-            if complexity_only:
-                return {"complexity": self._parse_complexity(data.get("complexity"))}
             try:
                 data["action"] = IntentAction(data.get("action", "other"))
             except ValueError:
                 data["action"] = IntentAction.OTHER
-            data["complexity"] = self._parse_complexity(data.get("complexity"))
-            entities = data.get("entities")
-            if not isinstance(entities, dict):
-                entities = {}
-            data["entities"] = {
-                str(k): [str(v) for v in vs if str(v).strip()]
-                for k, vs in entities.items() if isinstance(vs, list)
-            }
-            skills = data.get("skills_to_reference")
-            data["skills_to_reference"] = [
-                str(x) for x in skills if isinstance(x, str) and x.strip()
-            ] if isinstance(skills, list) else []
-            data["needs_knowledge"] = bool(data.get("needs_knowledge", True))
+            data["needs_knowledge"] = bool(data.get("needs_knowledge", False))
             return data
         except Exception as ex:
             logger.warning(f"LLM 识别失败: {ex}")
-            if complexity_only:
-                return {"complexity": None}
             return {
                 "action": IntentAction.OTHER,
                 "confidence": 0.0,
                 "reasoning": "LLM 失败",
                 "failed": True,
             }
-
-    @staticmethod
-    def _normalize_complexity(value: Any) -> Optional[ComplexitySignal]:
-        """
-        统一复杂度信号形态：已是 ComplexitySignal 直接用；dict（如测试 fake 或
-        外部调用方）走 _parse_complexity；其余（None/非法）返回 None。
-        """
-        if isinstance(value, ComplexitySignal):
-            return value
-        return IntentRecognizer._parse_complexity(value)
-
-    @staticmethod
-    def _parse_complexity(raw: Any) -> Optional[ComplexitySignal]:
-        """
-        解析 LLM 输出的复杂度字段（宽容模式）：
-
-        - mode 必须合法（single/parallel/dependent）；
-        - targets 只收非空字符串，最多 3 个；
-        - tasks 必须是 dict 列表且仅 dependent 模式保留；
-        任何畸形返回 None —— 编排器随之回落关键词规则，不让 LLM 坏输出打穿链路。
-        """
-        if not isinstance(raw, dict):
-            return None
-        mode = raw.get("mode")
-        if mode not in COMPLEXITY_MODES:
-            return None
-        targets = raw.get("targets")
-        if not isinstance(targets, list):
-            targets = []
-        targets = [str(t) for t in targets if isinstance(t, str) and t.strip()][:3]
-        reason = str(raw.get("reason") or "")[:120]
-        tasks = raw.get("tasks")
-        if tasks is not None:
-            if mode != "dependent" or not isinstance(tasks, list) or not all(isinstance(t, dict) for t in tasks):
-                tasks = None
-        return ComplexitySignal(mode=mode, targets=targets, reason=reason, tasks=tasks)
 
     async def _embedding_recognize(self, message: str) -> Dict[str, Any]:
         """策略 2：Embedding 向量相似度匹配（按领域模板）。
@@ -688,29 +553,6 @@ class IntentRecognizer:
         if 0 < n <= 8 and any(tok in compact for tok in cls._FOLLOWUP_QUESTION_WORDS):
             return True
         return False
-
-    # ── 实体提取 ──────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _extract_entities_local(message: str) -> Dict[str, List[str]]:
-        """本地提取高频校园实体，避免级联命中后再次产生 LLM 调用。"""
-        text = message or ""
-        campuses = [name for name in ("南校区", "北校区", "太白校区", "长安校区") if name in text]
-        systems = [name for name in ("教务系统", "校园网", "VPN", "邮箱", "统一身份认证") if name.lower() in text.lower()]
-        terms = re.findall(r"(?:今天|明天|后天|本周|这周|下周|周[一二三四五六日天]|\d{1,2}月\d{1,2}日)", text)
-        locations = re.findall(r"(?:[A-Ga-g]楼|[A-Ga-g]栋|信远楼|图书馆|体育馆|行政楼)", text)
-        course_matches = re.findall(r"([\u4e00-\u9fffA-Za-z]{2,16})(?:课|课程)", text)
-        return {
-            "course": list(dict.fromkeys(course_matches)),
-            "term": list(dict.fromkeys(terms)),
-            "location": list(dict.fromkeys(locations)),
-            "campus": list(dict.fromkeys(campuses)),
-            "system": list(dict.fromkeys(systems)),
-        }
-
-    async def _extract_entities(self, message: str) -> Dict[str, List[str]]:
-        """兼容旧调用方；实体提取现为本地确定性实现。"""
-        return self._extract_entities_local(message)
 
     # ── 辅助 ──────────────────────────────────────────────────────────────────
 

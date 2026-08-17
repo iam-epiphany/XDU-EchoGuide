@@ -317,13 +317,13 @@ class _FakeMemory:
 
 class _FakeOrchestrator:
     async def run(self, req, on_event=None):
-        from agents.agent_orchestrator import AgentType, OrchestratorResult
+        from agents.agent_orchestrator import OrchestratorResult
         from core.domains import IntentAction, IntentDomain
 
         return OrchestratorResult(
             request_id="r1",
             response="南校区食堂一般晚上七点关门。",
-            agent_type=AgentType.CAMPUS_LIFE,
+            agent_type="campus_life",
             intent=None,
             domain=IntentDomain.CAMPUS_LIFE,
             action=IntentAction.QUERY,
@@ -335,12 +335,13 @@ class _FakeOrchestrator:
 def _run_chat(user_id, context_text="", message="南校区食堂几点关门？"):
     """打桩跑一遍 /chat 非流式主链路，返回缓存调用记录。"""
     import api.main as m
+    import api.state as state
     from fastapi import Response
 
-    m._orchestrator = _FakeOrchestrator()
-    m._memory = _FakeMemory(context_text)
+    state._orchestrator = _FakeOrchestrator()
+    state._memory = _FakeMemory(context_text)
     cache = _RecordingCache()
-    m._semantic_cache = cache
+    state._semantic_cache = cache
 
     req = m.ChatRequest(message=message, user_id=user_id)
     resp = asyncio.run(m.chat(req, Response()))

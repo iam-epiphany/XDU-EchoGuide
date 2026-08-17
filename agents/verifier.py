@@ -2,9 +2,11 @@
 出口校验（Verifier / Grounding）：回答返回用户前的事实核查。
 
 两层：
-  1. 规则校验（免费、全量）：引用存在性（claim [n] 但无工具证据）、
-     写操作落账（声称写入但未调用写工具）、实体一致性（回答中的日期/
-     时间/电话/金额必须出现在工具证据或时间上下文中）；
+  1. 规则校验（免费、全量）：只保留最有价值的规则——
+     - 引用存在性（claim [n] 但无工具证据）；
+     - 写操作落账（声称"已添加/已完成"但未调用写工具）；
+     - 检索需求闭环（意图判定 needs_knowledge=true，但执行链未出现
+       retrieval evidence → expected_retrieval_missing 标记异常）。
   2. LLM 校验（可选，策略开关，仅 DEEP/执行路径）：一次廉价判定调用，
      判断回答是否被工具证据支撑；不通过追加免责声明。
 
@@ -26,12 +28,6 @@ logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[\d+\]")
 _WRITE_VERB_RE = re.compile(r"已(?:添加|创建|记录|新增|完成|删除|更新|标记)")
-_TIME_RE = re.compile(r"\d{1,2}\s*[:：]\s*\d{2}")
-_PHONE_RE = re.compile(r"1[3-9]\d{9}")
-_AMOUNT_RE = re.compile(r"\d+(?:\.\d+)?\s*元")
-# 月日两种写法（8月17日 / 2026-08-17 / 2026年8月17日）
-_MD_CN_RE = re.compile(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日")
-_MD_NUM_RE = re.compile(r"\d{4}\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})")
 
 
 @dataclass
@@ -67,49 +63,18 @@ class ResponseVerifier:
         tools_used: List[str],
         tool_evidence: List[Dict[str, Any]],
         write_tools: FrozenSet[str],
+        needs_knowledge: bool = False,
     ) -> List[str]:
         flags: List[str] = []
         if _CITATION_RE.search(content or "") and not tool_evidence:
             flags.append("citation_without_evidence")
         if _WRITE_VERB_RE.search(content or "") and not (set(tools_used or []) & set(write_tools)):
             flags.append("write_claim_without_tool")
-        if ResponseVerifier._unverified_facts(content or "", tool_evidence or []):
-            flags.append("unverified_facts")
+        # 检索需求闭环：意图判定需要知识检索，但最终执行链没有出现任何
+        # retrieval evidence → 标记异常（只标注不阻断，提示 RAG 链路未落地）
+        if needs_knowledge and not tool_evidence:
+            flags.append("expected_retrieval_missing")
         return flags
-
-    @staticmethod
-    def _unverified_facts(content: str, tool_evidence: List[Dict[str, Any]]) -> List[str]:
-        """回答中的硬事实（日期/时间/电话/金额）必须出现在证据或时间上下文中。
-
-        日期两种写法统一规范为「M月D日」比较；时间/电话/金额按字符串包含比较。
-        时间上下文（当前日期/周次）视为可信事实池的一部分，避免误伤
-        "今天 8月17日"这类来自系统注入的信息。上限 3 条，只做标注。
-        """
-        from personal.time_context import build_time_context
-
-        trusted = build_time_context()
-        for item in tool_evidence or []:
-            for key in ("title", "content", "source_url", "updated_at"):
-                value = str(item.get(key) or "")
-                if value:
-                    trusted += "\n" + value
-
-        def month_day_set(text: str) -> set:
-            out = set()
-            for m in _MD_CN_RE.finditer(text):
-                out.add(f"{int(m.group(1))}月{int(m.group(2))}日")
-            for m in _MD_NUM_RE.finditer(text):
-                out.add(f"{int(m.group(1))}月{int(m.group(2))}日")
-            return out
-
-        unmatched: List[str] = sorted(month_day_set(content) - month_day_set(trusted))
-        for regex in (_TIME_RE, _PHONE_RE, _AMOUNT_RE):
-            for hit in regex.findall(content):
-                if hit.strip() not in trusted:
-                    unmatched.append(hit.strip())
-                if len(unmatched) >= 3:
-                    return unmatched[:3]
-        return unmatched[:3]
 
     # ── LLM 校验（可选，fail-open）───────────────────────────────────────────
 
@@ -173,12 +138,13 @@ class ResponseVerifier:
         tool_evidence: List[Dict[str, Any]],
         profile: str,
         write_tools: FrozenSet[str],
+        needs_knowledge: bool = False,
     ) -> VerificationResult:
         """执行出口校验：规则全量 + 可选 LLM（DEEP/执行路径）。"""
         if not (content or "").strip():
             return VerificationResult(source="skip")
 
-        flags = self._rule_flags(content, tools_used, tool_evidence, write_tools)
+        flags = self._rule_flags(content, tools_used, tool_evidence, write_tools, needs_knowledge)
         source = "rules"
 
         use_llm = (

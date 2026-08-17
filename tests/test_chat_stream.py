@@ -5,7 +5,8 @@ import asyncio
 import json
 
 import api.main as m
-from agents.agent_orchestrator import AgentType, OrchestratorResult
+import api.state as state
+from agents.agent_orchestrator import OrchestratorResult
 
 
 class _FakeMemory:
@@ -36,7 +37,7 @@ class _FakeOrchestrator:
         return OrchestratorResult(
             request_id="r1",
             response="南校区食堂一般晚上七点关门。",
-            agent_type=AgentType.CAMPUS_LIFE,
+            agent_type="campus_life",
             intent=None,
             domain=__import__("core.domains", fromlist=["IntentDomain"]).IntentDomain.CAMPUS_LIFE,
             action=__import__("core.domains", fromlist=["IntentAction"]).IntentAction.QUERY,
@@ -77,9 +78,9 @@ def _parse_sse(text: str):
 
 
 def test_chat_stream_full_event_flow():
-    m._orchestrator = _FakeOrchestrator()
-    m._memory = _FakeMemory()
-    m._semantic_cache = _FakeCache()
+    state._orchestrator = _FakeOrchestrator()
+    state._memory = _FakeMemory()
+    state._semantic_cache = _FakeCache()
 
     req = m.ChatRequest(message="南校区食堂几点关门？", user_id="u1")
     resp = asyncio.run(m.chat_stream(req))
@@ -115,9 +116,9 @@ def test_chat_semantic_cache_hit_skips_llm():
     """非流式 /chat：语义缓存命中直接复用答案，不进入编排器。"""
     from fastapi import Response
 
-    m._orchestrator = _FakeOrchestrator()
-    m._memory = _FakeMemory()
-    m._semantic_cache = _FakeCache(hit={
+    state._orchestrator = _FakeOrchestrator()
+    state._memory = _FakeMemory()
+    state._semantic_cache = _FakeCache(hit={
         "response": "缓存中的回答",
         "domain": "academic",
         "agent_type": "academic",
@@ -134,9 +135,9 @@ def test_chat_semantic_cache_hit_skips_llm():
 def test_chat_semantic_cache_miss_runs_orchestrator():
     from fastapi import Response
 
-    m._orchestrator = _FakeOrchestrator()
-    m._memory = _FakeMemory()
-    m._semantic_cache = _FakeCache()
+    state._orchestrator = _FakeOrchestrator()
+    state._memory = _FakeMemory()
+    state._semantic_cache = _FakeCache()
 
     req = m.ChatRequest(message="南校区食堂几点关门？", user_id="u1")
     resp = asyncio.run(m.chat(req, Response()))
@@ -146,7 +147,7 @@ def test_chat_semantic_cache_miss_runs_orchestrator():
 
 
 def test_chat_stream_semantic_cache_hit_skips_llm():
-    m._semantic_cache = _FakeCache(hit={
+    state._semantic_cache = _FakeCache(hit={
         "response": "缓存中的回答",
         "domain": "academic",
         "agent_type": "academic",
@@ -170,9 +171,9 @@ def test_personal_domain_cache_hit_is_discarded():
     """
     from fastapi import Response
 
-    m._orchestrator = _FakeOrchestrator()
-    m._memory = _FakeMemory()
-    m._semantic_cache = _FakeCache(hit={
+    state._orchestrator = _FakeOrchestrator()
+    state._memory = _FakeMemory()
+    state._semantic_cache = _FakeCache(hit={
         "response": "用户A的课表：08:30 高等数学",
         "domain": "personal",
         "agent_type": "personal",
@@ -185,7 +186,7 @@ def test_personal_domain_cache_hit_is_discarded():
     assert resp.domain == "campus_life"
 
     # 流式 /chat/stream：同样丢弃 personal 缓存，走编排器
-    m._orchestrator = _FakeOrchestrator()
+    state._orchestrator = _FakeOrchestrator()
     req = m.ChatRequest(message="今天有什么课？", user_id="u2")
     resp = asyncio.run(m.chat_stream(req))
     events = _parse_sse(_collect(resp))

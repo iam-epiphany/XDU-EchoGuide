@@ -76,14 +76,29 @@ def test_pattern_recognizes_personal_domain():
 
 
 def test_pattern_request_form_keeps_domain():
-    """P0 回归：请求句式不再吞掉领域信息。"""
+    """P0 回归：请求句式不再吞掉领域信息。
+
+    v4 重新定义：咨询流程（"怎么走流程/怎么补办"）是 QUERY（不产生状态修改）；
+    只有明确写操作词（添加/删除/标记/记一下）才是 REQUEST。
+    """
     rec = _recognizer()
     result = rec._pattern_recognize("我要请假怎么走流程")
     assert result["domain"] == IntentDomain.AFFAIRS
-    assert result["action"] == IntentAction.REQUEST
+    assert result["action"] == IntentAction.QUERY
 
     result = rec._pattern_recognize("校园卡丢了怎么补办")
     assert result["domain"] == IntentDomain.AFFAIRS
+    assert result["action"] == IntentAction.QUERY
+
+
+def test_pattern_write_action_recognized_as_request():
+    """v4：写操作词（添加/标记/记一下）→ REQUEST；"帮我查" → QUERY。"""
+    rec = _recognizer()
+    assert rec._pattern_recognize("帮我添加一个补办校园卡的待办")["action"] == IntentAction.REQUEST
+    assert rec._pattern_recognize("把这个待办标记完成")["action"] == IntentAction.REQUEST
+    assert rec._pattern_recognize("帮我记一下明天交实验报告")["action"] == IntentAction.REQUEST
+    assert rec._pattern_recognize("帮我查一下课表")["action"] == IntentAction.QUERY
+    assert rec._pattern_recognize("查一下校园卡余额")["action"] == IntentAction.QUERY
 
 
 def test_pattern_does_not_fire_for_generic_chat():
@@ -130,7 +145,7 @@ def test_followup_shaped_skips_embedding_goes_llm():
     async def embedding_should_not_run(message):
         raise AssertionError("追问形态不应走 Embedding")
 
-    async def fake_llm(message, history, complexity_only=False, state=None):
+    async def fake_llm(message, history, state=None):
         return {"domain": IntentDomain.CAMPUS_LIFE, "action": IntentAction.QUERY,
                 "confidence": 0.9, "reasoning": "mock"}
 
@@ -175,15 +190,18 @@ def test_cache_key_includes_history_fingerprint():
 
 # ── 实体提取兜底 ─────────────────────────────────────────────────────────────
 
-def test_entity_extraction_failure_returns_campus_schema():
+def test_needs_knowledge_absent_on_pattern_path():
+    """免费路径（pattern/embedding）不判定 needs_knowledge（未判定 → False）。"""
     rec = _recognizer()
 
-    async def run():
-        return await rec._extract_entities("选课")
+    async def fake_embedding(message):
+        return {"domain": IntentDomain.ACADEMIC, "action": IntentAction.OTHER,
+                "confidence": 0.90, "margin": 0.3}
 
-    # 无真实 API key 时 LLM 调用失败，应返回校园字段的空列表结构
-    entities = asyncio.run(run())
-    assert set(entities.keys()) == {"course", "term", "location", "campus", "system"}
+    rec._embedding_recognize = fake_embedding
+    result = asyncio.run(rec.recognize("选课成绩学分有什么规定？"))
+    assert result.classifier_stage == "pattern"
+    assert result.needs_knowledge is False
 
 
 # ── 在线学习 ─────────────────────────────────────────────────────────────────
@@ -239,7 +257,7 @@ def test_pattern_embedding_conflict_arbitrates_to_llm():
         return {"domain": IntentDomain.IT_HELP, "action": IntentAction.OTHER,
                 "confidence": 0.50, "margin": 0.10}
 
-    async def fake_llm(message, history, complexity_only=False, state=None):
+    async def fake_llm(message, history, state=None):
         return {"action": IntentAction.QUERY, "confidence": 0.9, "reasoning": "mock"}
 
     rec._embedding_recognize = fake_embedding
@@ -264,7 +282,7 @@ def test_pattern_subthreshold_embedding_arbitrates_to_llm():
         return {"domain": IntentDomain.ACADEMIC, "action": IntentAction.OTHER,
                 "confidence": 0.50, "margin": 0.10}
 
-    async def fake_llm(message, history, complexity_only=False, state=None):
+    async def fake_llm(message, history, state=None):
         return {"domain": IntentDomain.ACADEMIC, "action": IntentAction.QUERY,
                 "confidence": 0.9, "reasoning": "mock"}
 
@@ -285,7 +303,7 @@ def test_embedding_weak_pattern_conflict_arbitrates_to_llm():
         return {"domain": IntentDomain.PERSONAL, "action": IntentAction.OTHER,
                 "confidence": 0.90, "margin": 0.3}
 
-    async def fake_llm(message, history, complexity_only=False, state=None):
+    async def fake_llm(message, history, state=None):
         return {"domain": IntentDomain.ACADEMIC, "action": IntentAction.QUERY,
                 "confidence": 0.9, "reasoning": "mock"}
 
@@ -316,138 +334,10 @@ def test_force_llm_bypasses_cascade():
     """强制 LLM：action 来自 LLM，领域由免费关键词回填（LLM 不再输出领域）。"""
     rec = _recognizer()
 
-    async def fake_llm(message, history, complexity_only=False, state=None):
+    async def fake_llm(message, history, state=None):
         return {"action": IntentAction.QUERY, "confidence": 0.91, "reasoning": "baseline"}
 
     rec._llm_recognize = fake_llm
     result = asyncio.run(rec.recognize("选课成绩学分有什么规定？", force_llm=True))
     assert result.domain == IntentDomain.ACADEMIC  # 免费关键词回填
     assert result.classifier_stage == "llm"
-
-
-# ── 复杂度判定（意图识别的一部分，LLM 参与时顺带输出）────────────────────────
-
-def test_llm_complexity_attached_when_llm_used():
-    """LLM 参与意图识别时顺带输出 complexity（parallel），随 IntentResult 返回。"""
-    rec = _recognizer()
-
-    async def fake_llm(message, history, complexity_only=False, state=None):
-        return {
-            "domain": IntentDomain.AFFAIRS, "action": IntentAction.QUERY,
-            "confidence": 0.9, "reasoning": "baseline",
-            "complexity": {"mode": "parallel", "targets": ["affairs", "personal"]},
-        }
-
-    rec._llm_recognize = fake_llm
-    result = asyncio.run(rec.recognize("奖学金评定和我的待办一起看下", force_llm=True))
-    assert result.classifier_stage == "llm"
-    assert result.complexity is not None
-    assert result.complexity.mode == "parallel"
-    assert result.complexity.targets == ["affairs", "personal"]
-
-
-def test_llm_complexity_dependent_carries_tasks():
-    """mode=dependent 时 LLM 输出的原始任务链随信号保留。"""
-    rec = _recognizer()
-
-    async def fake_llm(message, history, complexity_only=False, state=None):
-        return {
-            "domain": IntentDomain.PERSONAL, "action": IntentAction.REQUEST,
-            "confidence": 0.8, "reasoning": "baseline",
-            "complexity": {
-                "mode": "dependent", "targets": ["personal", "affairs"],
-                "tasks": [
-                    {"id": "t1", "agent": "personal", "goal": "查空闲"},
-                    {"id": "t2", "agent": "affairs", "depends_on": ["t1"]},
-                ],
-            },
-        }
-
-    rec._llm_recognize = fake_llm
-    result = asyncio.run(rec.recognize("我下午有空想办校园卡再记个待办", force_llm=True))
-    assert result.complexity is not None
-    assert result.complexity.mode == "dependent"
-    assert len(result.complexity.tasks) == 2
-    assert result.complexity.tasks[1]["depends_on"] == ["t1"]
-
-
-def test_llm_complexity_none_when_absent():
-    """LLM 未输出 complexity 字段（旧 fake/旧模型）→ None，不影响主流程。"""
-    rec = _recognizer()
-
-    async def fake_llm(message, history, complexity_only=False, state=None):
-        return {"domain": IntentDomain.OTHER, "action": IntentAction.QUERY, "confidence": 0.3, "reasoning": "x"}
-
-    rec._llm_recognize = fake_llm
-    result = asyncio.run(rec.recognize("随便聊聊", force_llm=True))
-    assert result.complexity is None
-
-
-def test_high_confidence_pattern_has_no_complexity():
-    """高置信度 Pattern 不调 LLM → 无复杂度信号（复杂度只随 LLM 参与产生）。"""
-    rec = _recognizer()
-
-    async def fake_embedding(message):
-        # 双确认必须达标（≥0.80）：高分数 + 同方向才放行免费直返
-        return {"domain": IntentDomain.ACADEMIC, "action": IntentAction.OTHER,
-                "confidence": 0.90, "margin": 0.3}
-
-    async def llm_should_not_run(message, history, complexity_only=False, state=None):
-        raise AssertionError("高置信度 Pattern 不应调用 LLM")
-
-    rec._embedding_recognize = fake_embedding
-    rec._llm_recognize = llm_should_not_run
-    result = asyncio.run(rec.recognize("选课成绩学分有什么规定？"))
-    assert result.classifier_stage == "pattern"
-    assert result.complexity is None
-
-
-def test_parse_complexity_valid_signal():
-    rec = _recognizer()
-    signal = rec._parse_complexity({
-        "mode": "parallel", "targets": ["campus_life", "personal"], "reason": "两个领域",
-    })
-    assert signal is not None
-    assert signal.mode == "parallel"
-    assert signal.targets == ["campus_life", "personal"]
-
-
-def test_parse_complexity_rejects_invalid_shapes():
-    rec = _recognizer()
-    # 非法 mode
-    assert rec._parse_complexity({"mode": "weird"}) is None
-    # 非 dict
-    assert rec._parse_complexity(None) is None
-    assert rec._parse_complexity("string") is None
-    # parallel 模式携带 tasks → tasks 被丢弃但信号仍合法
-    signal = rec._parse_complexity({"mode": "parallel", "tasks": [{"id": "t1"}]})
-    assert signal is not None and signal.mode == "parallel" and signal.tasks is None
-    # dependent 模式 tasks 非列表 → tasks 被丢弃
-    signal = rec._parse_complexity({"mode": "dependent", "tasks": "not-a-list"})
-    assert signal is not None and signal.tasks is None
-
-
-def test_judge_complexity_delegates_with_complexity_only():
-    """升级路径：judge_complexity 只问复杂度（complexity_only=True），不重复问领域/动作。"""
-    rec = _recognizer()
-    seen = {}
-
-    async def fake_llm(message, history, complexity_only=False, state=None):
-        seen["complexity_only"] = complexity_only
-        return {"complexity": {"mode": "parallel", "targets": ["campus_life", "personal"]}}
-
-    rec._llm_recognize = fake_llm
-    signal = asyncio.run(rec.judge_complexity("食堂几点关门，顺便查下明天课表"))
-    assert seen["complexity_only"] is True
-    assert signal is not None and signal.mode == "parallel"
-
-
-def test_judge_complexity_failure_returns_none():
-    """LLM 不可用/输出非法 → judge_complexity 返回 None（调用方回落关键词规则）。"""
-    rec = _recognizer()
-
-    async def fake_llm(message, history, complexity_only=False, state=None):
-        return {"complexity": None}
-
-    rec._llm_recognize = fake_llm
-    assert asyncio.run(rec.judge_complexity("随便问问")) is None

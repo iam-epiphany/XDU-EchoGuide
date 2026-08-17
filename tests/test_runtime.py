@@ -10,8 +10,10 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from agents.agent_orchestrator import (
-    AgentOrchestrator, AgentType, Request, Task, TaskExecutor,
+    AgentOrchestrator, Request, Task, TaskExecutor,
 )
+from agents.roles import Role
+from core.domains import IntentAction, IntentDomain
 from runtime import (
     AgentRuntime, ExecutionPolicy, GuardRejection, MiddlewareChain, RunContext,
     RunState, RuntimeMiddleware,
@@ -313,7 +315,7 @@ def test_skill_middleware_caches_by_message_and_prompt_uses_cache():
 
     orch = AgentOrchestrator(api_key=FAKE_KEY)
     fake_skill = FakeSkillManager()
-    agent = orch._pool[AgentType.QA][0]
+    agent = orch._pool[Role.QA][0]
     agent._skill_manager = fake_skill
 
     req = _req("转专业政策是什么")
@@ -354,18 +356,18 @@ def test_orchestrator_run_wires_runtime_state():
     assert req.state.step_count >= 1
 
 
-def test_orchestrator_policy_max_agents_truncates_parallel_targets():
-    orch = AgentOrchestrator(api_key=FAKE_KEY, policy=ExecutionPolicy(max_agents=1))
+def test_orchestrator_policy_max_agents_truncates_parallel_tasks():
+    orch = AgentOrchestrator(api_key=FAKE_KEY, policy=ExecutionPolicy(max_agents=2))
     req = _req("帮我同时查一下校车时刻表、校园卡办理流程和加权成绩", domain=None)
-    decision = orch._complexity_decision(req)
-    assert decision.mode == "parallel"
-    assert len(decision.targets) == 1
+    plan = asyncio.run(orch._planner.plan(req, IntentDomain.OTHER, IntentAction.QUERY))
+    assert plan.mode == "parallel"
+    assert len(plan.tasks) == 2  # 3 个并行目标被预算截断为 2
 
     # 默认策略（max_agents=3）保持 3 个目标
     orch_default = AgentOrchestrator(api_key=FAKE_KEY)
-    decision_default = orch_default._complexity_decision(req)
-    assert decision_default.mode == "parallel"
-    assert len(decision_default.targets) == 3
+    plan_default = asyncio.run(orch_default._planner.plan(req, IntentDomain.OTHER, IntentAction.QUERY))
+    assert plan_default.mode == "parallel"
+    assert len(plan_default.tasks) == 3
 
 
 def test_task_executor_respects_max_tasks_cap():
@@ -375,7 +377,7 @@ def test_task_executor_respects_max_tasks_cap():
     executor = TaskExecutor(run_task)
     req = _req("帮我同时查一下校车时刻表、校园卡办理流程和加权成绩")
     tasks = [
-        Task(task_id=f"t{i}", agent_type=AgentType.CAMPUS_LIFE, goal="g", message="m")
+        Task(task_id=f"t{i}", agent_type=IntentDomain.CAMPUS_LIFE, goal="g", message="m")
         for i in range(3)
     ]
 

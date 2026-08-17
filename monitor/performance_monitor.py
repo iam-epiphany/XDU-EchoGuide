@@ -220,6 +220,14 @@ class PerformanceMonitor:
 
             routing_penalties[agent_key] = self._routing_penalty(sr, ms)
 
+        # ── Profile 级有限反馈（Fast/Deep 选择）─────────────────────────────
+        # Fast 路径成功率显著偏低且样本足够 → 标记 Fast 不健康，Orchestrator
+        # 临时把本应走 Fast 的请求升级 Deep；恢复后自动回落（不引入 RL/Bandit）。
+        fast_health = self._fast_health(agent_stats)
+        health_updater = getattr(self._orchestrator, "set_fast_health", None)
+        if health_updater is not None:
+            health_updater(fast_health)
+
         # ── 工具指标 ──────────────────────────────────────────────────────────
         for tool_name, s in tool_stats.items():
             sr = s["success_rate"]
@@ -248,6 +256,24 @@ class PerformanceMonitor:
         if updater:
             updater(routing_penalties)
         self._generate_routing_suggestions(agent_stats)
+
+    @staticmethod
+    def _fast_health(agent_stats: Dict[str, Any]) -> bool:
+        """
+        Fast profile 健康判定（有限反馈）：qa.fast / executor.fast 均健康才算健康。
+
+        样本不足（total < 10）视为健康（不干预）；成功率 < 0.85 视为不健康
+        （临时升级 Deep）。只做这一条规则，不引入复杂在线学习。
+        """
+        fast_keys = [k for k in agent_stats if k.endswith(".fast")]
+        if not fast_keys:
+            return True
+        for key in fast_keys:
+            s = agent_stats[key]
+            if s["total"] >= 10 and s["success_rate"] < 0.85:
+                logger.warning(f"Fast profile 不健康（{key} 成功率 {s['success_rate']:.1%}），临时升级 Deep")
+                return False
+        return True
 
     @staticmethod
     def _routing_penalty(success_rate: float, avg_ms: float) -> float:

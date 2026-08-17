@@ -9,9 +9,9 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from agents.agent_orchestrator import (
-    QAAgent, ExecutionProfile, ProfileName, Request,
-)
+from agents.agent_orchestrator import Request
+from agents.profiles import ExecutionProfile, ProfileName
+from agents.roles import QAAgent
 from mcp.tool_manager import MCPToolManager, Tool
 from runtime.policy import ExecutionPolicy
 from runtime.state import RunState

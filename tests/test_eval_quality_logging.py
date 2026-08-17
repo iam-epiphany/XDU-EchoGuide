@@ -19,10 +19,6 @@ from evaluation.evaluator import EndToEndEvaluator, LLMJudge, QualityScores
 _LOG_LOGGER = "evaluation.evaluator"
 
 
-class _FakeAgentType:
-    value = "campus_life"
-
-
 class _FakeIntent:
     value = "query"
 
@@ -32,7 +28,7 @@ class _FakeOrchResult:
 
     def __init__(self, response: str, tool_evidence=None):
         self.response = response
-        self.agent_type = _FakeAgentType()
+        self.agent_type = "campus_life"  # 展示标签（str）
         self.intent = _FakeIntent()
         self.tool_evidence = tool_evidence or []
 

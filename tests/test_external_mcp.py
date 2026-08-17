@@ -11,7 +11,8 @@ import json
 
 import httpx
 
-from agents.agent_orchestrator import AgentOrchestrator, AgentType
+from agents.agent_orchestrator import AgentOrchestrator
+from agents.roles import Role
 from mcp.external_client import ExternalMCPSource, StreamableHTTPClient
 from mcp.protocol import MCPServer
 from mcp.tool_manager import MCPToolManager, Tool
@@ -189,7 +190,7 @@ def test_expose_external_tools_visibility():
     orch.set_tool_manager(tm)
     orch.expose_external_tools(registered)
 
-    agent = orch._pool[AgentType.QA][0]
+    agent = orch._pool[Role.QA][0]
     exposed = [t["name"] for t in agent._build_tools(req=None)]
     assert "github_search_repositories" in exposed
     assert "knowledge_search" in exposed  # 本地工具不受影响（同一公共层）
@@ -204,5 +205,5 @@ def test_unexposed_external_tools_invisible():
 
     orch = AgentOrchestrator(api_key=FAKE_KEY)
     orch.set_tool_manager(tm)
-    agent = orch._pool[AgentType.QA][0]
+    agent = orch._pool[Role.QA][0]
     assert "github_search_repositories" not in [t["name"] for t in agent._build_tools(req=None)]

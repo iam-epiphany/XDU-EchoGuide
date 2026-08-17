@@ -20,8 +20,10 @@ from typing import Any, List, Optional
 import pytest
 
 from agents.agent_orchestrator import (
-    AgentOrchestrator, AgentType, ProfileName, QAAgent, Request,
+    AgentOrchestrator, Request,
 )
+from agents.profiles import ProfileName
+from agents.roles import QAAgent, Role
 from runtime import (
     AgentRuntime, BudgetExceeded, ExecutionPolicy, RunState,
 )
@@ -265,7 +267,7 @@ def test_fast_deep_fallback_respects_max_retries():
         req = Request(message="hi", user_id="u1", conv_id="c1")
         req.state = _state(runtime.policy)
         req.profile = ProfileName.FAST
-        await orchestrator._execute(req, AgentType.QA)
+        await orchestrator._execute(req, Role.QA)
         return req.state.retry_count
 
     assert asyncio.run(run_once(max_retries=0)) == 0  # 上限 0：不降级
