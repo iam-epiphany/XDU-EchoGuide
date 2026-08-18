@@ -833,19 +833,20 @@ def test_system_prompt_injects_action_guidance():
 
 
 def test_system_prompt_mounts_domain_persona():
-    """领域人格按 domain 挂载（领域是顾问）：IT 人格含诊断工具指引；无领域不注入。"""
+    """领域人格按 domain 挂载，但只提供语境，不携带 Tool 或 Skill SOP。"""
     orch = _orchestrator()
     agent = orch._pool[Role.QA][0]
 
     prompt = agent._build_system_prompt(_req("hi", domain=IntentDomain.IT_HELP))
     assert "[领域人格]" in prompt
-    assert "diagnose_it_issue" in prompt
+    assert "校园 IT 支持语境" in prompt
+    assert "diagnose_it_issue" not in prompt
 
     prompt = agent._build_system_prompt(_req("hi", domain=IntentDomain.OTHER))
     assert DOMAIN_PERSONA[IntentDomain.OTHER] in prompt
 
     prompt = agent._build_system_prompt(_req("hi", domain=None))
-    assert "diagnose_it_issue" not in prompt  # 无领域：不注入任何领域人格内容
+    assert "校园 IT 支持语境" not in prompt  # 无领域：不注入任何领域人格内容
 
 
 def test_run_task_backfill_blocked_on_query_action():
