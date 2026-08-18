@@ -22,7 +22,7 @@ DAG 失败传播：任务状态 SUCCESS / FAILED / BLOCKED / SKIPPED。
 依赖任务 FAILED/BLOCKED → 下游任务 BLOCKED（不执行、不注入上下文），
 不能因为前置"执行完成（但失败）"就继续执行依赖任务。
 
-任务角色标签直接用 IntentDomain（领域值只做人格/Skills 挂载键，
+任务角色标签直接用 IntentDomain（领域值只做人格语境键，
 执行实体是 QA/EXECUTOR 职责角色，见 roles.py）。
 """
 from __future__ import annotations

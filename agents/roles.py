@@ -262,7 +262,7 @@ class BaseAgent:
         不按领域剪裁（领域只挂载人格/Skills）。门禁两层：
           1. 注册级 agent_exposed（外部工具默认双重不可见）；
           2. Action 级读写策略（QUERY/GREETING 等动作下写工具不暴露）。
-        Skill 工具（use_skill_*，渐进披露）追加在 MCP 工具之后，同受
+        Skill 通过统一的 load_skill（渐进披露）追加在 MCP 工具之后，同受
         allowlist 与 Action 门禁；完整 SKILL.md 由模型按需加载。
         实例可设 _tool_allowlist 覆盖公共层（测试/定制场景）。
         """
@@ -420,13 +420,13 @@ class BaseAgent:
                         })
                     # 上下文卸载：超长结果落盘 refs 表，上下文只留摘要行 + 索引
                     # （需要时可沿 refs/{id} 100% 找回，代价是上下文里的 token 显著下降）。
-                    # Skill 正文（use_skill_*）例外：规范全文必须留在上下文，不做卸载。
+                    # Skill 正文（load_skill）例外：规范全文必须留在上下文，不做卸载。
                     tool_text = self._clean_text(data) if data is not None else None
                     if (
                         tool_text is not None
                         and len(tool_text) > OFFLOAD_CHARS
                         and self._memory_store is not None
-                        and not name.startswith("use_skill_")
+                        and name not in {"load_skill", "load_skill_resource"}
                     ):
                         try:
                             ref_id = await self._memory_store.save_ref(
@@ -540,7 +540,7 @@ class BaseAgent:
         write_tools = self._write_tools()
         # Skill 工具拦截（渐进披露）：完整 SKILL.md 正文本地加载，不经过 MCPToolManager；
         # 与普通工具同受 allowlist 与 Action 门禁（防御纵深）。
-        if name.startswith("use_skill_"):
+        if name in {"load_skill", "load_skill_resource"}:
             allowed = getattr(self, "_tool_allowlist", None)
             if allowed is not None and name not in allowed:
                 logger.warning(f"{self.role.value} 尝试调用权限外工具 {name}，已拒绝")
@@ -557,11 +557,21 @@ class BaseAgent:
             if self._skill_manager is None:
                 error = "技能管理器不可用"
             else:
-                skill = self._skill_manager.skill_for_tool(name)
-                if skill is None:
-                    error = f"技能 {name} 不存在或已停用"
+                if name == "load_skill":
+                    skill_name = str(params.get("skill_name", ""))
+                    skill = self._skill_manager.get_skill(skill_name)
+                    if skill is None:
+                        error = f"技能 {skill_name} 不存在或已停用"
+                    else:
+                        from core.tracing import span
+                        async with span("skill_load", skill=skill_name):
+                            data = self._skill_manager.load_skill(skill_name)
                 else:
-                    data = skill.to_prompt_block(max_chars=12000)
+                    skill_name = str(params.get("skill_name", ""))
+                    relative_path = str(params.get("path", ""))
+                    from core.tracing import span
+                    async with span("skill_resource_load", skill=skill_name, path=relative_path):
+                        data = self._skill_manager.load_skill_resource(skill_name, relative_path)
             if runtime is not None and req.state is not None:
                 await runtime.fire_tool_after(req.state, name, data, error)
             if error:

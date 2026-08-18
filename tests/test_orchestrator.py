@@ -617,8 +617,8 @@ enabled: true
     return tmp, mgr
 
 
-def test_build_tools_exposes_skill_tools():
-    """Skill 工具（use_skill_*）追加进公共工具层，与 MCP 工具并存。"""
+def test_build_tools_exposes_single_skill_loader():
+    """唯一 load_skill 工具追加进公共工具层，与 MCP 工具并存。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
     tmp, mgr = _fake_skill_manager()
@@ -626,8 +626,7 @@ def test_build_tools_exposes_skill_tools():
         orch.set_skill_manager(mgr)
         agent = orch._pool[Role.QA][0]
         names = {t["name"] for t in agent._build_tools(_req("选课什么时候开始", action=IntentAction.QUERY))}
-        assert "use_skill_academic" in names
-        assert "use_skill_campus_life" in names
+        assert "load_skill" in names
         assert "knowledge_search" in names  # MCP 工具不受影响
     finally:
         tmp.cleanup()
@@ -648,18 +647,18 @@ def test_build_tools_skill_tools_hidden_on_greeting():
 
 
 def test_execute_tool_serves_skill_content_locally():
-    """use_skill_* 被 _execute_tool 拦截：完整正文本地返回，不经过 MCPToolManager。"""
+    """load_skill 被 _execute_tool 拦截：完整正文本地返回，不经过 MCPToolManager。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
         agent = orch._pool[Role.QA][0]
-        data, error = _run(agent._execute_tool("use_skill_academic", {}, _req("选课")))
+        data, error = _run(agent._execute_tool("load_skill", {"skill_name": "academic"}, _req("选课")))
         assert error is None
         assert "学业咨询规范的完整正文" in data
-        # 未知 Skill 工具返回错误文本
-        data, error = _run(agent._execute_tool("use_skill_unknown", {}, _req("选课")))
+        # 未知 Skill id 返回错误文本
+        data, error = _run(agent._execute_tool("load_skill", {"skill_name": "unknown"}, _req("选课")))
         assert data is None
         assert "不存在" in error
         # 普通工具路径不受影响（无 handler → 执行失败但非权限拒绝）
@@ -669,19 +668,19 @@ def test_execute_tool_serves_skill_content_locally():
         tmp.cleanup()
 
 
-def test_execute_tool_skill_tools_respect_allowlist():
-    """实例级 _tool_allowlist 同样约束 Skill 工具（防御纵深）。"""
+def test_execute_tool_skill_loader_respects_allowlist():
+    """实例级 _tool_allowlist 同样约束 Skill 加载（防御纵深）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
         agent = orch._pool[Role.QA][0]
-        agent._tool_allowlist = {"use_skill_academic"}
-        data, error = _run(agent._execute_tool("use_skill_campus_life", {}, _req("食堂")))
+        agent._tool_allowlist = {"load_skill"}
+        data, error = _run(agent._execute_tool("query_schedule", {}, _req("食堂")))
         assert data is None
         assert "权限" in error
-        data, error = _run(agent._execute_tool("use_skill_academic", {}, _req("选课")))
+        data, error = _run(agent._execute_tool("load_skill", {"skill_name": "academic"}, _req("选课")))
         assert error is None
         assert "学业咨询规范的完整正文" in data
     finally:

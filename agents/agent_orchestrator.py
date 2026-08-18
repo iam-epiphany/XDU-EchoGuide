@@ -6,7 +6,7 @@ AgentOrchestrator —— EchoGuide 编排器（决策闭环：Intent → Planner
     EXECUTOR（执行，全量工具面含写 + 执行确认规范），各配 Fast/Deep
     双 profile；执行角色由 **Task 自己的 action** 决定（REQUEST→EXECUTOR，
     其余→QA），不再继承原始请求的 action。
-    领域分类（IntentDomain）只用来挂载领域人格（DOMAIN_PERSONA）与 Skills，
+    领域分类（IntentDomain）只提供领域人格（DOMAIN_PERSONA）语境，
     不决定工具可见性、不选执行角色 —— "顾问"而非"门卫"；职责 × 领域正交。
   - 工具可见性 = 公共工具层：所有 agent_exposed=True 的工具对任何请求可见，
     门禁两层：注册级 agent_exposed + 角色级 write_allowed（QA 只读）+
@@ -19,7 +19,7 @@ AgentOrchestrator —— EchoGuide 编排器（决策闭环：Intent → Planner
         → Executor（按 depends_on 分波并行，失败传播：依赖失败 → 下游 BLOCKED）
         → Synthesizer 合并（LLM 失败降级拼接）。
     每个任务是独立上下文的执行实体；任务角色标签沿用领域值（只做
-    goal/人格/Skills 挂载键，不构成独立 Agent 身份）。
+    goal/人格语境键，不构成独立 Agent 身份）。
 
 Monitor 有限反馈：Fast profile 在线表现不健康时，Orchestrator 临时把
 本应走 Fast 的请求升级 Deep（不引入 RL/Bandit/在线学习）。
@@ -62,7 +62,7 @@ class Request:
     context:     str = ""        # 来自 MemoryManager 的格式化上下文
     history:     Optional[List[Dict[str, str]]] = None  # 对话历史，传给意图识别
     intent:      Optional[IntentCategory] = None        # 兼容字段
-    domain:      Optional[IntentDomain]   = None        # 领域（人格/Skills 挂载键）
+    domain:      Optional[IntentDomain]   = None        # 领域语境（人格挂载键）
     action:      Optional[IntentAction]   = None        # 动作（行为依据）
     request_id:  str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     confidence: float = 0.0
@@ -95,7 +95,7 @@ class AgentOrchestrator:
 
     - 职责角色：QA（问答，只读工具面）/ EXECUTOR（执行，含写工具面），各配
       Fast/Deep 双实例，执行角色由 Task 的 action 决定；领域分类只用来挂载
-      领域人格（DOMAIN_PERSONA）与 Skills —— 领域是"顾问"，不是"门卫"；
+      领域人格（DOMAIN_PERSONA）语境；Skills 由完整目录自主发现 —— 领域是"顾问"，不是"门卫"；
     - Planner 统一输出 ExecutionPlan：本地 Fast Path（单任务/规则链/并行）
       零 LLM；"拿不准"才升级 LLM 规划，复杂度模式由 DAG 自动推导；
     - DAG 失败传播：依赖失败的任务 BLOCKED，不执行、不注入失败上下文；
