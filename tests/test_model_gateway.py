@@ -23,7 +23,7 @@ from agents.agent_orchestrator import (
     AgentOrchestrator, Request,
 )
 from agents.profiles import ProfileName
-from agents.roles import QAAgent, Role
+from agents.roles import TaskAgent
 from runtime import (
     AgentRuntime, BudgetExceeded, ExecutionPolicy, RunState,
 )
@@ -220,7 +220,7 @@ def test_agent_loop_steps_and_tool_rounds():
 
     async def run():
         runtime = AgentRuntime(policy=ExecutionPolicy())
-        agent = QAAgent(
+        agent = TaskAgent(
             LoopClient(), "test-model",
             skill_manager=None, tool_manager=ToolBox(),
         )
@@ -267,7 +267,7 @@ def test_fast_deep_fallback_respects_max_retries():
         req = Request(message="hi", user_id="u1", conv_id="c1")
         req.state = _state(runtime.policy)
         req.profile = ProfileName.FAST
-        await orchestrator._execute(req, Role.QA)
+        await orchestrator._execute(req)
         return req.state.retry_count
 
     assert asyncio.run(run_once(max_retries=0)) == 0  # 上限 0：不降级

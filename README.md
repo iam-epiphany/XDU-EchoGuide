@@ -1,6 +1,6 @@
 # EchoGuide · 西电校园智慧助手
 
-EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个自己实现的轻量 **Agent Runtime / Harness**。项目围绕五个工程问题做了比较完整的实现：**四层长期记忆、级联意图识别、Agentic RAG、Monitor/Trace 可观测、MCP Server**；其他能力（QA/Executor 职责角色、Fast/Deep 双路径、动态 Skills、工具权限、Verifier、DAG 编排、评测）都是支撑这五条主线的二级能力。
+EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个自己实现的轻量 **Agent Runtime / Harness**。项目围绕五个工程问题做了比较完整的实现：**四层长期记忆、级联意图识别、Agentic RAG、Monitor/Trace 可观测、MCP Server**；其他能力（Task-scoped SubAgent、Fast/Deep 双路径、动态 Skills、工具权限、Verifier、DAG 编排、评测）都是支撑这五条主线的二级能力。
 
 课表、校车、办事清单和故障诊断走 **DeepSeek V4 Flash 快速路径**；政策检索、低置信度问题和跨领域依赖任务进入 **DeepSeek V4 Pro 深度路径**。
 
@@ -16,7 +16,7 @@ Agent Runtime / Harness
         +-- MCP Server
 ```
 
-二级支撑能力：QA / Executor 职责角色、Fast / Deep 双路径、动态 Skills、工具权限（读写门禁）、Verifier / Grounding、DAG 复杂任务编排、Evaluation。
+二级支撑能力：Task-scoped SubAgent（唯一 TaskAgent + 执行策略）、Fast / Deep 双路径、动态 Skills、工具权限（读写门禁）、Verifier / Grounding、DAG 复杂任务编排、Evaluation。
 
 ## 真实网页实测
 
@@ -54,11 +54,11 @@ flowchart LR
     L --> P
     P -->|"1 个 task（single）"| F["V4 Flash · Fast"]
     P -->|"RAG / 低置信度"| D["V4 Pro · Deep"]
-    P -->|"多领域 / 依赖（parallel/dependent）"| X["Executor 分波执行 → Synthesizer"]
+    P -->|"多领域 / 依赖（parallel/dependent）"| X["Harness 分波执行 → Synthesizer"]
     X --> D
-    F --> Q["QA 角色<br/>只读工具面"]
+    F --> Q["TaskAgent Run<br/>READ_ONLY 策略"]
     D --> Q
-    F --> E["Executor 角色<br/>含写工具面"]
+    F --> E["TaskAgent Run<br/>WRITE_ALLOWED 策略"]
     D --> E
     Q --> T["Tools / MCP 公共工具层"]
     E --> T
@@ -71,7 +71,7 @@ flowchart LR
 | Fast | `deepseek-v4-flash` | 关闭 | 768 | Top-K 3，不改写、不重排 | 课表、天气、校车、确定性工具 |
 | Deep | `deepseek-v4-pro` | 开启，effort=high | 1536 | Top-K 5，查询改写 + 本地 bge 重排（LLM 兜底） | 政策问答、复杂请求、多 Agent |
 
-Monitor 按 `qa.fast`、`executor.deep` 等职责角色 × Profile 统计成功率、延迟和在途请求。Fast 执行失败时升级到 Deep；两种 Profile 可以分别配置 API Key、模型和端点。
+Monitor 按 Profile 实例（`fast.0`、`deep.1` 等）统计成功率、延迟和在途请求。Fast 执行失败时升级到 Deep；两种 Profile 可以分别配置 API Key、模型和端点。
 
 > 图中 Pattern 阈值 0.90、Embedding 阈值 0.80 / margin 0.10 为默认值（按真实 bge 分布标定：同构嵌入下命中区与 miss 区存在分离空档；宁紧勿松，有 LLM 兜底），可通过 `ECHOGUIDE_INTENT_PATTERN_THRESHOLD` / `ECHOGUIDE_INTENT_EMBEDDING_THRESHOLD` / `_MARGIN` 覆盖（见下文「本地向量模型」）。
 
@@ -121,7 +121,7 @@ python evaluation/memory_benchmark.py
 意图识别产出「领域 domain × 动作 action」二维结果，职责明确分开：
 
 - **Domain**：用于 persona、Skill 挂载与业务上下文，**不负责工具权限、不选执行实体**（"顾问"而非"门卫"）；
-- **Action**：决定 QA / Executor 职责角色与工具读写权限；
+- **Action**：决定 TaskAgent Run 的执行策略（READ_ONLY / WRITE_ALLOWED）与工具读写权限；
 - **needs_knowledge**：是否需要知识检索，由 Verifier 消费（判定需要但执行链无检索证据 → 标记异常）。
 
 **动作重定义**：`query` = 查询/咨询/分析，不产生系统状态修改（"帮我查一下课表"是 query）；`request` = 需要系统真正执行写操作或产生副作用（"帮我添加一个补办校园卡的待办"、"把这个待办标记完成"是 request）。"帮我/我要/需要/办理" 等请求句式不再直接判 request。
@@ -168,10 +168,10 @@ Monitor 的目标是**可观测 + 有限反馈**，不是自动运维平台：
 - 请求 Trace（`core/tracing.py`）：request → intent → agent → tool → LLM 逐跳耗时，`/traces/{id}` 可查，`X-Trace-Id` 响应头；
 - Agent / Tool / Model 调用统计：成功率、平均延迟、在途请求、熔断状态；
 - latency / token / tool success-error 计数（ModelGateway 在每次真实模型调用时落 RunState）；
-- Fast / Deep 等 profile 表现（按 `qa.fast` / `executor.deep` 职责角色 × Profile 统计）；
+- Fast / Deep 等 profile 实例表现（`fast.0` / `deep.1`）；
 - 简单异常检测：Z-score 告警（成功率/延迟/熔断）去重与恢复，可推 Webhook；
 - **有限的 routing penalty**：Monitor 把在线表现转成 0-0.9 路由降权，Orchestrator 据此在 Fast/Deep 实例间切换；
-- **Profile 级有限反馈**：`qa.fast`/`executor.fast` 成功率显著偏低（样本 ≥10 且 <0.85）时，Monitor 标记 Fast 不健康，Orchestrator 临时把本应走 Fast 的请求升级 Deep，恢复后自动回落。
+- **Profile 级有限反馈**：`fast.0`/`fast.1` 成功率显著偏低（样本 ≥10 且 <0.85）时，Monitor 标记 Fast 不健康，Orchestrator 临时把本应走 Fast 的请求升级 Deep，恢复后自动回落。
 
 不扩展 RL / Bandit、自动 Prompt 优化、自动参数搜索、复杂在线学习。
 
@@ -209,19 +209,19 @@ EchoGuide 内部 Tool Registry 通过标准 MCP 接口对外提供服务（Strea
 python -m pytest tests/test_runtime.py -q   # Runtime 离线测试（无服务依赖）
 ```
 
-## 职责角色与工具权限
+## Task 边界与工具权限
 
-执行实体按**职责**拆分（领域不再构成 Agent，只做人格/Skills 挂载键）：
+真正的 Agent 单位是 **Task**（Task-scoped SubAgent）：每个 Task 由一次独立 TaskAgent Run 执行，拥有独立 goal / message / domain / action / depends_on 与协作上下文。执行体只有唯一一个 Agent 类 `TaskAgent`（`agents/roles.py`），按 Execution Profile（Fast/Deep）实例化；**QA / Executor 降级为执行策略**（`roles.write_policy_for`）：
 
-| 职责角色（Role） | 工具面 | 行为规范 | 选择时机 |
+| 执行策略（WritePolicy） | 工具面 | 行为规范 | 选择依据 |
 |---|---|---|---|
-| **QA Agent**（问答） | 公共工具层 − 写工具（角色级只读边界） | 政策先检索、回答带引用、不编造 | 除 REQUEST 外的所有动作 |
-| **Executor Agent**（执行） | 公共工具层全量（含写） | 写操作回执、失败如实说明 | `request` 动作 |
+| **READ_ONLY** | 公共工具层 − 写工具 | 政策先检索、回答带引用、不编造 | 除 `request` 外的所有动作（含动作未知，防御纵深） |
+| **WRITE_ALLOWED** | 公共工具层全量（含写） | 写操作回执、失败如实说明 | `request` 动作（Task 自己的 action） |
 
 工具权限三层：
 
 1. **注册级**：`Tool.agent_exposed`（外部工具默认不可见，由编排器显式暴露）；
-2. **角色级**：QA `write_allowed=False`，永远不暴露/执行写工具（防御纵深）；
+2. **Run 级**：非 `request` 动作一律 READ_ONLY（`roles.write_policy_for`），动作未知/误判也不会暴露写工具（防御纵深）；
 3. **Action 级**：QUERY/GREETING 等动作拒写（`persona.action_allows_tool`）。
 
 **写工具集合由工具自身声明**（`Tool.write=True`，`MCPToolManager.write_tools()` 推导），新增写工具只需声明读写属性，不再手工维护黑名单——漏声明直接不可写（fail-closed），不会出现"新增写工具忘记登记被只读动作误开放"。
@@ -255,11 +255,11 @@ python -m pytest tests/test_verifier.py -q   # 规则校验 / LLM 判定 / 编�
 
 Planner 统一输出 `ExecutionPlan`（Task DAG），复杂度模式由最终 DAG 自动推导，不再由 Intent/LLM 单独分类：
 
-- `single`：1 个 task，单 Agent 直接执行；
+- `single`：1 个 task，单 Agent 直接执行（1 次 TaskAgent Run）；
 - `parallel`：多个无依赖 task 并行（"食堂几点关门，顺便查下明天课表"）；
-- `dependent`：存在 depends_on 的任务（"明天下午有空就去办校园卡，记个待办"）——按 depends_on 分波并行执行，依赖任务注入协作上下文（SharedState 快照），Synthesizer 合并最终回复（LLM 失败降级规则拼接）。
+- `dependent`：存在 depends_on 的任务（"明天下午有空就去办校园卡，记个待办"）——按 depends_on 分波并行执行，依赖任务只注入声明的 `depends_on` 结果（SharedState 快照），Synthesizer 合并最终回复（LLM 失败降级规则拼接）。
 
-**每个 Task 有自己的 action**：复合请求拆分后 t1/t2 可能是 `query`（走 QA）、t3 才是 `request`（走 Executor）——执行角色由任务自己的 action 决定，不再继承原始请求的 action。
+**每个 Task 有自己的 action**：复合请求拆分后 t1/t2 可能是 `query`（READ_ONLY）、t3 才是 `request`（WRITE_ALLOWED）——执行策略由任务自己的 action 决定，不再继承原始请求的 action。
 
 **DAG 失败传播**：任务状态区分 SUCCESS / FAILED / BLOCKED / SKIPPED。依赖任务 FAILED/BLOCKED → 下游任务 BLOCKED（不执行、不注入失败上下文），不能因为前置"执行完成（但失败）"就继续执行依赖任务。
 
@@ -270,7 +270,7 @@ flowchart LR
     A --> Y["Deep Synthesizer"]
 ```
 
-DAG 每个任务是独立上下文的执行实体；任务角色标签沿用领域值（只做 goal/人格/Skills 挂载键，不构成独立 Agent 身份）。依赖缺失或出现循环时直接失败并记录计划错误，不会绕过 DAG 执行。不增加 Supervisor / Critic / Reflection / Debate / Swarm / Agent 间复杂通信协议。
+DAG 每个任务由一次独立 TaskAgent Run 执行（独立 goal / message / 协作上下文 / 工具权限 / Trace），任务只读取自己声明的 `depends_on` 结果（SharedState 不做全量历史注入，避免上下文膨胀）；领域值只做 goal/人格/Skills 挂载键，不构成 Agent 身份。依赖缺失或出现循环时直接失败并记录计划错误，不会绕过 DAG 执行。不增加 Supervisor / Critic / Reflection / Debate / Swarm / Agent 间复杂通信协议。
 
 ## 外部 MCP 工具源（默认关闭，optional）
 
@@ -440,7 +440,7 @@ CI 运行全部离线回归、前端构建、依赖审计和 Docker Compose 配�
 
 ```text
 runtime/       Agent Runtime（Harness）：RunState / ExecutionPolicy / Middleware 链 / ModelGateway 统一模型入口
-agents/        编排器（单 Agent + 按需 DAG 协作）；roles.py（Role/QA/Executor 执行实体）、
+agents/        编排器（Task-scoped SubAgent + 按需 DAG 协作）；roles.py（TaskAgent / WritePolicy 执行策略）、
                workflow.py（Task/Planner/Executor/Synthesizer）、persona.py（领域人格/动作策略）、
                profiles.py（Fast/Deep）、verifier.py（出口校验）
 core/          级联意图识别、领域词表（单一事实来源）、Skills 与 Trace

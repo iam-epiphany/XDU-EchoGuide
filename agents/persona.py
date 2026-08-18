@@ -1,11 +1,12 @@
 """
 领域人格与 Action 行为指引 —— 领域/动作维度的纯描述与纯策略。
 
-职责划分（v6 收口）：
+职责划分（v5 收口）：
   - Domain（IntentDomain）：只提供业务语境与回答侧重点，不决定 Skill 或工具权限、
-    不选择执行实体 —— 执行实体只有 QA/EXECUTOR 两个职责角色（见 roles.py）；
+    不选择执行实体 —— 真正的 Agent 单位是 Task（TaskAgent Run，见 roles.py）；
   - Action（IntentAction）：决定怎么处理（执行策略 + 工具读写门禁）。
-工具权限的另一半（角色级只读边界）在 roles.py 的 write_allowed。
+工具权限的另一半（Run 级写策略：非 REQUEST 一律 READ_ONLY）在
+roles.py 的 write_policy_for。
 """
 from __future__ import annotations
 
@@ -19,7 +20,8 @@ from core.domains import IntentAction, IntentDomain
 #   - REQUEST：允许按需开放完整工具（含执行类）；
 #   - GREETING / FEEDBACK：原则上不开放工具；
 #   - COMPLAINT / OTHER：保守策略，只开放只读工具；
-#   - None（预置请求/兼容路径）：不额外限制，保持原有 allowlist 行为。
+#   - None（预置请求/兼容路径）：不额外限制（Run 级写策略 write_policy_for
+#     仍会在更外层兜底：非 REQUEST 一律 READ_ONLY）。
 # 写工具集合由各工具自身声明（Tool.write=True，见 mcp/tool_manager.py 的 write_tools()），
 # 不再手工维护黑名单 —— 新增写工具忘记声明时，只读动作下会被误开放的是它自己，
 # 由门禁检查方从声明推导，漏声明直接不可写（fail-closed）。

@@ -22,8 +22,9 @@ from typing import Dict, List
 class IntentDomain(Enum):
     """领域维度 —— 人格/Skills 挂载键（顾问，不做 Agent 路由）。
 
-    执行实体只有 QA/EXECUTOR 两个职责角色（agents/roles.py 的 Role）；
-    领域只决定挂载什么人格与 Skills，不决定工具可见性、不选执行角色。
+    真正的 Agent 单位是 Task（agents/workflow.py），执行体是唯一的
+    TaskAgent（agents/roles.py）；领域只决定挂载什么人格与 Skills，
+    不决定工具可见性、不选执行实体 —— 新增领域不需要新增 Agent 类。
     """
     ACADEMIC    = "academic"      # 学业支持
     CAMPUS_LIFE = "campus_life"   # 校园生活

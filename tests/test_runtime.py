@@ -12,7 +12,7 @@ import pytest
 from agents.agent_orchestrator import (
     AgentOrchestrator, Request, Task, TaskExecutor,
 )
-from agents.roles import Role
+from agents.profiles import ProfileName
 from core.domains import IntentAction, IntentDomain
 from runtime import (
     AgentRuntime, ExecutionPolicy, GuardRejection, MiddlewareChain, RunContext,
@@ -315,7 +315,7 @@ def test_skill_middleware_caches_by_message_and_prompt_uses_cache():
 
     orch = AgentOrchestrator(api_key=FAKE_KEY)
     fake_skill = FakeSkillManager()
-    agent = orch._pool[Role.QA][0]
+    agent = orch._pool[ProfileName.FAST][0]
     agent._skill_manager = fake_skill
 
     req = _req("转专业政策是什么")
@@ -377,7 +377,7 @@ def test_task_executor_respects_max_tasks_cap():
     executor = TaskExecutor(run_task)
     req = _req("帮我同时查一下校车时刻表、校园卡办理流程和加权成绩")
     tasks = [
-        Task(task_id=f"t{i}", agent_type=IntentDomain.CAMPUS_LIFE, goal="g", message="m")
+        Task(task_id=f"t{i}", domain=IntentDomain.CAMPUS_LIFE, goal="g", message="m")
         for i in range(3)
     ]
 

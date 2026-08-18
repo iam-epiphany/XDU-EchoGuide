@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 from agents.agent_orchestrator import Request
 from agents.profiles import ExecutionProfile, ProfileName
-from agents.roles import QAAgent
+from agents.roles import TaskAgent
 from mcp.tool_manager import MCPToolManager, Tool
 from runtime.policy import ExecutionPolicy
 from runtime.state import RunState
@@ -19,7 +19,7 @@ from runtime.state import RunState
 FAKE_KEY = "sk-test-not-used"
 
 
-def _make_agent(profile_name: ProfileName = ProfileName.FAST) -> QAAgent:
+def _make_agent(profile_name: ProfileName = ProfileName.FAST) -> TaskAgent:
     tm = MCPToolManager(api_key=FAKE_KEY)
 
     async def echo(params, context):
@@ -35,7 +35,7 @@ def _make_agent(profile_name: ProfileName = ProfileName.FAST) -> QAAgent:
         name=profile_name, model="m", max_tokens=768, thinking=False,
         rag_top_k=3, use_rewrite=False, use_rerank=False,
     )
-    agent = QAAgent(
+    agent = TaskAgent(
         client=AsyncMock(), model="m", skill_manager=None, tool_manager=tm, profile=profile,
     )
     agent._tool_allowlist = {"echo"}  # 让 echo 通过执行层权限（实例级覆盖公共层）
@@ -77,9 +77,9 @@ async def _noop_ev(event):
 def test_tool_round_signature_normalizes():
     a = SimpleNamespace(type="tool_use", name="echo", input={"b": 1, "a": 2}, id="t")
     b = SimpleNamespace(type="tool_use", name="echo", input={"a": 2, "b": 1}, id="t")
-    assert QAAgent._tool_round_signature([a]) == QAAgent._tool_round_signature([b])
+    assert TaskAgent._tool_round_signature([a]) == TaskAgent._tool_round_signature([b])
     bad = SimpleNamespace(type="tool_use", name="echo", input={"x": object()}, id="t")
-    assert QAAgent._tool_round_signature([bad]) is None  # 不可序列化 → 跳过检测
+    assert TaskAgent._tool_round_signature([bad]) is None  # 不可序列化 → 跳过检测
 
 
 # ── 分级上限 ──────────────────────────────────────────────────────────────────

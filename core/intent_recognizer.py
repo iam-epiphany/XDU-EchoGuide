@@ -1,12 +1,12 @@
 """
 亮点：端到端意图识别（领域 domain × 动作 action）
 
-职责收口（v4 决策闭环）：Intent 只负责"理解用户想做什么"——
+职责收口（v5 Task-scoped 架构）：Intent 只负责"理解用户想做什么"——
   - 领域 IntentDomain（academic/campus_life/affairs/it_help/other）
-      —— 人格/Skills 挂载键（顾问），不做 Agent 路由（执行实体只有
-         QA/EXECUTOR 职责角色，见 agents/roles.py）。
+      —— 人格/Skills 挂载键（顾问），不做 Agent 路由（真正的 Agent 单位
+         是 Task，执行体是唯一 TaskAgent，见 agents/roles.py）。
   - 动作 IntentAction（query/request/greeting/complaint/feedback）
-      —— 行为决策依据（角色选择 + 工具读写门禁）。
+      —— 行为决策依据（Run 执行策略 write_policy_for + 工具读写门禁）。
   - needs_knowledge —— 是否需要知识检索（由 Verifier 消费：判定需要
     但最终执行链无检索证据时标记异常）。
 

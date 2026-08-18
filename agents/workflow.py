@@ -1,7 +1,7 @@
 """
 轻量多 Agent 协作（复杂任务编排）—— ExecutionPlan / Task / Planner / Executor / Synthesizer。
 
-决策闭环（v4 收口）：复杂度判定从 IntentRecognizer 移入 Planner——
+决策闭环：复杂度判定从 IntentRecognizer 移入 Planner——
 Intent 只负责理解用户想做什么（domain/action），Planner 统一输出
 ExecutionPlan（Task DAG），single/parallel/dependent 由最终 DAG 自动推导：
 
@@ -15,15 +15,21 @@ Planner 两条路径，但都输出统一 ExecutionPlan：
   - LLM 规划（升级路径）：本地判单任务但"拿不准"（多从句/长句/多领域无
     连接词）→ 一次轻量 LLM 调用输出任务链，硬校验后采用，非法回落本地。
 
-每个 Task 携带自己的 action（QUERY→QA / REQUEST→Executor），不再继承
-原始请求的 action —— 复合请求拆分后 t1/t2 可能是 QUERY、t3 才是 REQUEST。
+每个 Task 携带自己的 action（QUERY→READ_ONLY / REQUEST→WRITE_ALLOWED，
+见 roles.write_policy_for），不再继承原始请求的 action —— 复合请求拆分后
+t1/t2 可能是 QUERY、t3 才是 REQUEST。
+
+Task 才是真正的 Agent 边界（Task-scoped SubAgent）：每个 Task 由一次独立
+TaskAgent Run 执行，拥有独立 goal / message / domain / action / depends_on
+与协作上下文；领域（domain）只做人格/Skills 挂载键，不参与 Agent 类选择。
 
 DAG 失败传播：任务状态 SUCCESS / FAILED / BLOCKED / SKIPPED。
 依赖任务 FAILED/BLOCKED → 下游任务 BLOCKED（不执行、不注入上下文），
 不能因为前置"执行完成（但失败）"就继续执行依赖任务。
 
-任务角色标签直接用 IntentDomain（领域值只做人格语境键，
-执行实体是 QA/EXECUTOR 职责角色，见 roles.py）。
+SharedState 只保存 Task result/status/meta 与必要的依赖快照；后续 Task
+只能读取自己声明的 depends_on 结果，不默认注入全部历史任务内容
+（避免上下文膨胀与不必要耦合）。
 """
 from __future__ import annotations
 
@@ -38,7 +44,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 from anthropic import AsyncAnthropic
 
 from core.domains import DOMAIN_KEYWORDS, IntentAction, IntentDomain, keyword_hit
-from agents.roles import AgentResponse, Role
+from agents.roles import AgentResponse
 
 if TYPE_CHECKING:
     from agents.agent_orchestrator import Request
@@ -54,14 +60,18 @@ TASK_SKIPPED = "skipped"
 
 @dataclass
 class Task:
-    """多 Agent 协作中的最小执行单元（自包含：不依赖原始对话上下文）。"""
+    """多 Agent 协作中的最小执行单元（自包含：不依赖原始对话上下文）。
+
+    domain 是领域挂载键（人格/Skills 语境），不参与 Agent 类选择 ——
+    真正的 Agent 单位是围绕本 Task 的一次 TaskAgent Run。
+    """
     task_id:     str
-    agent_type:  IntentDomain             # 任务角色标签（领域值，只做挂载键）
+    domain:      IntentDomain             # 任务领域（人格/上下文挂载键）
     goal:        str                      # 领域化任务目标（给 Agent 的指令）
     message:     str                      # 自包含请求内容
-    action:      IntentAction = IntentAction.QUERY  # 任务自己的动作（决定执行角色）
+    action:      IntentAction = IntentAction.QUERY  # 任务自己的动作（决定 Run 执行策略）
     depends_on:  List[str] = field(default_factory=list)  # 依赖的其他 task_id
-    # 后置条件：本任务应落地的写操作（模型忘记调用工具时由 Executor 补执行）。
+    # 后置条件：本任务应落地的写操作（模型忘记调用工具时由执行器补执行）。
     # 由 Planner 声明，避免执行器硬编码任务标识。
     required_tool: Optional[str] = None
     required_tool_args: Dict[str, Any] = field(default_factory=dict)
@@ -109,31 +119,44 @@ class SharedState:
     def all_results(self) -> Dict[str, AgentResponse]:
         return dict(self._results)
 
-    def set_task_meta(self, task: Task, status: str, duration_ms: float = 0.0) -> None:
+    def set_task_meta(
+        self,
+        task: Task,
+        status: str,
+        duration_ms: float = 0.0,
+        response: Optional[AgentResponse] = None,
+    ) -> None:
+        """Task 级 Trace：DAG、状态、执行配置、工具与耗时（前端过程可视化/Monitor）。"""
         self._task_meta[task.task_id] = {
             "id": task.task_id,
-            "agent": task.agent_type.value,
+            "domain": task.domain.value,
             "action": task.action.value,
+            "goal": task.goal,
             "depends_on": list(task.depends_on),
             "status": status,
             "duration_ms": round(duration_ms, 1),
+            "profile": response.profile if response else "",
+            "tools": list(response.tools_used) if response else [],
+            "input_tokens": response.input_tokens if response else 0,
+            "output_tokens": response.output_tokens if response else 0,
         }
 
     def task_meta(self) -> List[Dict[str, Any]]:
         return list(self._task_meta.values())
 
-    def snapshot(self) -> str:
-        """把已完成（成功）任务的结果序列化，注入依赖任务作为协作上下文。
+    def snapshot_for(self, task: Task) -> str:
+        """只把本任务声明的依赖（depends_on）中 SUCCESS 的结果序列化，注入协作上下文。
 
+        不默认注入全部历史任务内容（避免上下文膨胀与不必要耦合）；
         失败/阻塞任务不注入 —— 依赖任务不能把失败结果当成有效上下文。
         """
-        if not self._results:
+        deps = [
+            dep for dep in task.depends_on
+            if self._status.get(dep) == TASK_SUCCESS and dep in self._results
+        ]
+        if not deps:
             return ""
-        return "\n\n".join(
-            f"[{task_id}]\n{resp.content}"
-            for task_id, resp in self._results.items()
-            if self._status.get(task_id) == TASK_SUCCESS
-        )
+        return "\n\n".join(f"[{dep}]\n{self._results[dep].content}" for dep in deps)
 
 
 class TaskPlanner:
@@ -206,7 +229,7 @@ class TaskPlanner:
             tasks = [
                 Task(
                     task_id=f"t{i}",
-                    agent_type=at,
+                    domain=at,
                     goal=self.GOAL_TEMPLATES.get(at, "回答用户的请求"),
                     message=f"{self.GOAL_TEMPLATES.get(at, '回答用户的请求')}。\n用户请求: {req.message}",
                     action=action,
@@ -218,7 +241,7 @@ class TaskPlanner:
         # 3. 单任务（绝大多数请求）
         goal = self.GOAL_TEMPLATES.get(domain, "回答用户的请求")
         return ExecutionPlan(
-            [Task(task_id="t0", agent_type=domain, goal=goal, message=req.message, action=action)],
+            [Task(task_id="t0", domain=domain, goal=goal, message=req.message, action=action)],
             reason="单领域请求",
         )
 
@@ -238,7 +261,8 @@ class TaskPlanner:
         例："我明天下午有空，想去办校园卡，帮我记个待办"
           t1 查课表（personal, QUERY）→ t2 查办理信息（affairs, QUERY）
           → t3 创建待办（personal, REQUEST，depends_on=[t1,t2]）
-        每个任务有自己的 action：t1/t2 是 QUERY（走 QA），t3 是 REQUEST（走 Executor）。
+        每个任务有自己的 action：t1/t2 是 QUERY（READ_ONLY），
+        t3 是 REQUEST（WRITE_ALLOWED）。
         """
         msg = req.message
         has_schedule = any(keyword_hit(kw, msg) for kw in ("课表", "课程", "空闲", "上课", "没课", "有空"))
@@ -250,21 +274,21 @@ class TaskPlanner:
         return [
             Task(
                 task_id="t1",
-                agent_type=IntentDomain.PERSONAL,
+                domain=IntentDomain.PERSONAL,
                 action=IntentAction.QUERY,
                 goal="查询课程空闲时间",
                 message=f"查询用户课程/空闲时间（如明天下午是否有课）。用户请求: {msg}",
             ),
             Task(
                 task_id="t2",
-                agent_type=IntentDomain.AFFAIRS,
+                domain=IntentDomain.AFFAIRS,
                 action=IntentAction.QUERY,
                 goal="查询校园卡办理信息",
                 message=f"查询校园卡办理地点和所需材料。用户请求: {msg}",
             ),
             Task(
                 task_id="t3",
-                agent_type=IntentDomain.PERSONAL,
+                domain=IntentDomain.PERSONAL,
                 action=IntentAction.REQUEST,
                 goal="创建校园卡办理待办",
                 message=(
@@ -357,7 +381,7 @@ class TaskPlanner:
             "拆分为多个任务，有先后依赖的任务用 depends_on 表达。\n"
             "任务字段：\n"
             '  {"id": "t1", "domain": "<领域值>", "action": "<query/request>", '
-            '"goal": "<任务目标>", "message": "<给该领域助手的自包含请求>", "depends_on": ["<前置任务id>"]}\n'
+            '"goal": "<任务目标>", "message": "<给该子任务的独立请求>", "depends_on": ["<前置任务id>"]}\n'
             "- domain 可选值: academic, campus_life, affairs, it_help, personal\n"
             "- action: query=查询咨询；request=需要系统写数据/产生副作用（创建待办等）\n"
             "- 只有明确需要写操作的任务才是 request，查询类任务一律 query\n"
@@ -448,7 +472,7 @@ class TaskPlanner:
             deps = list(dict.fromkeys(d.strip() for d in depends))
             tasks.append(Task(
                 task_id=task_id,
-                agent_type=domain,
+                domain=domain,
                 action=action,
                 goal=goal,
                 message=message,
@@ -480,9 +504,9 @@ class TaskPlanner:
         return done == len(tasks)
 
     @staticmethod
-    def _task_goal_fallback(agent_type: IntentDomain) -> str:
+    def _task_goal_fallback(domain: IntentDomain) -> str:
         """LLM 未给 goal 时的兜底（与 GOAL_TEMPLATES 同源）。"""
-        return TaskPlanner.GOAL_TEMPLATES.get(agent_type, "回答用户的请求")
+        return TaskPlanner.GOAL_TEMPLATES.get(domain, "回答用户的请求")
 
 
 class TaskExecutor:
@@ -497,8 +521,8 @@ class TaskExecutor:
     def __init__(self, run_task):
         """
         run_task: async (req, task, shared, on_event) -> AgentResponse
-        （由编排器提供，负责按任务的领域角色标签执行任务——执行实体是 QA/EXECUTOR 职责角色，
-        领域角色只决定人格/Skills 挂载，执行角色由 task.action 决定）。
+        （由编排器提供：构造 Task-scoped 上下文执行一次 TaskAgent Run ——
+        领域只决定人格/Skills 挂载，执行策略由 task.action 决定）。
         """
         self._run_task = run_task
 
@@ -524,7 +548,8 @@ class TaskExecutor:
             for t in blocked:
                 logger.warning(f"任务 {t.task_id} 依赖失败，标记 BLOCKED")
                 shared.set_result(t.task_id, AgentResponse(
-                    role=Role.QA, content="（该任务因依赖失败已跳过）", success=False,
+                    content="（该任务因依赖失败已跳过）", success=False,
+                    agent_type=t.domain.value, task_id=t.task_id,
                 ), status=TASK_BLOCKED)
                 shared.set_task_meta(t, TASK_BLOCKED)
                 del pending[t.task_id]
@@ -550,11 +575,12 @@ class TaskExecutor:
                 if isinstance(r, AgentResponse):
                     status = TASK_SUCCESS if r.success else TASK_FAILED
                     shared.set_result(t.task_id, r, status=status)
-                    shared.set_task_meta(t, status, duration_ms)
+                    shared.set_task_meta(t, status, duration_ms, response=r)
                 else:
                     logger.warning(f"任务 {t.task_id} 执行失败: {r}")
                     shared.set_result(t.task_id, AgentResponse(
-                        role=Role.QA, content="（该领域助手处理失败）", success=False,
+                        content="（该子任务处理失败）", success=False,
+                        agent_type=t.domain.value, task_id=t.task_id,
                     ), status=TASK_FAILED)
                     shared.set_task_meta(t, TASK_FAILED, duration_ms)
 
@@ -563,7 +589,7 @@ class TaskExecutor:
 
 class Synthesizer:
     """
-    协作合成器：一次 LLM 调用把多个任务结果合并为连贯的最终回复。
+    协作合成器：一次 LLM 调用把多个 Task 的结果合并为连贯的最终回复。
 
     职责独立于业务任务（不是 Task，也不是 Specialist Agent）：
     只读 SharedState 的最终结果做合并。LLM 失败时降级为规则拼接。
@@ -583,7 +609,7 @@ class Synthesizer:
     ) -> str:
         parts = [
             (r.label, r.content) for r in results
-            if r.success and r.content and r.content != "（该领域助手处理失败）"
+            if r.success and r.content and r.content != "（该子任务处理失败）"
             and "（该任务因依赖失败已跳过）" not in r.content
         ]
         if not parts:
@@ -592,7 +618,7 @@ class Synthesizer:
             return parts[0][1]
 
         system = (
-            "你是 EchoGuide 多 Agent 协作的合成器。把多个领域助手的回答合并成一段给用户的连贯回复："
+            "你是 EchoGuide 多 Agent 协作的合成器。把多个子任务的回答合并成一段给用户的连贯回复："
             "去除重复内容，保留各自的有效信息与 [n] 引用标注，不要编造新的信息。"
             "如果某个领域回答是失败占位（如「处理失败」），直接忽略它。"
         )
@@ -607,7 +633,7 @@ class Synthesizer:
                     "system": system,
                     "messages": [{
                         "role": "user",
-                        "content": f"用户请求: {req.message}\n\n各领域助手回答:\n{content}",
+                        "content": f"用户请求: {req.message}\n\n各子任务回答:\n{content}",
                     }],
                 }
                 if self._gateway is not None:

@@ -14,7 +14,7 @@ from agents.agent_orchestrator import (
 )
 from agents.persona import ACTION_GUIDANCE, DOMAIN_PERSONA, action_allows_tool
 from agents.profiles import ProfileName
-from agents.roles import AgentStats, BaseAgent, Role
+from agents.roles import AgentStats, BaseAgent, TaskAgent, WritePolicy, write_policy_for
 from agents.workflow import ExecutionPlan, SharedState, Task, TaskPlanner
 
 FAKE_KEY = "sk-test-not-used"
@@ -40,22 +40,24 @@ def _run(coro):
 
 # ── 职责角色池 ───────────────────────────────────────────────────────────────
 
-def test_pool_registers_responsibility_roles():
-    """按职责拆分：QA（问答）/ EXECUTOR（执行）两个职责角色，各 Fast/Deep 双实例。"""
+def test_pool_registers_execution_profiles():
+    """Agent 池按 Execution Profile 组织：Fast/Deep 各双实例，Agent 类只有 TaskAgent。"""
     orch = _orchestrator()
     pool = orch._pool
-    assert set(pool.keys()) == {Role.QA, Role.EXECUTOR}
-    assert len(pool[Role.QA]) == 2
-    assert len(pool[Role.EXECUTOR]) == 2
+    assert set(pool.keys()) == {ProfileName.FAST, ProfileName.DEEP}
+    assert len(pool[ProfileName.FAST]) == 2
+    assert len(pool[ProfileName.DEEP]) == 2
+    assert all(isinstance(a, TaskAgent) for agents in pool.values() for a in agents)
 
 
-def test_role_for_selects_executor_on_request():
-    """角色选择：REQUEST → EXECUTOR（含写工具面）；其余动作 → QA（只读）。"""
-    orch = _orchestrator()
-    assert orch._role_for(_req("帮我记个待办", action=IntentAction.REQUEST)) == Role.EXECUTOR
-    assert orch._role_for(_req("食堂几点关门", action=IntentAction.QUERY)) == Role.QA
-    assert orch._role_for(_req("你好", action=IntentAction.GREETING)) == Role.QA
-    assert orch._role_for(_req("查一下", action=None)) == Role.QA
+def test_write_policy_maps_action_to_execution_policy():
+    """执行策略（原 QA/EXECUTOR 角色降级）：REQUEST → WRITE_ALLOWED；
+    其余动作与未知动作 → READ_ONLY（防御纵深：非 REQUEST 一律只读）。"""
+    assert write_policy_for(IntentAction.REQUEST) == WritePolicy.WRITE_ALLOWED
+    assert write_policy_for(IntentAction.QUERY) == WritePolicy.READ_ONLY
+    assert write_policy_for(IntentAction.GREETING) == WritePolicy.READ_ONLY
+    assert write_policy_for(IntentAction.COMPLAINT) == WritePolicy.READ_ONLY
+    assert write_policy_for(None) == WritePolicy.READ_ONLY
 
 
 def test_domain_persona_covers_all_domains_and_other():
@@ -75,7 +77,7 @@ def test_planner_fast_path_single_task():
     plan = _run(orch._planner.plan(req, req.domain, req.action))
     assert plan.mode == "single"
     assert len(plan.tasks) == 1
-    assert plan.tasks[0].agent_type == IntentDomain.CAMPUS_LIFE
+    assert plan.tasks[0].domain == IntentDomain.CAMPUS_LIFE
     assert plan.tasks[0].action == IntentAction.QUERY
     assert plan.tasks[0].message == req.message
 
@@ -89,11 +91,11 @@ def test_planner_rule_generates_dependency_chain():
     assert plan.mode == "dependent"
     assert set(by_id) == {"t1", "t2", "t3"}
     # 每个任务有自己的 action：t1/t2 查询 → QUERY，t3 写操作 → REQUEST
-    assert by_id["t1"].agent_type == IntentDomain.PERSONAL
+    assert by_id["t1"].domain == IntentDomain.PERSONAL
     assert by_id["t1"].action == IntentAction.QUERY
-    assert by_id["t2"].agent_type == IntentDomain.AFFAIRS
+    assert by_id["t2"].domain == IntentDomain.AFFAIRS
     assert by_id["t2"].action == IntentAction.QUERY
-    assert by_id["t3"].agent_type == IntentDomain.PERSONAL
+    assert by_id["t3"].domain == IntentDomain.PERSONAL
     assert by_id["t3"].action == IntentAction.REQUEST
     assert by_id["t3"].depends_on == ["t1", "t2"]            # 依赖前序任务
     assert by_id["t1"].depends_on == [] and by_id["t2"].depends_on == []
@@ -107,7 +109,7 @@ def test_planner_parallel_for_multi_domain_with_connector():
     req = _req("教务系统登录不上，同时我还想了解选课规则", domain=IntentDomain.IT_HELP)
     plan = _run(orch._planner.plan(req, req.domain, req.action))
     assert plan.mode == "parallel"
-    domains = {t.agent_type for t in plan.tasks}
+    domains = {t.domain for t in plan.tasks}
     assert IntentDomain.IT_HELP in domains and IntentDomain.ACADEMIC in domains
     assert all(not t.depends_on for t in plan.tasks)
 
@@ -122,9 +124,9 @@ def test_planner_dedup_personal_prefers_over_academic():
 
 
 def test_task_domain_label_is_direct_domain():
-    """任务角色标签直接使用 IntentDomain（领域只做挂载键，不再有 AgentType 混用）。"""
-    task = Task(task_id="t", agent_type=IntentDomain.AFFAIRS, goal="g", message="m")
-    assert task.agent_type == IntentDomain.AFFAIRS
+    """Task.domain 直接使用 IntentDomain（领域只做挂载键，不参与 Agent 类选择）。"""
+    task = Task(task_id="t", domain=IntentDomain.AFFAIRS, goal="g", message="m")
+    assert task.domain == IntentDomain.AFFAIRS
 
 
 # ── Planner：LLM 规划升级（校验逻辑，不触发真实 LLM）────────────────────────
@@ -211,7 +213,7 @@ def test_llm_plan_invalid_falls_back_to_fast():
     req = _req("教务系统打不开，没法选课了")   # 升级信号命中
     plan = _run(orch._planner.plan(req, IntentDomain.IT_HELP, IntentAction.QUERY))
     assert plan.mode == "single"  # 回落 Fast Path 单任务
-    assert plan.tasks[0].agent_type == IntentDomain.IT_HELP
+    assert plan.tasks[0].domain == IntentDomain.IT_HELP
 
 
 # ── Profile 决策 ─────────────────────────────────────────────────────────────
@@ -222,7 +224,10 @@ def test_profiles_are_real_flash_and_pro_configs():
         fast_model="deepseek-v4-flash",
         deep_model="deepseek-v4-pro",
     )
-    profiles = {agent.profile.name.value: agent.profile for agent in orch._pool[Role.QA]}
+    profiles = {
+        agent.profile.name.value: agent.profile
+        for agents in orch._pool.values() for agent in agents
+    }
     assert profiles["fast"].model == "deepseek-v4-flash"
     assert profiles["fast"].thinking is False
     assert profiles["deep"].model == "deepseek-v4-pro"
@@ -230,44 +235,43 @@ def test_profiles_are_real_flash_and_pro_configs():
 
 
 def test_execute_fast_failure_retries_deep():
-    """Fast 实例失败 → 同职责角色 Deep 重试。"""
+    """Fast 实例失败 → Deep 实例重试（同 Task Run，Profile 池内切换）。"""
     orch = _orchestrator()
-    pool = orch._pool[Role.QA]
-    fast = next(a for a in pool if a.profile.name == ProfileName.FAST)
-    deep = next(a for a in pool if a.profile.name == ProfileName.DEEP)
+    fast = orch._pool[ProfileName.FAST][0]
+    deep = orch._pool[ProfileName.DEEP][0]
 
     async def run_fail(req, on_event=None):
-        return AgentResponse(role=Role.QA, content="", success=False, latency_ms=1.0)
+        return AgentResponse(content="", success=False, latency_ms=1.0)
 
     async def run_ok(req, on_event=None):
-        return AgentResponse(role=Role.QA, content="deep 结果", success=True, latency_ms=1.0)
+        return AgentResponse(content="deep 结果", success=True, latency_ms=1.0)
 
     fast.handle = run_fail  # type: ignore[method-assign]
     deep.handle = run_ok  # type: ignore[method-assign]
 
     req = _req("教务系统打不开", domain=IntentDomain.IT_HELP)
     req.profile = ProfileName.FAST
-    response = _run(orch._execute(req, Role.QA))
+    response = _run(orch._execute(req))
     assert response.success
     assert response.content == "deep 结果"
 
 
 def test_routing_switches_instance_after_penalty():
-    """Fast/Deep 实例选择闭环：实例 0 被 Monitor 惩罚后，_best_agent 应切换到实例 1。"""
+    """Profile 实例选择闭环：实例 0 被 Monitor 惩罚后，_best_agent 应切换到实例 1。"""
     orch = _orchestrator()
-    pool = orch._pool[Role.QA]
+    pool = orch._pool[ProfileName.FAST]
     assert len(pool) == 2  # 双实例
 
     # 初始同分：max 稳定取第一个实例
-    assert orch._best_agent(Role.QA) is pool[0]
+    assert orch._best_agent(ProfileName.FAST) is pool[0]
 
     # Monitor 对实例 0 施加惩罚后，实例 1 接管
-    orch.update_routing_penalties({"qa_0": 0.9})
-    assert orch._best_agent(Role.QA) is pool[1]
+    orch.update_routing_penalties({"fast_0": 0.9})
+    assert orch._best_agent(ProfileName.FAST) is pool[1]
 
     # 惩罚清除后回到实例 0
-    orch.update_routing_penalties({"qa_0": 0.0})
-    assert orch._best_agent(Role.QA) is pool[0]
+    orch.update_routing_penalties({"fast_0": 0.0})
+    assert orch._best_agent(ProfileName.FAST) is pool[0]
 
 
 def test_routing_score_prefers_high_success_low_latency():
@@ -330,7 +334,6 @@ class _FakeClient:
 
 
 class _ToolAgent(BaseAgent):
-    role = Role.QA
     system_prompt = "测试 Agent"
 
 
@@ -415,13 +418,12 @@ def test_parallel_executor_runs_waves_and_injects_shared_state():
     orch = _orchestrator()
     req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
 
-    calls: list = []  # (任务角色领域, context)
+    calls: list = []  # (任务领域, context)
 
-    async def fake_execute(task_req, agent_type, on_event=None):
+    async def fake_execute(task_req, on_event=None):
         calls.append((task_req.domain.value, task_req.context or ""))
         return AgentResponse(
-            role=Role.QA,
-            agent_type=task_req.domain.value if task_req.domain else "qa",
+            agent_type=task_req.domain.value if task_req.domain else "task_agent",
             content=f"{task_req.domain.value} 的结果",
             success=True,
         )
@@ -449,9 +451,9 @@ def test_parallel_synthesizer_failure_degrades_to_concat():
     orch = _orchestrator()
     req = _req("食堂几点关门，顺便帮我查下奖学金的申请流程")
 
-    async def fake_execute(task_req, agent_type, on_event=None):
-        label = task_req.domain.value if task_req.domain else "qa"
-        return AgentResponse(role=Role.QA, agent_type=label, content=f"{label} 回答", success=True)
+    async def fake_execute(task_req, on_event=None):
+        label = task_req.domain.value if task_req.domain else "task_agent"
+        return AgentResponse(agent_type=label, content=f"{label} 回答", success=True)
 
     orch._execute = fake_execute
     plan = _run(orch._planner.plan(req, IntentDomain.CAMPUS_LIFE, IntentAction.QUERY))
@@ -468,12 +470,12 @@ def test_dag_failure_propagates_to_blocked():
 
     calls = []
 
-    async def fake_execute(task_req, agent_type, on_event=None):
+    async def fake_execute(task_req, on_event=None):
         calls.append(task_req.domain.value)
         # t1（personal 查课表）失败；t2（affairs）成功
         if task_req.domain == IntentDomain.PERSONAL and "空闲" in task_req.message:
-            return AgentResponse(role=Role.QA, content="查询失败", success=False)
-        return AgentResponse(role=Role.QA, content="affairs 结果", success=True)
+            return AgentResponse(content="查询失败", success=False)
+        return AgentResponse(content="affairs 结果", success=True)
 
     orch._execute = fake_execute
     plan = _run(orch._planner.plan(req, req.domain, req.action))
@@ -485,8 +487,9 @@ def test_dag_failure_propagates_to_blocked():
     assert shared.status("t3") == "blocked"
     # 被 BLOCKED 的任务不产生工具调用（calls 只有 t1/t2）
     assert "personal" in calls and "affairs" in calls
-    # 失败/阻塞结果不注入协作上下文快照
-    snapshot = shared.snapshot()
+    # 失败/阻塞结果不注入协作上下文快照（只读取声明的依赖）
+    t3 = next(t for t in plan.tasks if t.task_id == "t3")
+    snapshot = shared.snapshot_for(t3)
     assert "查询失败" not in snapshot
     assert "affairs 结果" in snapshot
 
@@ -497,8 +500,8 @@ def test_dag_success_chain_allows_dependent():
     orch.set_tool_manager(_fake_tool_manager())  # t3 的 required_tool 补执行需要工具管理器
     req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
 
-    async def fake_execute(task_req, agent_type, on_event=None):
-        return AgentResponse(role=Role.QA, content=f"{task_req.domain.value} 结果", success=True)
+    async def fake_execute(task_req, on_event=None):
+        return AgentResponse(content=f"{task_req.domain.value} 结果", success=True)
 
     orch._execute = fake_execute
     plan = _run(orch._planner.plan(req, req.domain, req.action))
@@ -507,8 +510,9 @@ def test_dag_success_chain_allows_dependent():
     assert shared.status("t1") == "success"
     assert shared.status("t2") == "success"
     assert shared.status("t3") == "success"
-    # 依赖任务能看到前序结果
-    snapshot = shared.snapshot()
+    # 依赖任务只读取自己声明的依赖结果（t1/t2）
+    t3 = next(t for t in plan.tasks if t.task_id == "t3")
+    snapshot = shared.snapshot_for(t3)
     assert "personal 结果" in snapshot and "affairs 结果" in snapshot
 
 
@@ -543,12 +547,13 @@ def _fake_tool_manager():
     return tm
 
 
-def test_build_tools_qa_role_readonly_surface():
-    """QA 职责角色：公共工具层 − 写工具（角色级只读边界，与领域无关）。"""
+def test_build_tools_read_only_policy_surface():
+    """QUERY（READ_ONLY）：公共工具层 − 写工具（Run 级写策略，与领域无关）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.QA][0]
-    names = {t["name"] for t in agent._build_tools()}
+    agent = orch._pool[ProfileName.FAST][0]
+    names = {t["name"] for t in agent._build_tools(
+        _req("看看我的待办", action=IntentAction.QUERY))}
     assert names == {
         "knowledge_search", "query_schedule", "query_todo", "query_ddl",
         "query_campus_info", "get_weather", "calculate_weighted_score",
@@ -557,12 +562,13 @@ def test_build_tools_qa_role_readonly_surface():
     assert "add_todo" not in names and "complete_todo" not in names
 
 
-def test_build_tools_executor_role_full_surface():
-    """Executor 职责角色：全量公共工具层（含写工具）。"""
+def test_build_tools_write_allowed_policy_full_surface():
+    """REQUEST（WRITE_ALLOWED）：全量公共工具层（含写工具）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.EXECUTOR][0]
-    names = {t["name"] for t in agent._build_tools()}
+    agent = orch._pool[ProfileName.FAST][0]
+    names = {t["name"] for t in agent._build_tools(
+        _req("帮我记个待办", action=IntentAction.REQUEST))}
     assert {"add_todo", "complete_todo"} <= names
     assert "diagnose_it_issue" in names
 
@@ -571,7 +577,7 @@ def test_execute_tool_respects_instance_allowlist_override():
     """实例级 _tool_allowlist 覆盖公共层（测试/定制）：范围外工具直接拒绝。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.QA][0]
+    agent = orch._pool[ProfileName.FAST][0]
     agent._tool_allowlist = {"knowledge_search"}
 
     data, error = _run(agent._execute_tool("query_schedule", {"date": "今天"}, _req("hi")))
@@ -624,7 +630,7 @@ def test_build_tools_exposes_single_skill_loader():
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
-        agent = orch._pool[Role.QA][0]
+        agent = orch._pool[ProfileName.FAST][0]
         names = {t["name"] for t in agent._build_tools(_req("选课什么时候开始", action=IntentAction.QUERY))}
         assert "load_skill" in names
         assert "knowledge_search" in names  # MCP 工具不受影响
@@ -639,7 +645,7 @@ def test_build_tools_skill_tools_hidden_on_greeting():
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
-        agent = orch._pool[Role.QA][0]
+        agent = orch._pool[ProfileName.FAST][0]
         assert agent._build_tools(_req("你好", action=IntentAction.GREETING)) == []
         assert agent._build_tools(_req("这个建议很好", action=IntentAction.FEEDBACK)) == []
     finally:
@@ -653,7 +659,7 @@ def test_execute_tool_serves_skill_content_locally():
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
-        agent = orch._pool[Role.QA][0]
+        agent = orch._pool[ProfileName.FAST][0]
         data, error = _run(agent._execute_tool("load_skill", {"skill_name": "academic"}, _req("选课")))
         assert error is None
         assert "学业咨询规范的完整正文" in data
@@ -675,7 +681,7 @@ def test_execute_tool_skill_loader_respects_allowlist():
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
-        agent = orch._pool[Role.QA][0]
+        agent = orch._pool[ProfileName.FAST][0]
         agent._tool_allowlist = {"load_skill"}
         data, error = _run(agent._execute_tool("query_schedule", {}, _req("食堂")))
         assert data is None
@@ -722,7 +728,7 @@ def test_build_tools_query_action_readonly():
     """QUERY：只暴露只读工具，不暴露写工具（Action 层门禁）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.EXECUTOR][0]  # 写权限角色也被 QUERY 动作拦下写工具
+    agent = orch._pool[ProfileName.FAST][0]
 
     names = {t["name"] for t in agent._build_tools(_req("看看我的待办", action=IntentAction.QUERY))}
     assert "query_todo" in names and "query_schedule" in names
@@ -730,23 +736,23 @@ def test_build_tools_query_action_readonly():
 
 
 def test_build_tools_request_action_full_surface():
-    """REQUEST：Executor 角色暴露完整公共工具层（含执行类工具）。"""
+    """REQUEST：暴露完整公共工具层（含执行类工具）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.EXECUTOR][0]
+    agent = orch._pool[ProfileName.FAST][0]
 
     names = {t["name"] for t in agent._build_tools(_req("帮我记个待办", action=IntentAction.REQUEST))}
     assert "add_todo" in names
     assert "query_schedule" in names and "diagnose_it_issue" in names
 
 
-def test_build_tools_qa_role_blocks_writes_even_on_request():
-    """角色级只读边界（防御纵深）：QA 角色在 REQUEST 动作下也不暴露写工具。"""
+def test_build_tools_default_read_only_blocks_writes():
+    """Run 级写策略缺省（动作未知/None）：不暴露写工具（防御纵深）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.QA][0]
+    agent = orch._pool[ProfileName.FAST][0]
 
-    names = {t["name"] for t in agent._build_tools(_req("帮我记个待办", action=IntentAction.REQUEST))}
+    names = {t["name"] for t in agent._build_tools(_req("帮我记个待办"))}
     assert "query_schedule" in names
     assert "add_todo" not in names and "complete_todo" not in names
 
@@ -755,7 +761,7 @@ def test_build_tools_greeting_feedback_no_tools():
     """GREETING / FEEDBACK：原则上不开放任何工具。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.QA][0]
+    agent = orch._pool[ProfileName.FAST][0]
 
     assert agent._build_tools(_req("你好", action=IntentAction.GREETING)) == []
     assert agent._build_tools(_req("这个建议很好", action=IntentAction.FEEDBACK)) == []
@@ -765,7 +771,7 @@ def test_build_tools_complaint_other_readonly():
     """COMPLAINT / OTHER：保守策略，只开放只读工具。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.QA][0]
+    agent = orch._pool[ProfileName.FAST][0]
 
     for action in (IntentAction.COMPLAINT, IntentAction.OTHER):
         names = {t["name"] for t in agent._build_tools(_req("不满", action=action))}
@@ -777,7 +783,7 @@ def test_execute_tool_query_blocks_write_tool():
     """防御纵深：QUERY 动作下写权限角色调用写工具 → 拒绝（Action 门禁），不执行。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.EXECUTOR][0]
+    agent = orch._pool[ProfileName.FAST][0]
 
     data, error = _run(agent._execute_tool(
         "add_todo", {"content": "买饭卡"}, _req("查一下我的待办", action=IntentAction.QUERY)))
@@ -785,23 +791,23 @@ def test_execute_tool_query_blocks_write_tool():
     assert "权限" in error
 
 
-def test_execute_tool_qa_role_blocks_write_tool():
-    """角色级只读边界（防御纵深）：QA 角色即使 REQUEST 动作也拒绝写工具。"""
+def test_execute_tool_default_read_only_blocks_write_tool():
+    """Run 级写策略缺省（动作未知）：拒绝写工具（防御纵深）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.QA][0]
+    agent = orch._pool[ProfileName.FAST][0]
 
     data, error = _run(agent._execute_tool(
-        "add_todo", {"content": "买饭卡"}, _req("帮我记个待办", action=IntentAction.REQUEST)))
+        "add_todo", {"content": "买饭卡"}, _req("帮我记个待办")))
     assert data is None
     assert "权限" in error
 
 
 def test_execute_tool_request_allows_write_tool():
-    """REQUEST 动作下 Executor 角色写工具正常走执行链（不被权限拦截）。"""
+    """REQUEST（WRITE_ALLOWED）写工具正常走执行链（不被权限拦截）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[Role.EXECUTOR][0]
+    agent = orch._pool[ProfileName.FAST][0]
 
     data, error = _run(agent._execute_tool(
         "add_todo", {"content": "买饭卡"}, _req("帮我记个待办", action=IntentAction.REQUEST)))
@@ -812,7 +818,7 @@ def test_execute_tool_request_allows_write_tool():
 def test_system_prompt_injects_action_guidance():
     """Action 指引注入 system prompt：各动作注入对应行为指令，None 不注入。"""
     orch = _orchestrator()
-    agent = orch._pool[Role.QA][0]
+    agent = orch._pool[ProfileName.FAST][0]
 
     prompt = agent._build_system_prompt(_req("hi", action=IntentAction.QUERY))
     assert "[意图指引]" in prompt
@@ -833,9 +839,9 @@ def test_system_prompt_injects_action_guidance():
 
 
 def test_system_prompt_mounts_domain_persona():
-    """领域人格按 domain 挂载，但只提供语境，不携带 Tool 或 Skill SOP。"""
+    """领域人格按 domain 挂载（只提供语境）；Task goal 注入 [任务目标]。"""
     orch = _orchestrator()
-    agent = orch._pool[Role.QA][0]
+    agent = orch._pool[ProfileName.FAST][0]
 
     prompt = agent._build_system_prompt(_req("hi", domain=IntentDomain.IT_HELP))
     assert "[领域人格]" in prompt
@@ -848,19 +854,26 @@ def test_system_prompt_mounts_domain_persona():
     prompt = agent._build_system_prompt(_req("hi", domain=None))
     assert "校园 IT 支持语境" not in prompt  # 无领域：不注入任何领域人格内容
 
+    # Task-scoped：goal 注入 [任务目标]（独立于其他 Task 的指令）
+    goal_req = _req("hi", domain=IntentDomain.IT_HELP)
+    goal_req.goal = "诊断教务系统登录问题"
+    prompt = agent._build_system_prompt(goal_req)
+    assert "[任务目标]" in prompt
+    assert "诊断教务系统登录问题" in prompt
+
 
 def test_run_task_backfill_blocked_on_query_action():
     """Executor 补执行（required_tool）遵守 Action 策略：QUERY 下不补写操作。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
 
-    async def fake_execute(task_req, agent_type, on_event=None):
-        return AgentResponse(role=agent_type, content="查询结果", success=True, tools_used=[])
+    async def fake_execute(task_req, on_event=None):
+        return AgentResponse(content="查询结果", success=True, tools_used=[])
 
     orch._execute = fake_execute
     task = Task(
         task_id="t3",
-        agent_type=IntentDomain.PERSONAL,
+        domain=IntentDomain.PERSONAL,
         action=IntentAction.QUERY,
         goal="记录待办",
         message="帮我记个待办",
@@ -879,13 +892,13 @@ def test_run_task_backfill_executes_on_request_action():
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
 
-    async def fake_execute(task_req, agent_type, on_event=None):
-        return AgentResponse(role=agent_type, content="办理建议", success=True, tools_used=[])
+    async def fake_execute(task_req, on_event=None):
+        return AgentResponse(content="办理建议", success=True, tools_used=[])
 
     orch._execute = fake_execute
     task = Task(
         task_id="t3",
-        agent_type=IntentDomain.PERSONAL,
+        domain=IntentDomain.PERSONAL,
         action=IntentAction.REQUEST,
         goal="记录待办",
         message="帮我记个待办",
@@ -900,20 +913,21 @@ def test_run_task_backfill_executes_on_request_action():
 
 # ── 编排器主链路（run）──────────────────────────────────────────────────────
 
-def test_run_single_uses_task_action_for_role():
-    """单任务执行：执行角色由 task.action 决定（REQUEST → Executor 角色）。"""
+def test_run_single_executes_one_task_agent_run():
+    """单任务请求只产生一次 TaskAgent Run；执行策略由 task.action 决定。"""
     orch = _orchestrator()
     req = _req("帮我添加一个补办校园卡的待办", domain=IntentDomain.PERSONAL, action=IntentAction.REQUEST)
     calls = []
 
-    async def fake_execute(task_req, agent_type, on_event=None):
-        calls.append(agent_type)
-        return AgentResponse(role=agent_type, content="ok", success=True)
+    async def fake_execute(task_req, on_event=None):
+        calls.append((task_req.action.value, task_req.goal))
+        return AgentResponse(agent_type=task_req.domain.value, content="ok", success=True)
 
     orch._execute = fake_execute
     result = _run(orch.run(req))
     assert result.execution["mode"] == "single"
-    assert calls == [Role.EXECUTOR]
+    # 1 次 TaskAgent Run，action 决定 Run 执行策略（REQUEST → WRITE_ALLOWED）
+    assert calls == [("request", "从个人助理角度回答用户的请求（我的课表/待办/考试安排等）")]
 
 
 def test_run_parallel_executes_via_planner():
@@ -921,8 +935,8 @@ def test_run_parallel_executes_via_planner():
     orch = _orchestrator()
     req = _req("食堂几点关门，顺便查下明天课表", domain=IntentDomain.CAMPUS_LIFE, action=IntentAction.QUERY)
 
-    async def fake_execute(task_req, agent_type, on_event=None):
-        return AgentResponse(role=agent_type, content="ok", success=True)
+    async def fake_execute(task_req, on_event=None):
+        return AgentResponse(agent_type=task_req.domain.value, content="ok", success=True)
 
     orch._execute = fake_execute
     result = _run(orch.run(req))
@@ -940,8 +954,8 @@ def test_run_upgrade_path_falls_back_when_llm_invalid():
 
     orch._planner._llm_plan = fake_llm_plan  # type: ignore[method-assign]
 
-    async def fake_execute(task_req, agent_type, on_event=None):
-        return AgentResponse(role=agent_type, content="ok", success=True)
+    async def fake_execute(task_req, on_event=None):
+        return AgentResponse(agent_type=task_req.domain.value, content="ok", success=True)
 
     orch._execute = fake_execute
     result = _run(orch.run(req))
@@ -954,8 +968,8 @@ def test_run_single_agent_benchmark_forces_single():
     req = _req("食堂几点关门，顺便查下明天课表", domain=IntentDomain.CAMPUS_LIFE)
     req.benchmark_strategy = "single_agent"
 
-    async def fake_execute(task_req, agent_type, on_event=None):
-        return AgentResponse(role=agent_type, content="ok", success=True)
+    async def fake_execute(task_req, on_event=None):
+        return AgentResponse(agent_type=task_req.domain.value, content="ok", success=True)
 
     orch._execute = fake_execute
     result = _run(orch.run(req))
@@ -969,8 +983,8 @@ def test_needs_knowledge_consumed_by_verifier():
     req = _req("转专业有什么条件？", domain=IntentDomain.ACADEMIC, action=IntentAction.QUERY)
     req.state_query = {"needs_knowledge": True}
 
-    async def fake_execute(task_req, agent_type, on_event=None):
-        return AgentResponse(role=agent_type, content="转专业需要绩点达标。", success=True)
+    async def fake_execute(task_req, on_event=None):
+        return AgentResponse(agent_type=task_req.domain.value, content="转专业需要绩点达标。", success=True)
 
     orch._execute = fake_execute
     result = _run(orch.run(req))

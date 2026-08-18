@@ -1,19 +1,25 @@
 """
-职责角色与执行实体 —— Role(QA/EXECUTOR) + BaseAgent 工具循环。
+Task Agent —— 围绕一个 Task 的独立 Agent Run 执行体（轻量 Multi-Agent Harness）。
 
-v4 收口：执行实体只有两个职责角色（Role），领域（IntentDomain）只做
-人格/Skills 挂载键（见 persona.py），两者不再共用枚举：
-  - Role.QA：问答角色（只读工具面 + 检索/引用规范）
-  - Role.EXECUTOR：执行角色（全量工具面含写 + 执行确认规范）
+v5 收口：不再有 QAAgent / ExecutorAgent 两个职责 Agent 类，也没有 Role→Agent Pool。
+真正的 Agent 单位 = 围绕一个 Task 的一次独立 Agent Run：
+  - 每个 Task 有独立 goal / message / domain / action / depends_on；
+  - QA / EXECUTOR 降级为 Execution Policy（write_policy_for）：
+      非 REQUEST 动作 → READ_ONLY（只读工具面）；
+      REQUEST 动作 → WRITE_ALLOWED（可暴露满足策略的写工具）；
+    Action 只影响工具可见性、写权限与行为指引，不构成 Agent 身份；
+  - 领域（IntentDomain）继续只做人格/Skills 挂载键（见 persona.py），
+    不参与 Agent 类选择 —— 新增业务领域不需要新增 Agent 类；
+  - Fast / Deep 只是 Execution Profile（profiles.py），不是两个不同 Agent。
 
-工具可见性 = 公共工具层 + 双层门禁：
+工具可见性 = 公共工具层 + 双层门禁（防御纵深）：
   1. 注册级 agent_exposed（Tool 声明，外部工具默认不可见）；
-  2. Action 级读写策略（persona.action_allows_tool，写工具集合由
-     tool_manager.write_tools() 从 Tool.write 声明推导，不再手工维护黑名单）；
-  3. 角色级只读边界（QA.write_allowed=False，防御纵深）。
+  2. Run 级写策略（write_policy_for：非 REQUEST 一律 READ_ONLY）+ Action 级
+     Read/Write 策略（persona.action_allows_tool，写工具集合由
+     tool_manager.write_tools() 从 Tool.write 声明推导，不再手工维护黑名单）。
 
 Agentic RAG 工具循环（LLM 自主决定是否检索/调用工具）、上下文卸载、
-Skill 渐进披露都在 BaseAgent 中实现，是五条主线中 Agentic RAG 的执行体。
+Skill 渐进披露都在 BaseAgent/TaskAgent 中实现，是五条主线中 Agentic RAG 的执行体。
 """
 from __future__ import annotations
 
@@ -28,6 +34,7 @@ from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from anthropic import AsyncAnthropic
 
+from core.domains import IntentAction
 from agents.persona import ACTION_GUIDANCE, DOMAIN_PERSONA, action_allows_tool
 from agents.profiles import ExecutionProfile, ProfileName
 from memory.layered_store import (
@@ -37,10 +44,18 @@ from memory.layered_store import (
 logger = logging.getLogger(__name__)
 
 
-class Role(Enum):
-    """职责角色（执行实体）。领域不再构成 Agent，只做挂载键（见 persona.py）。"""
-    QA       = "qa"        # 问答：只读工具面 + 检索/引用规范
-    EXECUTOR = "executor"  # 执行：全量工具面含写 + 执行确认规范
+class WritePolicy(Enum):
+    """Task Run 执行策略（由 Task 的 action 决定，不再有角色实体）。"""
+    READ_ONLY     = "read_only"      # QUERY/问候/投诉等：只读工具面
+    WRITE_ALLOWED = "write_allowed"  # REQUEST：可暴露满足策略的写工具
+
+
+def write_policy_for(action: Optional[IntentAction]) -> WritePolicy:
+    """Action → Run 执行策略（纯函数）：仅 REQUEST 允许写，缺省 READ_ONLY。
+
+    防御纵深：动作未知（None）或误判时一律只读，写工具不会暴露。
+    """
+    return WritePolicy.WRITE_ALLOWED if action == IntentAction.REQUEST else WritePolicy.READ_ONLY
 
 
 @dataclass
@@ -73,10 +88,10 @@ class AgentStats:
 
 @dataclass
 class AgentResponse:
-    role:        Role
     content:     str
     success:     bool
-    agent_type:  str = ""  # 展示标签：空 = role.value；协作任务回填为任务角色（领域值）
+    agent_type:  str = ""  # 展示标签：任务领域值（task.domain.value），空 = task_agent
+    task_id:     str = ""  # 所属 Task（Agent Run 边界标识）
     confidence:  float = 1.0
     latency_ms:  float = 0.0
     tools_used:  List[str] = field(default_factory=list)  # 本次调用的工具（供过程可视化）
@@ -90,16 +105,14 @@ class AgentResponse:
 
     @property
     def label(self) -> str:
-        """展示标签：协作任务回填的任务角色（领域值）优先，否则执行角色。"""
-        return self.agent_type or self.role.value
+        """展示标签：任务领域值优先，否则任务 id，最后回退 task_agent。"""
+        return self.agent_type or self.task_id or "task_agent"
 
 
 class BaseAgent:
     """所有 Agent 的基类，封装 LLM 调用、工具循环与统计。"""
 
-    role: Role = Role.QA
     system_prompt: str = ""
-    write_allowed: bool = True  # 角色级写权限（QA 置 False：只读边界防御纵深）
 
     def __init__(
         self,
@@ -146,6 +159,10 @@ class BaseAgent:
             return frozenset()
         return derive()
 
+    def _write_policy(self, req: Optional[Any]) -> WritePolicy:
+        """本次 Task Run 的执行策略：由 req.action 决定（非 REQUEST 一律只读）。"""
+        return write_policy_for(getattr(req, "action", None))
+
     async def _call_model(
         self,
         req: Any,
@@ -189,17 +206,18 @@ class BaseAgent:
 
     async def handle(self, req: Any, on_event: Optional[Any] = None) -> AgentResponse:
         """
-        处理一次请求：LLM 工具调用循环（Agentic RAG）。
+        处理一次请求（Task Agent Run）：LLM 工具调用循环（Agentic RAG）。
 
         on_event: 可选异步回调，接收过程事件（meta/tool/delta），供 SSE 流式输出使用。
         """
         t0 = time.monotonic()
         self.stats.total += 1
         self.stats.in_flight += 1
+        tag = self.profile.name.value
         try:
             from core.tracing import span
 
-            async with span("agent_handle", agent=self.role.value):
+            async with span("agent_handle", profile=tag):
                 (content, tools_used, tool_evidence,
                  input_tokens, output_tokens,
                  offloaded_chars, saved_tokens) = await self._call_llm(req, on_event=on_event)
@@ -221,9 +239,9 @@ class BaseAgent:
             self.stats.success += 1
             self.stats.total_ms += ms
             return AgentResponse(
-                role=self.role,
                 content=content,
                 success=True,
+                task_id=getattr(req, "task_id", ""),
                 latency_ms=ms,
                 tools_used=tools_used,
                 tool_evidence=tool_evidence,
@@ -237,11 +255,11 @@ class BaseAgent:
         except Exception as ex:
             ms = (time.monotonic() - t0) * 1000
             self.stats.total_ms += ms
-            logger.error(f"{self.role.value} 处理失败: {ex}")
+            logger.error(f"TaskAgent({tag}) 处理失败: {ex}")
             return AgentResponse(
-                role=self.role,
                 content="抱歉，处理你的请求时出现了问题，请稍后重试，或换个方式描述一下。",
                 success=False,
+                task_id=getattr(req, "task_id", ""),
                 latency_ms=ms,
                 profile=self.profile.name.value,
                 model=self.profile.model,
@@ -259,9 +277,10 @@ class BaseAgent:
         把 MCPToolManager 中注册的工具与 Skill 工具暴露给 LLM（function calling）。
 
         可见性 = 公共工具层：所有 agent_exposed=True 的工具对任何请求可见，
-        不按领域剪裁（领域只挂载人格/Skills）。门禁两层：
+        不按领域剪裁（领域只挂载人格/Skills）。门禁两层（防御纵深）：
           1. 注册级 agent_exposed（外部工具默认双重不可见）；
-          2. Action 级读写策略（QUERY/GREETING 等动作下写工具不暴露）。
+          2. Run 级写策略（write_policy_for：非 REQUEST 一律 READ_ONLY）+
+             Action 级读写策略（QUERY/GREETING 等动作下写工具不暴露）。
         Skill 通过统一的 load_skill（渐进披露）追加在 MCP 工具之后，同受
         allowlist 与 Action 门禁；完整 SKILL.md 由模型按需加载。
         实例可设 _tool_allowlist 覆盖公共层（测试/定制场景）。
@@ -272,12 +291,13 @@ class BaseAgent:
         tools = []
         action = req.action if req is not None else None
         write_tools = self._write_tools()
+        write_allowed = self._write_policy(req) == WritePolicy.WRITE_ALLOWED
         if self._tool_manager is not None:
             for name, tool in self._tool_manager._tools.items():
                 if not getattr(tool, "agent_exposed", True):
                     continue
-                if not self.write_allowed and name in write_tools:
-                    continue  # 角色级只读边界（QA 永远不暴露写工具）
+                if not write_allowed and name in write_tools:
+                    continue  # Run 级写策略：非 REQUEST 动作下不暴露写工具
                 if allowed is not None and name not in allowed:
                     continue  # 实例级覆盖：显式缩小可见集合
                 if action is not None and not action_allows_tool(action, name, write_tools):
@@ -370,6 +390,7 @@ class BaseAgent:
             else:
                 max_rounds = req.state.policy.max_tool_rounds_deep
             stagnant_limit = req.state.policy.stagnant_round_limit
+        tag = self.profile.name.value
         last_round_sig: Optional[str] = None
         stagnant_rounds = 0
         for _round in range(max_rounds):
@@ -457,7 +478,7 @@ class BaseAgent:
                     stagnant_rounds += 1
                     if stagnant_rounds >= stagnant_limit:
                         logger.warning(
-                            f"{self.role.value} 连续 {stagnant_rounds} 轮无进展（{round_sig}），强制收尾"
+                            f"TaskAgent({tag}) 连续 {stagnant_rounds} 轮无进展（{round_sig}），强制收尾"
                         )
                         hit_tool_use_at_limit = True
                         break
@@ -475,7 +496,7 @@ class BaseAgent:
 
         # 达到工具轮次上限仍有工具请求：用普通调用收尾，保证一定有最终答复
         if hit_tool_use_at_limit:
-            logger.warning(f"{self.role.value} 工具调用达到轮次上限，普通调用收尾")
+            logger.warning(f"TaskAgent({tag}) 工具调用达到轮次上限，普通调用收尾")
             # 最后一条 assistant 消息可能带未回填的 tool_use：按协议补占位
             # tool_result（同一条 user 消息），否则 Anthropic 兼容端点会 400
             if messages and messages[-1].get("role") == "assistant":
@@ -538,16 +559,18 @@ class BaseAgent:
     async def _execute_tool(self, name: str, params: Dict, req: Any) -> tuple[Any, Optional[str]]:
         """执行工具，返回 (结构化数据, 错误信息)。"""
         write_tools = self._write_tools()
+        write_policy = self._write_policy(req)
+        tag = self.profile.name.value
         # Skill 工具拦截（渐进披露）：完整 SKILL.md 正文本地加载，不经过 MCPToolManager；
         # 与普通工具同受 allowlist 与 Action 门禁（防御纵深）。
         if name in {"load_skill", "load_skill_resource"}:
             allowed = getattr(self, "_tool_allowlist", None)
             if allowed is not None and name not in allowed:
-                logger.warning(f"{self.role.value} 尝试调用权限外工具 {name}，已拒绝")
+                logger.warning(f"TaskAgent({tag}) 尝试调用权限外工具 {name}，已拒绝")
                 return None, f"工具 {name} 不在当前执行权限范围内"
             if req.action is not None and not action_allows_tool(req.action, name, write_tools):
                 logger.warning(
-                    f"{self.role.value} 在 {req.action.value} 动作下尝试调用工具 {name}，已拒绝"
+                    f"TaskAgent({tag}) 在 {req.action.value} 动作下尝试调用工具 {name}，已拒绝"
                 )
                 return None, f"工具 {name} 不在当前意图（{req.action.value}）的权限范围内"
             runtime = getattr(self, "_runtime", None)
@@ -579,21 +602,23 @@ class BaseAgent:
             return data, None
         if self._tool_manager is None:
             return None, "工具管理器不可用"
-        # 角色级只读边界（防御纵深）：QA 角色即使动作误判也拒绝写工具。
-        if not self.write_allowed and name in write_tools:
-            logger.warning(f"{self.role.value} 角色尝试调用写工具 {name}，已拒绝")
-            return None, f"工具 {name} 不在 {self.role.value} 角色权限范围内"
+        # Run 级写策略（防御纵深）：非 REQUEST 动作即使误判也拒绝写工具。
+        if write_policy != WritePolicy.WRITE_ALLOWED and name in write_tools:
+            logger.warning(
+                f"TaskAgent({tag}) 在 {write_policy.value} 策略下尝试调用写工具 {name}，已拒绝"
+            )
+            return None, f"工具 {name} 不在当前执行策略（{write_policy.value}）权限范围内"
         # 权限边界（防御纵深）：公共工具层内工具由 Action 层策略把关（见下）；
         # 实例级 _tool_allowlist 覆盖（测试/定制）之外的工具直接拒绝。
         allowed = getattr(self, "_tool_allowlist", None)
         if allowed is not None and name not in allowed:
-            logger.warning(f"{self.role.value} 尝试调用权限外工具 {name}，已拒绝")
+            logger.warning(f"TaskAgent({tag}) 尝试调用权限外工具 {name}，已拒绝")
             return None, f"工具 {name} 不在当前执行权限范围内"
         # Action 层权限（防御纵深，与 _build_tools 暴露层一致）：
         # 查询/问候等动作下，LLM 即使声明了执行类工具也直接拒绝
         if req.action is not None and not action_allows_tool(req.action, name, write_tools):
             logger.warning(
-                f"{self.role.value} 在 {req.action.value} 动作下尝试调用工具 {name}，已拒绝"
+                f"TaskAgent({tag}) 在 {req.action.value} 动作下尝试调用工具 {name}，已拒绝"
             )
             return None, f"工具 {name} 不在当前意图（{req.action.value}）的权限范围内"
         from core.tracing import span
@@ -608,7 +633,10 @@ class BaseAgent:
                 result = await self._tool_manager.call(
                     name,
                     params,
-                    context={"agent_type": self.role.value, "user_id": req.user_id},
+                    context={
+                        "agent_type": req.domain.value if req.domain is not None else "task_agent",
+                        "user_id": req.user_id,
+                    },
                     rerank_top_k=self.profile.rag_top_k if self.profile.use_rerank else 0,
                     use_rewrite=self.profile.use_rewrite,
                 )
@@ -661,19 +689,23 @@ class BaseAgent:
                 value = str(value)
         return value.encode("utf-8", errors="ignore").decode("utf-8")
 
-    # ── Action 行为指引（注入 system prompt）──────────────────────────────────
+    # ── Task 语境组装（system prompt）──────────────────────────────────────
 
     def _build_system_prompt(self, req: Any) -> str:
         """
-        组装 system prompt：
-          1. 职责角色定义（QA/Executor 的 system_prompt）
-          2. 领域人格（DOMAIN_PERSONA，按 req.domain 挂载 —— 领域只影响行为风格）
-          3. 动态 Skills（业务 SOP：目录 + 命中提示 + 全量内容，模型自主选择）
-          4. 意图指引（Action 层行为指令：查询只读 / 请求办理 / 投诉给路径等）
-          5. 时间上下文（当前日期/星期/第几节/第几周）—— 所有请求统一注入，
+        组装 system prompt（Task-scoped context，每次 Run 独立组装）：
+          1. TaskAgent 基座定义
+          2. [任务目标]：本 Task 的 goal（独立于其他 Task 的指令）
+          3. 领域人格（DOMAIN_PERSONA，按 req.domain 挂载 —— 领域只影响行为风格）
+          4. 动态 Skills（业务 SOP：目录 + 命中提示 + 全量内容，模型自主选择）
+          5. 意图指引（Action 层行为指令：查询只读 / 请求办理 / 投诉给路径等）
+          6. 时间上下文（当前日期/星期/第几节/第几周）—— 所有请求统一注入，
              是"今天有什么课""现在第几节"类问答的前提。
         """
         prompt = self.system_prompt
+
+        if getattr(req, "goal", ""):
+            prompt = f"{prompt}\n\n[任务目标]\n{req.goal}"
 
         if req.domain is not None:
             persona = DOMAIN_PERSONA.get(req.domain)
@@ -704,35 +736,23 @@ class BaseAgent:
         return prompt
 
 
-class QAAgent(BaseAgent):
-    """问答职责角色：只读工具面 + 检索/引用规范。
+class TaskAgent(BaseAgent):
+    """围绕一个 Task 的独立 Agent Run 执行体（唯一 Agent 类）。
 
-    处理查询/问候/投诉/其他等非执行类请求；角色级只读边界（write_allowed=False）
-    保证即使路由误判，写工具也不会暴露给问答角色（防御纵深）。
+    不是业务领域 Agent，也不是 QA/Executor 职责 Agent：本类实例由编排器
+    按 Execution Profile（Fast/Deep）实例化，每次 Run 通过 Request 注入
+    独立的 task_id / goal / domain / action / 上下文，执行策略（读写门禁）
+    由 action 决定（write_policy_for）。领域新增时不需要新增 Agent 类。
     """
-    role           = Role.QA
-    write_allowed  = False
+
     system_prompt = (
-        "你是西电校园智慧助手（EchoGuide）的问答角色，负责查询类请求：知识检索、信息查询与咨询建议。"
-        "根据上方 [领域人格] 调整回答风格与侧重点；涉及政策、规定、办事流程或校园设施信息时，"
-        "优先调用 knowledge_search 或对应的查询工具，回答末尾用 [1][2] 标注引用来源。"
-        "不要编造具体的分数、排名、价格、电话、截止日期或审批结果；"
-        "涉及个人数据（课表/待办）只能来自工具结果，涉及学籍、审批等事项时提示以教务处/学院最新通知为准。"
-    )
-
-
-class ExecutorAgent(BaseAgent):
-    """执行职责角色：全量工具面（含写）+ 执行确认规范。
-
-    处理请求办理类请求（REQUEST）：操作用户个人数据（待办/日程）与调用外部工具完成指令。
-    写操作由 Action 层门禁兜底（非 REQUEST 动作不会路由到此角色）。
-    """
-    role           = Role.EXECUTOR
-    system_prompt = (
-        "你是西电校园智慧助手（EchoGuide）的执行角色，负责请求办理类任务："
-        "操作用户个人数据（待办/日程）与调用工具完成用户指令。"
-        "执行前先确认参数齐全；写入类操作完成后在回答中明确回执（如「已添加待办：xxx」），"
-        "操作失败时如实说明原因，不要谎报成功。"
-        "涉及用户数据的操作只针对当前用户（user_id 由系统注入）；"
+        "你是西电校园智慧助手（EchoGuide）的 Task Agent，负责执行分配给你的子任务。"
+        "根据上方 [任务目标] 完成该任务，并结合 [领域人格] 调整回答风格与侧重点。\n"
+        "查询类任务：优先调用只读工具（如 knowledge_search）获取准确信息；"
+        "涉及政策、规定、办事流程或校园设施信息时，回答末尾用 [1][2] 标注引用来源；"
+        "不要编造具体的分数、排名、价格、电话、截止日期或审批结果。\n"
+        "执行类任务（REQUEST）：操作用户个人数据（待办/日程）或调用工具完成指令，"
+        "写入完成后在回答中明确回执（如「已添加待办：xxx」），操作失败时如实说明原因，不要谎报成功；"
+        "涉及个人数据（课表/待办）只能来自工具结果，涉及学籍、审批等事项时提示以教务处/学院最新通知为准；"
         "无法执行的操作给出替代路径（如引导用户自行到对应系统/网点办理）。"
     )

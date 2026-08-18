@@ -1,25 +1,34 @@
 """
-AgentOrchestrator —— EchoGuide 编排器（决策闭环：Intent → Planner → Runtime）。
+AgentOrchestrator —— EchoGuide 编排器（决策闭环：Intent → Planner → Harness）。
 
-架构（v4 收口）：
-  - 职责角色（Role）拆分：QA（问答，只读工具面 + 检索/引用规范）与
-    EXECUTOR（执行，全量工具面含写 + 执行确认规范），各配 Fast/Deep
-    双 profile；执行角色由 **Task 自己的 action** 决定（REQUEST→EXECUTOR，
-    其余→QA），不再继承原始请求的 action。
-    领域分类（IntentDomain）只提供领域人格（DOMAIN_PERSONA）语境，
-    不决定工具可见性、不选执行角色 —— "顾问"而非"门卫"；职责 × 领域正交。
-  - 工具可见性 = 公共工具层：所有 agent_exposed=True 的工具对任何请求可见，
-    门禁两层：注册级 agent_exposed + 角色级 write_allowed（QA 只读）+
-    Action 级读写策略（QUERY/GREETING 拒写），写工具集合由工具自身声明
+架构（v5 收口：Task-scoped SubAgent，中心化轻量 Multi-Agent Harness）：
+  - 不再有 QA/EXECUTOR 职责 Agent 类，也没有 Role→Agent Pool。真正的
+    Agent 单位 = 围绕一个 Task 的一次独立 TaskAgent Run：每个 Task 拥有
+    独立 goal / message / domain / action / depends_on 与协作上下文。
+  - QA/EXECUTOR 降级为 Execution Policy（roles.write_policy_for）：
+      非 REQUEST 动作 → READ_ONLY（只读工具面）；
+      REQUEST 动作 → WRITE_ALLOWED（可暴露满足策略的写工具）。
+    Action 只影响工具可见性、写权限与行为指引，不构成 Agent 身份。
+  - 领域（IntentDomain）只提供领域人格（DOMAIN_PERSONA）语境与 Skills
+    挂载键，不决定工具可见性、不选执行实体 —— "顾问"而非"门卫"。
+  - Fast/Deep 是 Execution Profile（profiles.py）：编排器按 profile 池
+    选实例（在线表现路由），不是两个不同 Agent。
+  - 工具可见性 = 公共工具层：所有 agent_exposed=True 的工具对任何请求
+    可见，门禁两层：注册级 agent_exposed + Run 级写策略（READ_ONLY 缺省）
+    + Action 级读写策略（QUERY/GREETING 拒写），写工具集合由工具自身声明
     （Tool.write → tool_manager.write_tools()），不再手工维护黑名单。
-  - 决策闭环（v4 第二阶段）：
+  - 决策闭环：
       Intent（domain/action/needs_knowledge，不做复杂度判定）
-        → Planner（统一输出 ExecutionPlan / Task DAG，single/parallel/dependent
-          由最终 DAG 自动推导；本地 Fast Path 零 LLM，拿不准才升级 LLM 规划）
-        → Executor（按 depends_on 分波并行，失败传播：依赖失败 → 下游 BLOCKED）
+        → Planner（统一输出 ExecutionPlan / Task DAG，single/parallel/
+          dependent 由最终 DAG 自动推导；本地 Fast Path 零 LLM，拿不准才
+          升级 LLM 规划）
+        → Harness（TaskExecutor 按 depends_on 分波并行执行，失败传播：
+          依赖失败 → 下游 BLOCKED；无依赖任务并行；依赖任务只读取声明的
+          前序结果注入上下文）
         → Synthesizer 合并（LLM 失败降级拼接）。
-    每个任务是独立上下文的执行实体；任务角色标签沿用领域值（只做
-    goal/人格语境键，不构成独立 Agent 身份）。
+    协作统一由 Harness 层负责，不实现 Agent-to-Agent 自由通信。
+  - Task 级 Trace：execution meta 记录每个 task 的 domain/action/goal/
+    depends_on/status/tools/latency/token，供前端过程可视化与 Monitor。
 
 Monitor 有限反馈：Fast profile 在线表现不健康时，Orchestrator 临时把
 本应走 Fast 的请求升级 Deep（不引入 RL/Bandit/在线学习）。
@@ -44,7 +53,7 @@ from runtime.state import RunState
 from agents.persona import action_allows_tool
 from agents.profiles import ExecutionProfile, ProfileName, select_profile_name
 from agents.roles import (
-    AgentResponse, BaseAgent, ExecutorAgent, QAAgent, Role,
+    AgentResponse, BaseAgent, TaskAgent, WritePolicy, write_policy_for,
 )
 from agents.verifier import ResponseVerifier
 from agents.workflow import (
@@ -63,7 +72,9 @@ class Request:
     history:     Optional[List[Dict[str, str]]] = None  # 对话历史，传给意图识别
     intent:      Optional[IntentCategory] = None        # 兼容字段
     domain:      Optional[IntentDomain]   = None        # 领域语境（人格挂载键）
-    action:      Optional[IntentAction]   = None        # 动作（行为依据）
+    action:      Optional[IntentAction]   = None        # 动作（Run 执行策略依据）
+    goal:        str = ""        # Task goal（Task-scoped 指令，注入 system prompt）
+    task_id:     str = ""        # 所属 Task（Agent Run 边界标识）
     request_id:  str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     confidence: float = 0.0
     classifier_stage: str = "preset"
@@ -79,7 +90,7 @@ class Request:
 class OrchestratorResult:
     request_id:  str
     response:    str
-    agent_type:  str                       # 展示标签：qa/executor 或任务角色（领域值）
+    agent_type:  str                       # 展示标签：任务领域值（task.domain.value）
     intent:      Optional[IntentCategory]
     domain:      Optional[IntentDomain] = None
     action:      Optional[IntentAction] = None
@@ -91,14 +102,16 @@ class OrchestratorResult:
 
 class AgentOrchestrator:
     """
-    西电校园智慧助手的编排器：决策闭环（Intent → Planner → Runtime）。
+    西电校园智慧助手的编排器：决策闭环（Intent → Planner → Harness）。
 
-    - 职责角色：QA（问答，只读工具面）/ EXECUTOR（执行，含写工具面），各配
-      Fast/Deep 双实例，执行角色由 Task 的 action 决定；领域分类只用来挂载
-      领域人格（DOMAIN_PERSONA）语境；Skills 由完整目录自主发现 —— 领域是"顾问"，不是"门卫"；
+    - 真正的 Agent 单位是 Task：每个 Task 由一次独立 TaskAgent Run 执行
+      （Task-scoped context：goal + 领域人格 + 依赖结果 + 执行策略），
+      Fast/Deep 只是 Execution Profile；领域只做人格/Skills 挂载键；
     - Planner 统一输出 ExecutionPlan：本地 Fast Path（单任务/规则链/并行）
       零 LLM；"拿不准"才升级 LLM 规划，复杂度模式由 DAG 自动推导；
-    - DAG 失败传播：依赖失败的任务 BLOCKED，不执行、不注入失败上下文；
+    - Harness 分波并行 + 失败传播（依赖失败 → 下游 BLOCKED），依赖任务
+      只读取声明的 depends_on 结果注入上下文；Synthesizer 合并；
+    - 写权限执行策略（write_policy_for）：仅 REQUEST 允许写，READ_ONLY 缺省；
     - Monitor 有限反馈：Fast 不健康时临时升级 Deep。
     """
 
@@ -154,7 +167,8 @@ class AgentOrchestrator:
             max_tasks=self._runtime.policy.max_tasks,
             max_agents=self._runtime.policy.max_agents,
         )
-        # 轻量多 Agent 协作链：Executor（分波执行，失败传播）→ SharedState → Synthesizer（合并）
+        # 轻量 Multi-Agent Harness：TaskExecutor（分波执行，失败传播）
+        # → SharedState → Synthesizer（合并）。协作只经 Harness，无 Agent 间通信。
         self._executor = TaskExecutor(self._run_task)
         self._synthesizer = Synthesizer(
             deep_client, deep_name, max_tokens=self._runtime.policy.synth_max_tokens,
@@ -172,17 +186,18 @@ class AgentOrchestrator:
         self._tool_manager  = tool_manager
         self._memory_store  = memory_store  # 上下文卸载落盘（refs 表），与 MemoryManager 共享
 
-        # 职责角色 × Fast/Deep 双实例：QA（问答）/ EXECUTOR（执行）两个真实
-        # 执行角色，工具面与行为规范不同（角色边界），人格/Skills 按领域挂载。
+        # TaskAgent × Fast/Deep 双实例（Execution Profile 池）：Agent 类是唯一
+        # 的 TaskAgent，实例按 profile 区分；每个 Task 以独立 Run 执行（每次
+        # 注入独立 goal/domain/action/上下文），领域不参与实例选择。
         def agents(cls):
             return [
                 cls(fast_client, fast_name, skill_manager, tool_manager, self._profiles[ProfileName.FAST]),
                 cls(deep_client, deep_name, skill_manager, tool_manager, self._profiles[ProfileName.DEEP]),
             ]
 
-        self._pool: Dict[Role, List[BaseAgent]] = {
-            Role.QA: agents(QAAgent),
-            Role.EXECUTOR: agents(ExecutorAgent),
+        self._pool: Dict[ProfileName, List[BaseAgent]] = {
+            ProfileName.FAST: agents(TaskAgent),
+            ProfileName.DEEP: agents(TaskAgent),
         }
         # Runtime 广播到所有 Agent 实例（工具/模型边界钩子），与 set_* 注入同一模式
         for agent_list in self._pool.values():
@@ -290,7 +305,7 @@ class AgentOrchestrator:
             return OrchestratorResult(
                 request_id=req.request_id,
                 response=f"抱歉，{reason}。",
-                agent_type=Role.QA.value,
+                agent_type="task_agent",
                 intent=req.intent,
                 domain=req.domain,
                 action=req.action,
@@ -306,7 +321,7 @@ class AgentOrchestrator:
     async def _run_single(self, req: Request, on_event: Optional[Any] = None) -> OrchestratorResult:
         """
         单次请求的业务核心（在 Runtime 中间件链内执行）：
-          意图识别（领域×动作）→ Planner（ExecutionPlan）→ 执行 → 出口校验 → 返回结果
+          意图识别（领域×动作）→ Planner（ExecutionPlan）→ Harness 执行 → 出口校验
 
         on_event: 可选异步回调，透传给 Agent（SSE 流式输出 / 工具调用可视化）。
         """
@@ -367,11 +382,12 @@ class AgentOrchestrator:
                 "complexity_reason": plan.reason,
             })
 
-        # 3. 执行：single → 单任务直执行；parallel/dependent → 分波协作
+        # 3. 执行：single → 单任务直执行（1 次 TaskAgent Run）；
+        #    parallel/dependent → Harness 分波协作（每个 Task 独立 Run）
         if plan.mode == "single":
             task = plan.tasks[0]
             response = await self._execute_single_task(req, task, on_event)
-            agents = [task.agent_type.value]
+            agents = [task.domain.value]
         else:
             return await self.run_parallel(req, plan, on_event)
 
@@ -404,29 +420,13 @@ class AgentOrchestrator:
         task: Task,
         on_event: Optional[Any] = None,
     ) -> AgentResponse:
-        """单任务执行：执行角色由 task.action 决定（REQUEST → EXECUTOR，其余 → QA）。"""
-        task_req = Request(
-            message=task.message,
-            user_id=req.user_id,
-            conv_id=req.conv_id,
-            context=req.context,
-            history=req.history,
-            intent=req.intent,
-            domain=task.agent_type,   # 任务角色 → 领域挂载键（人格/Skills）
-            action=task.action,       # 任务自己的 action（不继承原始请求）
-            request_id=req.request_id,
-            state=req.state,
-        )
-        task_req.profile = req.profile
-        task_req.complexity_mode = req.complexity_mode
-        task_req.complexity_reason = req.complexity_reason
-        task_req.classifier_stage = req.classifier_stage
-        task_req.confidence = req.confidence
-        role = Role.EXECUTOR if task.action == IntentAction.REQUEST else Role.QA
+        """单任务执行：构造 Task-scoped 上下文（goal/domain/action），执行一次 TaskAgent Run。"""
+        task_req = self._task_request(req, task)
         if on_event is not None:
-            await on_event({"type": "meta", "agent": role.value})
-        response = await self._execute(task_req, role, on_event)
-        response.agent_type = task.agent_type.value
+            await on_event({"type": "meta", "agent": task.domain.value})
+        response = await self._execute(task_req, on_event)
+        response.task_id = task.task_id
+        response.agent_type = task.domain.value
         return response
 
     async def run_parallel(
@@ -438,8 +438,9 @@ class AgentOrchestrator:
         """
         多任务协作执行（parallel / dependent）：
 
-          Executor 按 depends_on 分波并行执行（失败传播：依赖失败 → BLOCKED），
-          结果写入 SharedState，依赖任务执行时注入协作上下文
+          Harness（TaskExecutor）按 depends_on 分波并行执行（失败传播：
+          依赖失败 → BLOCKED），结果写入 SharedState，依赖任务只读取自己
+          声明的 depends_on 结果注入协作上下文
           → Synthesizer 读取 SharedState 合并为最终回复（LLM 失败降级拼接）
 
         plan 来自 Planner 的 ExecutionPlan（LLM 任务链已校验或本地规则生成）。
@@ -447,7 +448,7 @@ class AgentOrchestrator:
         t0 = time.monotonic()
 
         req.profile = ProfileName.DEEP
-        # Executor：分波执行（失败传播），产出 SharedState
+        # Harness：分波执行（失败传播），产出 SharedState
         shared = await self._executor.execute(
             req, plan.tasks, on_event, max_tasks=self._runtime.policy.max_tasks,
         )
@@ -461,20 +462,19 @@ class AgentOrchestrator:
 
         # 出口校验：对合成后的最终回复做 Grounding（证据 = 各任务证据汇总）
         synthesized = AgentResponse(
-            role=Role.QA,
             content=final_text,
             success=True,
             tools_used=tools_used,
             tool_evidence=tool_evidence,
             profile=req.profile.value if req.profile else "deep",
-            agent_type=plan.tasks[0].agent_type.value if plan.tasks else Role.QA.value,
+            agent_type=plan.tasks[0].domain.value if plan.tasks else "task_agent",
         )
         verification = await self._verify(req, synthesized)
 
         execution = self._execution_meta(
             req,
             mode=plan.mode,
-            agents=list(dict.fromkeys(t.agent_type.value for t in plan.tasks)),
+            agents=list(dict.fromkeys(t.domain.value for t in plan.tasks)),
             responses=responses,
             tasks=shared.task_meta(),
         )
@@ -494,16 +494,10 @@ class AgentOrchestrator:
 
     # ── 协作任务执行 ──────────────────────────────────────────────────────────
 
-    async def _run_task(
-        self,
-        req: Request,
-        task: Task,
-        shared: SharedState,
-        on_event: Optional[Any] = None,
-    ) -> AgentResponse:
-        """
-        执行单个协作任务：自包含 message + 协作上下文（SharedState 快照）。
-        执行角色由 task.action 决定（REQUEST → EXECUTOR，其余 → QA）。
+    def _task_request(self, req: Request, task: Task) -> Request:
+        """Task-scoped 上下文构造：用户必要上下文 + Task goal + 领域 + 执行策略。
+
+        不把完整主会话复制给每个 Task（自包含 message 已携带目标与请求）。
         """
         task_req = Request(
             message=task.message,
@@ -512,33 +506,46 @@ class AgentOrchestrator:
             context=req.context,
             history=req.history,
             intent=req.intent,
-            domain=task.agent_type,   # 任务角色 → 领域挂载键（人格/Skills）
-            action=task.action,       # 任务自己的 action（不继承原始请求）
+            domain=task.domain,   # 任务领域 → 挂载键（人格/Skills）
+            action=task.action,   # 任务自己的 action（不继承原始请求，决定 Run 执行策略）
+            goal=task.goal,       # Task goal（注入 system prompt [任务目标]）
+            task_id=task.task_id, # Agent Run 边界标识
             request_id=req.request_id,
-            state=req.state,   # 协作任务继承运行状态（中间件钩子/预算计数不断链）
+            state=req.state,      # 协作任务继承运行状态（中间件钩子/预算计数不断链）
         )
-        task_req.profile = ProfileName.DEEP
+        task_req.profile = req.profile
         task_req.complexity_mode = req.complexity_mode
         task_req.complexity_reason = req.complexity_reason
         task_req.classifier_stage = req.classifier_stage
         task_req.confidence = req.confidence
-        snapshot = shared.snapshot()
+        return task_req
+
+    async def _run_task(
+        self,
+        req: Request,
+        task: Task,
+        shared: SharedState,
+        on_event: Optional[Any] = None,
+    ) -> AgentResponse:
+        """
+        执行单个协作任务：自包含 message + 依赖上下文（只读取声明的 depends_on）。
+        执行策略由 task.action 决定（write_policy_for：非 REQUEST 一律 READ_ONLY）。
+        """
+        task_req = self._task_request(req, task)
+        snapshot = shared.snapshot_for(task)
         if snapshot:
-            # 注入协作上下文：让本任务知道其他 Agent 已给出什么（避免重复检索/重复回答）
+            # 注入协作上下文：只含本任务声明的依赖结果（避免上下文膨胀），
+            # 让本任务知道前序子任务已给出什么（避免重复检索/重复回答）
             task_req.context = f"{task_req.context}\n\n[协作上下文]\n{snapshot}".strip()
-        # 执行职责角色：任务自己的 action 决定（REQUEST 写操作 → EXECUTOR；否则 QA）
-        exec_role = (
-            Role.EXECUTOR if task.action == IntentAction.REQUEST
-            else Role.QA
-        )
-        response = await self._execute(task_req, exec_role, on_event)
-        # 展示/合成标签回填为任务角色（领域）：执行实体是职责角色，
-        # 但协作结果按任务角色区分（Synthesizer 分节标签、execution.agents 可观测）。
-        response.agent_type = task.agent_type.value
+        response = await self._execute(task_req, on_event)
+        # 展示/合成标签回填为任务领域：协作结果按任务区分（Synthesizer 分节
+        # 标签、execution.tasks 可观测），领域不构成 Agent 身份。
+        response.task_id = task.task_id
+        response.agent_type = task.domain.value
 
         # 依赖 DAG 的终点是一次真实写操作；模型只给出建议而忘记调用工具时，
-        # Executor 按任务的 required_tool 后置条件补执行，避免出现
-        # "任务 success 但待办未创建"。由 Planner 声明，不硬编码具体任务标识。
+        # 按任务的 required_tool 后置条件补执行，避免出现"任务 success 但
+        # 待办未创建"。由 Planner 声明，不硬编码具体任务标识。
         if task.required_tool and task.required_tool not in response.tools_used:
             write_tools = self._tool_manager.write_tools() if self._tool_manager else frozenset()
             if task.action is not None and not action_allows_tool(task.action, task.required_tool, write_tools):
@@ -555,7 +562,7 @@ class AgentOrchestrator:
             result = await self._tool_manager.call(
                 task.required_tool,
                 task.required_tool_args,
-                context={"agent_type": task.agent_type.value, "user_id": req.user_id},
+                context={"agent_type": task.domain.value, "user_id": req.user_id},
                 use_rewrite=False,
             ) if self._tool_manager is not None else None
             if result is not None and result.success:
@@ -570,14 +577,7 @@ class AgentOrchestrator:
                 response.content = f"{response.content.rstrip()}\n\n待办写入失败：{error}"
         return response
 
-    # ── 职责角色 / Profile ───────────────────────────────────────────────────
-
-    @staticmethod
-    def _role_for(req: Request) -> Role:
-        """职责角色选择：REQUEST（请求办理）→ EXECUTOR；其余动作 → QA（只读）。"""
-        if req.action == IntentAction.REQUEST:
-            return Role.EXECUTOR
-        return Role.QA
+    # ── Execution Profile / 执行策略 ────────────────────────────────────────
 
     def _select_profile(self, req: Request, mode: str) -> ProfileName:
         """Profile 决策：纯逻辑在 profiles.py；叠加 Monitor 有限反馈。"""
@@ -625,54 +625,52 @@ class AgentOrchestrator:
             meta["query_understanding"] = req.state_query
         return meta
 
-    def _best_agent(self, role: Optional[Role] = None, profile: Optional[ProfileName] = None) -> Optional[BaseAgent]:
+    def _best_agent(self, profile: Optional[ProfileName] = None) -> Optional[BaseAgent]:
         """
-        职责角色实例选择：从该角色池（Fast/Deep 双实例）中按在线表现选实例
-        （成功率高、延迟低、避开正在处理的实例）；缺省 QA 角色。
+        TaskAgent 实例选择：从该 Profile 池（Fast/Deep 各双实例）中按在线表现
+        选实例（成功率高、延迟低、避开正在处理的实例）；缺省 Fast。
 
-        领域任务角色标签不参与选择——只有职责角色（QA/EXECUTOR）有实体。
+        领域不参与实例选择 —— 领域只做人格/Skills 挂载键，没有领域 Agent 实体。
         """
-        agents = self._pool.get(role or Role.QA, [])
+        agents = self._pool.get(profile or ProfileName.FAST, [])
         if not agents:
             return None
-        if profile is not None:
-            preferred = [agent for agent in agents if agent.profile.name == profile]
-            if preferred:
-                return max(preferred, key=lambda a: a.stats.effective_routing_score())
         return max(agents, key=lambda a: a.stats.effective_routing_score())
 
     async def _execute(
         self,
         req: Request,
-        role: Optional[Role] = None,
         on_event: Optional[Any] = None,
     ) -> AgentResponse:
-        """按职责角色执行（QA/EXECUTOR）；Fast 失败时同角色重试 Deep。"""
-        role = role or self._role_for(req)
-        agent = self._best_agent(role, req.profile)
+        """
+        执行一次 TaskAgent Run：按 Execution Profile 选实例（写策略由
+        req.action 决定，write_policy_for 在 Agent 内生效）；Fast 失败时
+        同任务 Deep 重试。
+        """
+        agent = self._best_agent(req.profile)
         if agent is None:
             return AgentResponse(
-                role=role,
                 content="助手暂时不可用，请稍后重试，或直接联系辅导员/教务老师。",
                 success=False,
+                task_id=req.task_id,
             )
 
         response = await self._handle_with_runtime(req, agent, on_event)
 
-        # Fast 失败 → Deep 重试（同职责角色，受 policy.max_retries 约束）
+        # Fast 失败 → Deep 重试（同任务 Run，受 policy.max_retries 约束）
         if not response.success and req.profile == ProfileName.FAST:
             max_retries = 1
             if req.state is not None and req.state.policy is not None:
                 max_retries = req.state.policy.max_retries
             if req.state is not None and req.state.retry_count >= max_retries:
                 logger.warning(
-                    f"{role.value} Fast 执行失败，已达降级次数上限 {max_retries}，不再重试"
+                    f"Fast 执行失败，已达降级次数上限 {max_retries}，不再重试"
                 )
                 return response
-            logger.warning(f"{role.value} Fast 执行失败，降级重试 Deep")
+            logger.warning("Fast 执行失败，降级重试 Deep")
             if req.state is not None:
                 req.state.retry_count += 1
-            fallback = self._best_agent(role, ProfileName.DEEP)
+            fallback = self._best_agent(ProfileName.DEEP)
             if fallback:
                 response = await self._handle_with_runtime(req, fallback, on_event)
 
@@ -721,9 +719,9 @@ class AgentOrchestrator:
 
     def get_stats(self) -> Dict[str, Any]:
         result = {}
-        for role, agents in self._pool.items():
+        for profile, agents in self._pool.items():
             for i, agent in enumerate(agents):
-                key = f"{role.value}.{agent.profile.name.value}"
+                key = f"{profile.value}.{i}"
                 result[key] = {
                     "total":        agent.stats.total,
                     "success_rate": round(agent.stats.success_rate, 3),
@@ -745,12 +743,13 @@ class AgentOrchestrator:
         """
         接收 Monitor 的在线表现反馈，动态调整路由惩罚项（实例级）。
 
-        penalties 的 key 使用 get_stats() 中的 agent key，例如 qa.fast / executor.deep。
-        Profile 级反馈走 set_fast_health（Fast 不健康 → 临时升级 Deep）。
+        penalties 的 key 使用 get_stats() 中的 agent key，例如 fast.0 / deep.1
+        （兼容 legacy 下划线写法 fast_0）。Profile 级反馈走 set_fast_health
+        （Fast 不健康 → 临时升级 Deep）。
         """
-        for role, agents in self._pool.items():
+        for profile, agents in self._pool.items():
             for i, agent in enumerate(agents):
-                key = f"{role.value}.{agent.profile.name.value}"
-                legacy_key = f"{role.value}_{i}"
+                key = f"{profile.value}.{i}"
+                legacy_key = f"{profile.value}_{i}"
                 penalty = penalties.get(key, penalties.get(legacy_key, 0.0))
                 agent.stats.monitor_penalty = min(max(penalty, 0.0), 0.9)

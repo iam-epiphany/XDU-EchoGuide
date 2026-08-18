@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock
 from agents.agent_orchestrator import (
     AgentOrchestrator, AgentResponse, Request,
 )
-from agents.roles import Role
 from agents.verifier import ResponseVerifier
 from core.domains import IntentAction, IntentDomain
 
@@ -142,9 +141,10 @@ def test_orchestrator_run_attaches_verification_meta():
         domain=IntentDomain.OTHER, action=IntentAction.QUERY,
     )
 
-    async def fake_execute(task_req, agent_type, on_event=None):
+    async def fake_execute(task_req, on_event=None):
         return AgentResponse(
-            role=agent_type, content="[1] 已添加待办：买饭卡。", success=True,
+            agent_type=task_req.domain.value if task_req.domain else "task_agent",
+            content="[1] 已添加待办：买饭卡。", success=True,
         )
 
     orch._execute = fake_execute
