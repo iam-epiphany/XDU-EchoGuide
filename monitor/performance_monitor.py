@@ -260,12 +260,18 @@ class PerformanceMonitor:
     @staticmethod
     def _fast_health(agent_stats: Dict[str, Any]) -> bool:
         """
-        Fast profile 健康判定（有限反馈）：qa.fast / executor.fast 均健康才算健康。
+        Fast profile 健康判定（有限反馈）：所有 Fast 实例健康才算健康。
 
-        样本不足（total < 10）视为健康（不干预）；成功率 < 0.85 视为不健康
-        （临时升级 Deep）。只做这一条规则，不引入复杂在线学习。
+        不依赖 stats key 的字符串格式（key 为 fast.0 / deep.1 等实例序号），
+        而是按每个实例的 profile 字段识别 Fast；样本不足（total < 10）视为
+        健康（不干预）；成功率 < 0.85 视为不健康（临时升级 Deep）。
+        只做这一条规则，不引入复杂在线学习。
         """
-        fast_keys = [k for k in agent_stats if k.endswith(".fast")]
+        from agents.profiles import ProfileName
+        fast_keys = [
+            k for k, s in agent_stats.items()
+            if s.get("profile") == ProfileName.FAST.value
+        ]
         if not fast_keys:
             return True
         for key in fast_keys:

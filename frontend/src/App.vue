@@ -79,8 +79,11 @@
             <p class="execution-reason">{{ item.execution.complexity_reason }}</p>
             <ol v-if="item.execution.tasks?.length" class="task-list">
               <li v-for="task in item.execution.tasks" :key="task.id">
-                {{ task.id }} · {{ task.agent }} · {{ task.status }} · {{ task.duration_ms || 0 }} ms
+                <b>{{ task.id }}</b> · {{ task.domain }} · {{ task.action }} ·
+                {{ task.profile || '-' }} · {{ task.status }} ·
+                {{ task.duration_ms || 0 }} ms · {{ (task.input_tokens || 0) + (task.output_tokens || 0) }} tok
                 <small v-if="task.depends_on?.length">依赖 {{ task.depends_on.join(', ') }}</small>
+                <small v-if="task.tools?.length">工具 {{ task.tools.join(', ') }}</small>
               </li>
             </ol>
           </details>

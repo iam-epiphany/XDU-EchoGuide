@@ -189,15 +189,15 @@ class AgentOrchestrator:
         # TaskAgent × Fast/Deep 双实例（Execution Profile 池）：Agent 类是唯一
         # 的 TaskAgent，实例按 profile 区分；每个 Task 以独立 Run 执行（每次
         # 注入独立 goal/domain/action/上下文），领域不参与实例选择。
-        def agents(cls):
+        def agents(profile: ProfileName, client: Any, model: str):
             return [
-                cls(fast_client, fast_name, skill_manager, tool_manager, self._profiles[ProfileName.FAST]),
-                cls(deep_client, deep_name, skill_manager, tool_manager, self._profiles[ProfileName.DEEP]),
+                TaskAgent(client, model, skill_manager, tool_manager, self._profiles[profile]),
+                TaskAgent(client, model, skill_manager, tool_manager, self._profiles[profile]),
             ]
 
         self._pool: Dict[ProfileName, List[BaseAgent]] = {
-            ProfileName.FAST: agents(TaskAgent),
-            ProfileName.DEEP: agents(TaskAgent),
+            ProfileName.FAST: agents(ProfileName.FAST, fast_client, fast_name),
+            ProfileName.DEEP: agents(ProfileName.DEEP, deep_client, deep_name),
         }
         # Runtime 广播到所有 Agent 实例（工具/模型边界钩子），与 set_* 注入同一模式
         for agent_list in self._pool.values():
@@ -420,11 +420,24 @@ class AgentOrchestrator:
         task: Task,
         on_event: Optional[Any] = None,
     ) -> AgentResponse:
-        """单任务执行：构造 Task-scoped 上下文（goal/domain/action），执行一次 TaskAgent Run。"""
+        """单任务执行：构造 Task-scoped 上下文（goal/domain/action），执行一次 TaskAgent Run。
+
+        Task 级 Trace：整个 Run 包在 task_execute span 内（task_id/domain/action/
+        depends_on），复杂 DAG 下可按任务区分 agent_handle/llm/tool 子 span。
+        """
+        from core.tracing import span
+
         task_req = self._task_request(req, task)
         if on_event is not None:
             await on_event({"type": "meta", "agent": task.domain.value})
-        response = await self._execute(task_req, on_event)
+        async with span(
+            "task_execute",
+            task_id=task.task_id,
+            domain=task.domain.value,
+            action=task.action.value,
+            depends_on=",".join(task.depends_on),
+        ):
+            response = await self._execute(task_req, on_event)
         response.task_id = task.task_id
         response.agent_type = task.domain.value
         return response
@@ -530,51 +543,63 @@ class AgentOrchestrator:
         """
         执行单个协作任务：自包含 message + 依赖上下文（只读取声明的 depends_on）。
         执行策略由 task.action 决定（write_policy_for：非 REQUEST 一律 READ_ONLY）。
+
+        Task 级 Trace：与单任务路径一致，整个 Run（含后置条件补执行）包在
+        task_execute span 内，DAG 下每个任务一条独立 span。
         """
+        from core.tracing import span
+
         task_req = self._task_request(req, task)
         snapshot = shared.snapshot_for(task)
         if snapshot:
             # 注入协作上下文：只含本任务声明的依赖结果（避免上下文膨胀），
             # 让本任务知道前序子任务已给出什么（避免重复检索/重复回答）
             task_req.context = f"{task_req.context}\n\n[协作上下文]\n{snapshot}".strip()
-        response = await self._execute(task_req, on_event)
-        # 展示/合成标签回填为任务领域：协作结果按任务区分（Synthesizer 分节
-        # 标签、execution.tasks 可观测），领域不构成 Agent 身份。
-        response.task_id = task.task_id
-        response.agent_type = task.domain.value
+        async with span(
+            "task_execute",
+            task_id=task.task_id,
+            domain=task.domain.value,
+            action=task.action.value,
+            depends_on=",".join(task.depends_on),
+        ):
+            response = await self._execute(task_req, on_event)
+            # 展示/合成标签回填为任务领域：协作结果按任务区分（Synthesizer 分节
+            # 标签、execution.tasks 可观测），领域不构成 Agent 身份。
+            response.task_id = task.task_id
+            response.agent_type = task.domain.value
 
-        # 依赖 DAG 的终点是一次真实写操作；模型只给出建议而忘记调用工具时，
-        # 按任务的 required_tool 后置条件补执行，避免出现"任务 success 但
-        # 待办未创建"。由 Planner 声明，不硬编码具体任务标识。
-        if task.required_tool and task.required_tool not in response.tools_used:
-            write_tools = self._tool_manager.write_tools() if self._tool_manager else frozenset()
-            if task.action is not None and not action_allows_tool(task.action, task.required_tool, write_tools):
-                # Action 层策略（如 QUERY 只读）：补执行写操作被禁止，跳过（策略内不执行即符合预期）
-                logger.warning(
-                    f"协作任务补执行被 Action 策略拒绝: {task.required_tool} (action={task.action.value})"
-                )
-                return response
-            if on_event is not None:
-                await on_event({
-                    "type": "tool", "name": task.required_tool,
-                    "status": "start", "input": task.required_tool_args,
-                })
-            result = await self._tool_manager.call(
-                task.required_tool,
-                task.required_tool_args,
-                context={"agent_type": task.domain.value, "user_id": req.user_id},
-                use_rewrite=False,
-            ) if self._tool_manager is not None else None
-            if result is not None and result.success:
-                response.tools_used.append(task.required_tool)
-                content = str(task.required_tool_args.get("content", "待办事项"))
-                response.content = f"{response.content.rstrip()}\n\n已按协作计划记录待办：{content}。"
+            # 依赖 DAG 的终点是一次真实写操作；模型只给出建议而忘记调用工具时，
+            # 按任务的 required_tool 后置条件补执行，避免出现"任务 success 但
+            # 待办未创建"。由 Planner 声明，不硬编码具体任务标识。
+            if task.required_tool and task.required_tool not in response.tools_used:
+                write_tools = self._tool_manager.write_tools() if self._tool_manager else frozenset()
+                if task.action is not None and not action_allows_tool(task.action, task.required_tool, write_tools):
+                    # Action 层策略（如 QUERY 只读）：补执行写操作被禁止，跳过（策略内不执行即符合预期）
+                    logger.warning(
+                        f"协作任务补执行被 Action 策略拒绝: {task.required_tool} (action={task.action.value})"
+                    )
+                    return response
                 if on_event is not None:
-                    await on_event({"type": "tool", "name": task.required_tool, "status": "done", "titles": []})
-            else:
-                response.success = False
-                error = getattr(result, "error", "工具管理器不可用")
-                response.content = f"{response.content.rstrip()}\n\n待办写入失败：{error}"
+                    await on_event({
+                        "type": "tool", "name": task.required_tool,
+                        "status": "start", "input": task.required_tool_args,
+                    })
+                result = await self._tool_manager.call(
+                    task.required_tool,
+                    task.required_tool_args,
+                    context={"agent_type": task.domain.value, "user_id": req.user_id},
+                    use_rewrite=False,
+                ) if self._tool_manager is not None else None
+                if result is not None and result.success:
+                    response.tools_used.append(task.required_tool)
+                    content = str(task.required_tool_args.get("content", "待办事项"))
+                    response.content = f"{response.content.rstrip()}\n\n已按协作计划记录待办：{content}。"
+                    if on_event is not None:
+                        await on_event({"type": "tool", "name": task.required_tool, "status": "done", "titles": []})
+                else:
+                    response.success = False
+                    error = getattr(result, "error", "工具管理器不可用")
+                    response.content = f"{response.content.rstrip()}\n\n待办写入失败：{error}"
         return response
 
     # ── Execution Profile / 执行策略 ────────────────────────────────────────

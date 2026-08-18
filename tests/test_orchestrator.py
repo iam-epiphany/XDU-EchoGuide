@@ -50,6 +50,27 @@ def test_pool_registers_execution_profiles():
     assert all(isinstance(a, TaskAgent) for agents in pool.values() for a in agents)
 
 
+def test_pool_instances_match_profile():
+    """Fast 池只含 Fast 实例，Deep 池只含 Deep 实例（修复：构造时混入双 profile 的 bug）。"""
+    orch = _orchestrator()
+    assert all(a.profile.name == ProfileName.FAST for a in orch._pool[ProfileName.FAST])
+    assert all(a.profile.name == ProfileName.DEEP for a in orch._pool[ProfileName.DEEP])
+    # 双实例的模型配置也应一致（Fast 池全部用 fast 模型）
+    fast_models = {a.profile.model for a in orch._pool[ProfileName.FAST]}
+    deep_models = {a.profile.model for a in orch._pool[ProfileName.DEEP]}
+    assert len(fast_models) == 1 and len(deep_models) == 1  # 池内模型配置一致
+
+
+def test_best_agent_deep_never_returns_fast():
+    """_best_agent(DEEP) 不可能选到 Fast 实例（含惩罚/统计扰动后）。"""
+    orch = _orchestrator()
+    # 对 Deep 实例施加惩罚、给 Fast 实例最高分，仍只能在各自池内选择
+    orch.update_routing_penalties({"deep_0": 0.9, "fast_0": 0.0})
+    for _ in range(10):
+        assert orch._best_agent(ProfileName.DEEP).profile.name == ProfileName.DEEP
+        assert orch._best_agent(ProfileName.FAST).profile.name == ProfileName.FAST
+
+
 def test_write_policy_maps_action_to_execution_policy():
     """执行策略（原 QA/EXECUTOR 角色降级）：REQUEST → WRITE_ALLOWED；
     其余动作与未知动作 → READ_ONLY（防御纵深：非 REQUEST 一律只读）。"""
@@ -295,6 +316,66 @@ def test_fast_unhealthy_upgrades_to_deep():
     assert orch._select_profile(req, "single") == ProfileName.FAST
 
 
+# ── Monitor Fast 健康判定（_fast_health，按 profile 字段识别）──────────────────
+
+def _monitor_fast_health(stats):
+    from monitor.performance_monitor import PerformanceMonitor
+    return PerformanceMonitor._fast_health(stats)
+
+
+def test_fast_health_detects_unhealthy_fast_via_profile_field():
+    """修复回归：stats key 是 fast.0（不再是 .fast 后缀）时，_fast_health 必须仍能识别 Fast。"""
+    stats = {
+        "fast.0": {"total": 10, "success_rate": 0.80, "profile": "fast"},
+        "fast.1": {"total": 10, "success_rate": 0.95, "profile": "fast"},
+        "deep.0": {"total": 10, "success_rate": 0.99, "profile": "deep"},
+    }
+    assert _monitor_fast_health(stats) is False  # fast.0 样本足且成功率 <0.85 → 不健康
+
+
+def test_fast_health_healthy_when_samples_insufficient_or_ok():
+    """样本不足视为健康；成功率达标视为健康；无 Fast 实例视为健康。"""
+    # 样本不足（total < 10）→ 不干预
+    assert _monitor_fast_health({
+        "fast.0": {"total": 9, "success_rate": 0.5, "profile": "fast"},
+    }) is True
+    # 成功率达标 → 健康
+    assert _monitor_fast_health({
+        "fast.0": {"total": 10, "success_rate": 0.90, "profile": "fast"},
+    }) is True
+    # 只有 Deep 实例 → 健康
+    assert _monitor_fast_health({
+        "deep.0": {"total": 10, "success_rate": 0.5, "profile": "deep"},
+    }) is True
+    assert _monitor_fast_health({}) is True
+
+
+def test_fast_health_ignores_legacy_key_format():
+    """不依赖 key 后缀：即使 key 不是 .fast 结尾，只要 profile 字段是 fast 就能识别。"""
+    assert _monitor_fast_health({
+        "instance_a": {"total": 10, "success_rate": 0.70, "profile": "fast"},
+        "instance_b": {"total": 10, "success_rate": 0.99, "profile": "deep"},
+    }) is False
+
+
+def test_monitor_feedback_marks_fast_unhealthy_end_to_end():
+    """Monitor 反馈闭环：真实 get_stats() 形状 → _fast_health 判定 → set_fast_health(False)
+    → 本应走 Fast 的请求被升级 Deep。"""
+    orch = _orchestrator()
+    stats = orch.get_stats()
+    assert stats and all("profile" in s for s in stats.values())
+    # 模拟采集数据：所有 Fast 实例样本足 + 低成功率
+    for s in stats.values():
+        if s["profile"] == "fast":
+            s["total"] = 10
+            s["success_rate"] = 0.50
+    orch.set_fast_health(_monitor_fast_health(stats))
+    assert orch.fast_unhealthy is True
+    req = _req("南校区食堂几点关门？", domain=IntentDomain.CAMPUS_LIFE)
+    req.classifier_stage = "pattern"
+    assert orch._select_profile(req, "single") == ProfileName.DEEP
+
+
 # ── 工具调用循环（Agentic RAG）──────────────────────────────────────────────
 
 class _Block:
@@ -514,6 +595,63 @@ def test_dag_success_chain_allows_dependent():
     t3 = next(t for t in plan.tasks if t.task_id == "t3")
     snapshot = shared.snapshot_for(t3)
     assert "personal 结果" in snapshot and "affairs 结果" in snapshot
+
+
+def test_task_duration_measures_each_task_independently():
+    """同 wave 并行任务的 duration_ms 各自独立计时（修复：统一用 wave 耗时导致
+    同波任务都接近最长任务耗时）。"""
+    orch = _orchestrator()
+    req = _req("食堂几点关门，顺便查下明天课表", domain=IntentDomain.CAMPUS_LIFE)
+
+    async def fake_execute(task_req, on_event=None):
+        if task_req.task_id == "t1":
+            await asyncio.sleep(0.15)
+        else:
+            await asyncio.sleep(0.02)
+        return AgentResponse(content="ok", success=True)
+
+    orch._execute = fake_execute
+    tasks = [
+        Task(task_id="t1", domain=IntentDomain.CAMPUS_LIFE, goal="g", message="m1"),
+        Task(task_id="t2", domain=IntentDomain.IT_HELP, goal="g", message="m2"),
+    ]
+    shared = _run(orch._executor.execute(req, tasks, max_tasks=6))
+    meta = {m["id"]: m for m in shared.task_meta()}
+    assert meta["t1"]["duration_ms"] > meta["t2"]["duration_ms"] + 80
+    assert 10 < meta["t2"]["duration_ms"] < 200  # 快任务没有被慢任务拖到 wave 总耗时
+
+
+def test_task_execute_span_recorded_per_task():
+    """Task 级 Trace：每个 TaskAgent Run 产生独立 task_execute span（task_id/domain/action/depends_on），
+    与既有 agent_handle/llm/tool span 并存（t1 失败传播到 t3 BLOCKED 时 t3 不产生 span）。"""
+    from core.tracing import begin_trace, end_trace
+
+    orch = _orchestrator()
+    req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
+
+    async def fake_execute(task_req, on_event=None):
+        if task_req.domain == IntentDomain.PERSONAL and "空闲" in task_req.message:
+            return AgentResponse(content="查询失败", success=False)
+        return AgentResponse(content="affairs 结果", success=True)
+
+    orch._execute = fake_execute
+    plan = _run(orch._planner.plan(req, req.domain, req.action))
+
+    trace = begin_trace()
+    try:
+        _run(orch._executor.execute(req, plan.tasks, max_tasks=6))
+    finally:
+        ended = end_trace()
+    assert ended is not None
+    spans = ended.spans
+
+    task_spans = [s for s in spans if s.name == "task_execute"]
+    assert len(task_spans) == 2  # t1/t2 执行；t3 因依赖失败 BLOCKED 不执行
+    by_id = {s.meta.get("task_id"): s for s in task_spans}
+    assert set(by_id) == {"t1", "t2"}
+    assert by_id["t1"].meta["domain"] == "personal"
+    assert by_id["t2"].meta["action"] == "query"
+    assert by_id["t1"].meta["depends_on"] == ""
 
 
 # ── Agent 工具权限边界 ───────────────────────────────────────────────────────

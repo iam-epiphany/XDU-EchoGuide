@@ -165,7 +165,7 @@ python evaluation/calibrate_intent_thresholds.py   # 按 bge 分数分布重标�
 
 Monitor 的目标是**可观测 + 有限反馈**，不是自动运维平台：
 
-- 请求 Trace（`core/tracing.py`）：request → intent → agent → tool → LLM 逐跳耗时，`/traces/{id}` 可查，`X-Trace-Id` 响应头；
+- 请求 Trace（`core/tracing.py`）：request → intent → planner → task（`task_execute`，含 task_id/domain/action/depends_on）→ agent → tool → LLM 逐跳耗时，`/traces/{id}` 可查，`X-Trace-Id` 响应头；
 - Agent / Tool / Model 调用统计：成功率、平均延迟、在途请求、熔断状态；
 - latency / token / tool success-error 计数（ModelGateway 在每次真实模型调用时落 RunState）；
 - Fast / Deep 等 profile 实例表现（`fast.0` / `deep.1`）；

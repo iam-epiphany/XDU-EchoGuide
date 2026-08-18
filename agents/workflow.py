@@ -565,13 +565,20 @@ class TaskExecutor:
             for t in wave:
                 del pending[t.task_id]
 
-            started = time.monotonic()
+            async def run_one(t: Task):
+                # 每个 Task 独立计时：同 wave 并行任务的耗时互不影响，
+                # task_meta.duration_ms 表示该 Task 自身真实执行耗时
+                t0 = time.monotonic()
+                try:
+                    r = await self._run_task(req, t, shared, on_event)
+                except Exception as ex:  # noqa: BLE001 —— 与 gather(return_exceptions) 语义一致
+                    r = ex
+                return t, r, (time.monotonic() - t0) * 1000
+
             results = await asyncio.gather(
-                *[self._run_task(req, t, shared, on_event) for t in wave],
-                return_exceptions=True,
+                *[run_one(t) for t in wave],
             )
-            for t, r in zip(wave, results):
-                duration_ms = (time.monotonic() - started) * 1000
+            for t, r, duration_ms in results:
                 if isinstance(r, AgentResponse):
                     status = TASK_SUCCESS if r.success else TASK_FAILED
                     shared.set_result(t.task_id, r, status=status)
