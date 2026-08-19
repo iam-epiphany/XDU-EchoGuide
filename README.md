@@ -1,6 +1,6 @@
 # EchoGuide · 西电校园智慧助手
 
-EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个自己实现的轻量 **Agent Runtime / Harness**。项目围绕五个工程问题做了比较完整的实现：**四层长期记忆、级联意图识别、Agentic RAG、Monitor/Trace 可观测、MCP Server**；其他能力（Task-scoped SubAgent、Fast/Deep 双路径、动态 Skills、工具权限、Verifier、DAG 编排、评测）都是支撑这五条主线的二级能力。
+EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个自己实现的轻量 **Agent Runtime / Harness**。项目围绕五个工程问题做了比较完整的实现：**分层长程记忆（Working Memory + L0-L3）、级联意图识别、Agentic RAG、Monitor/Trace 可观测、MCP Server**；其他能力（Task-scoped SubAgent、Fast/Deep 双路径、动态 Skills、工具权限、Verifier、DAG 编排、评测）都是支撑这五条主线的二级能力。
 
 课表、校车、办事清单和故障诊断走 **DeepSeek V4 Flash 快速路径**；政策检索、低置信度问题和跨领域依赖任务进入 **DeepSeek V4 Pro 深度路径**。
 
@@ -10,7 +10,7 @@ EchoGuide 是面向西安电子科技大学学生的校园 Agent，也是一个�
 Agent Runtime / Harness
         |
         +-- Intent（级联意图识别）
-        +-- Memory（四层长期记忆）
+        +-- Memory（分层长程记忆 Working Memory + L0-L3）
         +-- Agentic RAG
         +-- Monitor / Trace
         +-- MCP Server
@@ -71,15 +71,15 @@ flowchart LR
 | Fast | `deepseek-v4-flash` | 关闭 | 768 | Top-K 3，不改写、不重排 | 课表、天气、校车、确定性工具 |
 | Deep | `deepseek-v4-pro` | 开启，effort=high | 1536 | Top-K 5，查询改写 + 本地 bge 重排（LLM 兜底） | 政策问答、复杂请求、多 Agent |
 
-Monitor 按 Profile 实例（`fast.0`、`deep.1` 等）统计成功率、延迟和在途请求。Fast 执行失败时升级到 Deep；两种 Profile 可以分别配置 API Key、模型和端点。
+Monitor 按 Profile（`fast` / `deep` 两档）统计成功率、平均与 P50/P95 延迟、在途请求；Fast 在线表现不健康时临时升级 Deep。两种 Profile 可以分别配置 API Key、模型和端点；每 Profile 一个执行实例（同构复制多个 TaskAgent 没有能力差异，并发由 asyncio 承担，未来接入真正异构 Model/Endpoint 时再扩展实例级路由）。
 
 > 图中 Pattern 阈值 0.90、Embedding 阈值 0.80 / margin 0.10 为默认值（按真实 bge 分布标定：同构嵌入下命中区与 miss 区存在分离空档；宁紧勿松，有 LLM 兜底），可通过 `ECHOGUIDE_INTENT_PATTERN_THRESHOLD` / `ECHOGUIDE_INTENT_EMBEDDING_THRESHOLD` / `_MARGIN` 覆盖（见下文「本地向量模型」）。
 
 ## 五条主线
 
-### 1. 四层长期记忆（L0-L3 金字塔 + 上下文卸载）
+### 1. 分层长程记忆（Working Memory + L0-L3）
 
-记忆按抽象层级组织（对应 TencentDB-Agent-Memory 语义金字塔思路的轻量实现）：低层保留证据、高层保留结构，任何高层结论可沿证据链逐层下钻回原始对话。Redis Working Memory 承载最近对话与当前会话上下文，**不算 L0-L3**。
+推荐定位：**Hierarchical Long-term Memory with Provenance**——低层保留证据、高层保留结构，任何高层结论可沿证据链逐层下钻回原始对话。Redis Working Memory 承载当前会话近期上下文，**不计入 L0-L3**。
 
 | 层级 | 内容 | 存储 | 写入时机 |
 |---|---|---|---|
@@ -166,14 +166,13 @@ python evaluation/calibrate_intent_thresholds.py   # 按 bge 分数分布重标�
 Monitor 的目标是**可观测 + 有限反馈**，不是自动运维平台：
 
 - 请求 Trace（`core/tracing.py`）：request → intent → planner → task（`task_execute`，含 task_id/domain/action/depends_on）→ agent → tool → LLM 逐跳耗时，`/traces/{id}` 可查，`X-Trace-Id` 响应头；
-- Agent / Tool / Model 调用统计：成功率、平均延迟、在途请求、熔断状态；
+- Profile / Tool / Model 调用统计：成功率、平均与 P50/P95 延迟、在途请求、熔断状态（每 Profile 单执行实例）；
 - latency / token / tool success-error 计数（ModelGateway 在每次真实模型调用时落 RunState）；
-- Fast / Deep 等 profile 实例表现（`fast.0` / `deep.1`）；
+- Task 状态与 DAG blocked/failed 数量、Runtime 模型/工具调用与降级次数、Verifier flags（`orchestrator.observability_counts()` 聚合，真实业务/执行维度）；
 - 简单异常检测：Z-score 告警（成功率/延迟/熔断）去重与恢复，可推 Webhook；
-- **有限的 routing penalty**：Monitor 把在线表现转成 0-0.9 路由降权，Orchestrator 据此在 Fast/Deep 实例间切换；
-- **Profile 级有限反馈**：`fast.0`/`fast.1` 成功率显著偏低（样本 ≥10 且 <0.85）时，Monitor 标记 Fast 不健康，Orchestrator 临时把本应走 Fast 的请求升级 Deep，恢复后自动回落。
+- **Profile 级有限反馈**：Fast 成功率显著偏低（样本 ≥10 且 <0.85）时，Monitor 标记 Fast 不健康，Orchestrator 临时把本应走 Fast 的请求升级 Deep，恢复后自动回落。
 
-不扩展 RL / Bandit、自动 Prompt 优化、自动参数搜索、复杂在线学习。
+不做实例级 routing penalty（同构实例无路由意义），不扩展 RL / Bandit、自动 Prompt 优化、自动参数搜索、复杂在线学习。
 
 Prometheus 指标入口 `/metrics`（只读无认证，指标不含敏感数据；生产经网络层限制暴露面），`config/alerts/` 提供告警规则。
 
@@ -196,7 +195,7 @@ EchoGuide 内部 Tool Registry 通过标准 MCP 接口对外提供服务（Strea
 | 组件 | 职责 |
 |---|---|
 | `RunState` | 单次运行状态：身份、trace_id、step/tool/tool_round/retry 计数器、input/output tokens 累计、错误记录、middleware 扩展位 |
-| `ExecutionPolicy` | 执行预算：协作 Agent 上限、任务 DAG 上限、工具轮次（Fast/Deep 分级 3/5）+ 无进展检测（连续 N 轮同名同参工具调用强制收尾）、模型调用次数上限、工具调用总数、降级次数、合成 token、Runtime Guard、Verifier LLM 开关 |
+| `ExecutionPolicy` | 执行预算：协作目标上限、任务 DAG 上限、工具轮次（Fast/Deep 分级 3/5）+ 无进展检测（连续 N 轮同名同参工具调用强制收尾）、模型调用次数上限、工具调用总数、降级次数、合成 token、Runtime Guard、Verifier LLM 开关 |
 | `RuntimeMiddleware` | 生命周期钩子（before/after × run/model/tool/finish）；before 正序、拦截异常短路，after 逆序必执行 |
 | `ModelGateway` | **统一模型调用入口**：意图识别、Agent 工具循环、合成器、出口校验、记忆提炼、查询改写/重排兜底的 LLM 调用全部经 `gateway.call()/call_stream()` 进出 |
 | `AgentRuntime` | 运行入口：`run(state, core)` 在中间件链内执行编排器核心；Guard 拦截时 core 不执行、返回拒绝结果 |
@@ -211,20 +210,21 @@ python -m pytest tests/test_runtime.py -q   # Runtime 离线测试（无服务�
 
 ## Task 边界与工具权限
 
-真正的 Agent 单位是 **Task**（Task-scoped SubAgent）：每个 Task 由一次独立 TaskAgent Run 执行，拥有独立 goal / message / domain / action / depends_on 与协作上下文。执行体只有唯一一个 Agent 类 `TaskAgent`（`agents/roles.py`），按 Execution Profile（Fast/Deep）实例化；**QA / Executor 降级为执行策略**（`roles.write_policy_for`）：
+真正的 Agent 单位是 **Task**（Task-scoped SubAgent）：每个 Task 由一次独立 TaskAgent Run 执行，拥有独立 goal / message / domain / action / depends_on / allowed_tools 与协作上下文。执行体只有唯一一个 Agent 类 `TaskAgent`（`agents/roles.py`），每 Profile 一个执行实例（Fast/Deep 是真实执行配置：模型/思考/预算/检索深度不同，不是复制对象）；**QA / Executor 降级为执行策略**（`roles.write_policy_for`）：
 
 | 执行策略（WritePolicy） | 工具面 | 行为规范 | 选择依据 |
 |---|---|---|---|
 | **READ_ONLY** | 公共工具层 − 写工具 | 政策先检索、回答带引用、不编造 | 除 `request` 外的所有动作（含动作未知，防御纵深） |
-| **WRITE_ALLOWED** | 公共工具层全量（含写） | 写操作回执、失败如实说明 | `request` 动作（Task 自己的 action） |
+| **WRITE_ALLOWED** | 公共工具层 ∩ 任务能力（含写） | 写操作回执、失败如实说明 | `request` 动作（Task 自己的 action） |
 
-工具权限三层：
+工具可见性 / 执行权限 = **Agent-exposed Tools ∩ Action Policy ∩ Task Capability**（四层门禁交集，暴露层与执行层双重校验）：
 
-1. **注册级**：`Tool.agent_exposed`（外部工具默认不可见，由编排器显式暴露）；
+1. **注册级**：`Tool.agent_exposed` + 显式副作用声明 `Tool.effect`（`Tool.is_agent_visible`；外部工具默认不可见，未声明 effect 直接不可见不可写——fail-closed）；
 2. **Run 级**：非 `request` 动作一律 READ_ONLY（`roles.write_policy_for`），动作未知/误判也不会暴露写工具（防御纵深）；
-3. **Action 级**：QUERY/GREETING 等动作拒写（`persona.action_allows_tool`）。
+3. **Action 级**：QUERY/GREETING 等动作拒写（`persona.action_allows_tool`）；
+4. **Task 级**：`Task.allowed_tools`（Planner 声明的任务最小权限）——"添加待办"任务只给 `add_todo`，不因 REQUEST 获得其他写工具。
 
-**写工具集合由工具自身声明**（`Tool.write=True`，`MCPToolManager.write_tools()` 推导），新增写工具只需声明读写属性，不再手工维护黑名单——漏声明直接不可写（fail-closed），不会出现"新增写工具忘记登记被只读动作误开放"。
+**写工具集合由工具自身的 `effect` 声明推导**（`ToolEffect.WRITE` / `EXTERNAL_SIDE_EFFECT` → `MCPToolManager.write_tools()`），不再手工维护黑名单——新增有副作用的工具忘记声明 effect 时只影响它自己（不可见、不可写），不会出现"新增写工具忘记登记被只读动作误开放"。
 
 ## 动态 Skills（Runtime 扩展机制）
 
@@ -236,9 +236,9 @@ python -m pytest tests/test_runtime.py -q   # Runtime 离线测试（无服务�
 
 不继续扩展 Skill marketplace / dependency graph / self-generation / Skill Agent / 自动评测系统。
 
-## Verifier / Grounding（出口校验）
+## Verifier / Grounding（Post-response Consistency Check）
 
-回答返回用户前做事实核查，只保留最有价值的规则校验：
+定位：回答返回用户前的**出口一致性 / 依据检查**——只标注不阻断（honest-by-design），不承诺"消灭幻觉"。重点检查：
 
 - **引用存在性**：回答出现 `[n]` 引用但无对应 retrieval evidence → flag；
 - **写操作落账**：声称"已添加/已完成"但无成功的 write tool execution → flag；
@@ -253,13 +253,13 @@ python -m pytest tests/test_verifier.py -q   # 规则校验 / LLM 判定 / 编�
 
 ## 复杂任务编排（ExecutionPlan / DAG）
 
-Planner 统一输出 `ExecutionPlan`（Task DAG），复杂度模式由最终 DAG 自动推导，不再由 Intent/LLM 单独分类：
+Planner 统一输出 `ExecutionPlan`（Task DAG），复杂度模式由最终 DAG 自动推导，不再由 Intent/LLM 单独分类；确定性规则链（如下面的课表→办理信息→待办）只是**高频业务场景 Fast Path**——只有高频、稳定、确定性强、用规则明显比 LLM 更可靠的场景才加规则，通用复杂请求由 LLM 规划负责：
 
 - `single`：1 个 task，单 Agent 直接执行（1 次 TaskAgent Run）；
 - `parallel`：多个无依赖 task 并行（"食堂几点关门，顺便查下明天课表"）；
 - `dependent`：存在 depends_on 的任务（"明天下午有空就去办校园卡，记个待办"）——按 depends_on 分波并行执行，依赖任务只注入声明的 `depends_on` 结果（SharedState 快照），Synthesizer 合并最终回复（LLM 失败降级规则拼接）。
 
-**每个 Task 有自己的 action**：复合请求拆分后 t1/t2 可能是 `query`（READ_ONLY）、t3 才是 `request`（WRITE_ALLOWED）——执行策略由任务自己的 action 决定，不再继承原始请求的 action。
+**每个 Task 有自己的 action 与工具能力**：复合请求拆分后 t1/t2 可能是 `query`（READ_ONLY）、t3 才是 `request`（WRITE_ALLOWED，且只声明 `allowed_tools=["add_todo"]`）——执行策略与最小权限由任务自己决定，不再继承原始请求的 action；QUERY+REQUEST 混合等子任务权限不同的请求优先升级 LLM 规划，Planner 输出后仍有硬校验。
 
 **DAG 失败传播**：任务状态区分 SUCCESS / FAILED / BLOCKED / SKIPPED。依赖任务 FAILED/BLOCKED → 下游任务 BLOCKED（不执行、不注入失败上下文），不能因为前置"执行完成（但失败）"就继续执行依赖任务。
 
@@ -445,7 +445,7 @@ agents/        编排器（Task-scoped SubAgent + 按需 DAG 协作）；roles.p
                profiles.py（Fast/Deep）、verifier.py（出口校验）
 core/          级联意图识别、领域词表（单一事实来源）、Skills 与 Trace
 memory/        分层记忆（L0 原文 / L1 事实 / L2 场景 / L3 画像历史）与工作记忆
-mcp/           工具管理器（读写声明/熔断/改写/重排/缓存）、Agentic RAG、MCP 协议、外部客户端（默认关闭）
+mcp/           工具管理器（副作用声明 ToolEffect/熔断/改写/重排/缓存）、Agentic RAG、MCP 协议、外部客户端（默认关闭）
 api/           FastAPI 入口与认证；routers/ 按 chat/memory/knowledge/monitor/mcp/system 拆分；state.py 全局组件
 tools/         个人、校园、学业、校务、IT 确定性工具（公共工具层）
 data/public/   版本化校园公开信息、办事流程和 IT 诊断树

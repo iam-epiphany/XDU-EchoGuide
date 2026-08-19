@@ -1,23 +1,27 @@
 """
-亮点：多轮对话记忆管理（四层记忆金字塔，对应 TencentDB-Agent-Memory 思路）
+亮点：多轮对话记忆管理（Working Memory + 分层长程记忆 L0-L3）
 
-四层记忆架构，模拟人类记忆机制：
-  0. 原文层 L0（SQLite）—— 原始对话全量落库，永不丢失，是证据链的锚点
-  1. 工作记忆（Redis）—— 当前会话的最近 N 条消息，毫秒级读写
-  2. 情景记忆（ChromaDB）—— 跨会话历史检索；压缩时生成"场景块"（layer=scenario）
-     优先注入，普通片段次之（L2 场景层）
-  3. 原子事实（SQLite）—— 从对话提炼的结构化事实，每条带来源会话与轮次，
-     可沿 turn_id 下钻回 L0 原文（L1 事实层，白盒可溯源）；
-     只存画像未覆盖的细粒度事实（决定/状态/计划/细节），上下文阶段按需召回
-  4. 用户画像（ChromaDB + SQLite）—— 长期偏好聚合，版本历史可回滚（L3 画像层）
+推荐定位：Hierarchical Long-term Memory with Provenance（分层长程记忆 + 白盒可溯源），
+Working Memory 承载当前会话近期上下文，不计入 L0-L3：
+
+  - Working Memory（Redis）—— 当前会话最近 N 条消息，毫秒级读写，TTL 24h；
+  - L0 Raw（SQLite）—— 原始对话全量，永不丢失，是证据链的锚点（turn_id）；
+  - L1 Facts（SQLite）—— 从对话提炼的原子事实，每条带来源会话与轮次，
+    可沿 turn_id 下钻回 L0 原文（白盒可溯源）；只存画像未覆盖的细粒度事实
+    （决定/状态/计划/细节），上下文阶段按需召回；
+  - L2 Scenario（ChromaDB）—— 跨会话历史检索；压缩时生成"场景块"
+    （layer=scenario，任务/结论/关键实体），检索优先注入，普通片段次之；
+  - L3 Persona（ChromaDB + SQLite）—— 长期偏好聚合画像，版本历史可回滚。
 
 关键设计：
-  - 上下文构建时四层记忆融合：L3 画像常驻注入（紧凑聚合），L1 事实按需召回
+  - 上下文构建时分层融合：L3 画像常驻注入（紧凑聚合），L1 事实按需召回
     （与当前提问相关才注入，不与 L3 重复注入）
-  - 工作记忆超过阈值时自动压缩（LLM 场景化摘要），防止 context 爆炸
+  - Working Memory 超过阈值时自动压缩（LLM 场景化摘要 → L2 场景块），
+    防止 context 爆炸
   - 提炼画像时一次 LLM 调用同时产出"画像 + 原子事实"（零额外成本），
     且只有检测到画像信号才调用 LLM（llm_call_count 统计调用率）；
     被画像覆盖的事实（偏好/实体条目是其子串）不落 L1（L1/L3 分工去重）
+  - 高层记忆可沿 provenance 下钻到原始消息（L3 画像 → L1 事实 → L0 原文）
   - Embedding 由本地 bge 中文模型生成（mcp.embeddings，ONNX，不依赖外部 API）；
     模型不可用时回退 ChromaDB 内置 all-MiniLM-L6-v2（collection 名随向量空间切换）
 """
@@ -158,7 +162,7 @@ class Message:
 
 @dataclass
 class MemoryContext:
-    """传给 Agent 的完整上下文（四层记忆融合）。"""
+    """传给 Agent 的完整上下文（Working Memory + 分层记忆融合）。"""
     recent_messages:  List[Message]   # 工作记忆：最近对话
     relevant_history: List[str]       # 情景记忆：语义相关历史片段（L2 场景块优先）
     user_profile:     Dict[str, Any]  # 用户画像：长期偏好、常用实体（L3）
@@ -191,12 +195,12 @@ class MemoryContext:
 
 class MemoryManager:
     """
-    四层记忆管理器（对应记忆金字塔）：
+    分层长程记忆管理器（Hierarchical Long-term Memory with Provenance）：
       L0 原文层 —— LayeredStore.raw_messages（SQLite，永不丢失）
       L1 事实层 —— LayeredStore.facts（结构化原子事实，带证据链）
       L2 场景层 —— ChromaDB episodic（layer=scenario 场景块优先检索）
       L3 画像层 —— ChromaDB profile + LayeredStore.profile_history（版本可回滚）
-    工作记忆存 Redis（TTL 24h）。
+    Working Memory 存 Redis（TTL 24h），不计入 L0-L3。
     """
 
     WORKING_MAX   = 20    # 工作记忆最大条数，超过则触发压缩
@@ -324,7 +328,7 @@ class MemoryManager:
         }))
         await self._redis.expire(key, 86400)  # 24h TTL
 
-        # L0 原文落库（四层金字塔的证据链锚点，永不丢失）。
+        # L0 原文落库（分层记忆的证据链锚点，永不丢失）。
         # 写入失败只告警不阻断主链路（记忆是增强，不是依赖）。
         try:
             await self._layered.append_raw(
@@ -482,7 +486,7 @@ facts 只提炼「画像未覆盖」的细粒度可溯源事实（做出的决�
 
     async def get_context(self, user_id: str, conv_id: str, query: str = "") -> MemoryContext:
         """
-        构建完整的记忆上下文（四层融合）。
+        构建完整的记忆上下文（Working Memory + 分层记忆融合）。
 
         query 用于从情景记忆中检索语义相关的历史片段，同时作为 L1 事实
         按需召回的关联查询：无关事实不注入（L3 画像常驻注入，不与 L3 重复）；

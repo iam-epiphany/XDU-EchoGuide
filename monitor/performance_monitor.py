@@ -1,15 +1,22 @@
 """
-亮点：利用 Monitor 监控 Agent 在线表现
+亮点：利用 Monitor 监控在线表现（Profile / Model / Tool 维度）
 
-核心问题：如何利用 Monitor 监控 Agent 的在线表现？
+核心问题：如何利用 Monitor 监控系统的在线表现？
 
 本模块的答案：
   1. 实时采集 —— 每隔 N 秒从 Orchestrator 和 ToolManager 拉取最新统计
   2. 异常检测 —— Z-score 统计方法，自动发现指标突变
-  3. 路由反馈 —— 将 Agent 成功率/延迟写回 Orchestrator，
-     Orchestrator 的 _best_agent() 会据此动态调整路由权重
+  3. 有限反馈 —— Fast Profile 不健康时标记 Orchestrator 临时升级 Deep
+     （不引入 RL / Bandit / 在线学习，不做实例级智能路由）
   4. 优化建议 —— 基于规则生成可操作的优化建议（不是空话）
   5. 告警 —— 超阈值时打日志 + 可选 Webhook
+
+监控维度（真实业务/执行维度，不是复制的 Agent 对象）：
+  - Profile 成功率 / 平均与 P50/P95 延迟（每 Profile 单执行实例）
+  - Model / Provider 维度由 Profile 统计承接（错误率、延迟）
+  - Tool 成功率 / 延迟 / 连续失败 / 熔断状态
+  - Task 状态与 DAG blocked/failed 数量、Runtime 模型/工具调用计数、
+    Verifier flags（Orchestrator.observability_counts）
 """
 import asyncio
 import logging
@@ -100,17 +107,18 @@ class AnomalyDetector:
 
 class PerformanceMonitor:
     """
-    Agent 在线表现监控。
+    Profile / Tool 在线表现监控。
 
-    与 Orchestrator 的联动：
-      Monitor 采集 → 发现某 Agent 成功率下降 →
-      Orchestrator.get_stats() 中该 Agent 的 routing_score 自动降低 →
-      _best_agent() 路由时自动绕开该 Agent
+    与 Orchestrator 的联动（有限反馈，不伪装成智能路由）：
+      Monitor 采集 → Fast Profile 成功率显著偏低 →
+      set_fast_health(False) → Orchestrator 临时把本应走 Fast 的请求升级 Deep
+      → 恢复后自动回落。
 
-    这就是"利用 Monitor 监控在线表现"的闭环。
+    不做实例级路由惩罚：每 Profile 单执行实例（同构实例无路由意义），
+    未来接入真正异构 Model/Provider 池后再增加实例级 routing score。
     """
 
-    # 告警阈值
+    # 告警阈值（agent_* 指标现按 Profile 采集，label 为 fast / deep）
     THRESHOLDS = {
         "agent_success_rate":  (0.90, Severity.ERROR,   "less_than"),
         "tool_success_rate":   (0.95, Severity.WARNING,  "less_than"),
@@ -144,14 +152,15 @@ class PerformanceMonitor:
 
     def _setup_prometheus(self, port: int) -> None:
         self._prom = {
-            "agent_success_rate": Gauge("agent_success_rate", "Agent 成功率", ["agent"]),
-            "agent_avg_latency_ms": Gauge("agent_avg_latency_ms", "Agent 平均延迟", ["agent"]),
-            "agent_requests_total": Gauge("agent_requests_total", "Agent 请求总数", ["agent"]),
-            "agent_in_flight": Gauge("agent_in_flight", "Agent 当前并发", ["agent"]),
-            "agent_monitor_penalty": Gauge("agent_monitor_penalty", "Agent 路由惩罚", ["agent"]),
+            "agent_success_rate": Gauge("agent_success_rate", "Profile 成功率", ["agent"]),
+            "agent_avg_latency_ms": Gauge("agent_avg_latency_ms", "Profile 平均延迟", ["agent"]),
+            "agent_p95_latency_ms": Gauge("agent_p95_latency_ms", "Profile P95 延迟", ["agent"]),
+            "agent_requests_total": Gauge("agent_requests_total", "Profile 请求总数", ["agent"]),
+            "agent_in_flight": Gauge("agent_in_flight", "Profile 当前并发", ["agent"]),
             "tool_success_rate":  Gauge("tool_success_rate", "工具成功率", ["tool"]),
             "tool_avg_latency_ms": Gauge("tool_avg_latency_ms", "工具平均延迟", ["tool"]),
             "tool_requests_total": Gauge("tool_requests_total", "工具请求总数", ["tool"]),
+            "task_status": Gauge("task_status", "Task 状态计数", ["status"]),
         }
         start_http_server(port)
         logger.info(f"Prometheus 已启动: :{port}")
@@ -186,39 +195,36 @@ class PerformanceMonitor:
 
     async def _collect(self) -> None:
         """
-        采集 Agent 和工具的实时统计，检测异常，生成建议。
+        采集 Profile / Tool 的实时统计与聚合计数，检测异常，生成建议。
 
         关键：这里读取的 stats 就是 Orchestrator/ToolManager 在处理请求时
         实时更新的数据，Monitor 不需要额外埋点。
         """
         agent_stats = self._orchestrator.get_stats()
         tool_stats  = self._tool_manager.get_stats()
-        routing_penalties: Dict[str, float] = {}
 
-        # ── Agent 指标 ────────────────────────────────────────────────────────
-        for agent_key, s in agent_stats.items():
+        # ── Profile 指标（每 Profile 单执行实例，key = fast / deep）──────────
+        for profile_key, s in agent_stats.items():
             sr  = s["success_rate"]
             ms  = s["avg_ms"]
 
             # 异常检测
             for metric, value in [("agent_success_rate", sr), ("agent_avg_ms", ms)]:
-                anomaly = self._detector.record(f"{metric}:{agent_key}", value)
+                anomaly = self._detector.record(f"{metric}:{profile_key}", value)
                 if anomaly:
-                    logger.warning(f"异常检测 [{agent_key}] {metric}={value:.3f} z={anomaly['z_score']}")
+                    logger.warning(f"异常检测 [{profile_key}] {metric}={value:.3f} z={anomaly['z_score']}")
 
             # 阈值告警
-            self._check_threshold("agent_success_rate", sr, agent_key)
-            self._check_threshold("agent_avg_ms", ms, agent_key)
+            self._check_threshold("agent_success_rate", sr, profile_key)
+            self._check_threshold("agent_avg_ms", ms, profile_key)
 
             # Prometheus
             if "agent_success_rate" in self._prom:
-                self._prom["agent_success_rate"].labels(agent=agent_key).set(sr)
-                self._prom["agent_avg_latency_ms"].labels(agent=agent_key).set(ms)
-                self._prom["agent_requests_total"].labels(agent=agent_key).set(s["total"])
-                self._prom["agent_in_flight"].labels(agent=agent_key).set(s.get("in_flight", 0))
-                self._prom["agent_monitor_penalty"].labels(agent=agent_key).set(s.get("monitor_penalty", 0.0))
-
-            routing_penalties[agent_key] = self._routing_penalty(sr, ms)
+                self._prom["agent_success_rate"].labels(agent=profile_key).set(sr)
+                self._prom["agent_avg_latency_ms"].labels(agent=profile_key).set(ms)
+                self._prom["agent_p95_latency_ms"].labels(agent=profile_key).set(s.get("p95_ms", 0))
+                self._prom["agent_requests_total"].labels(agent=profile_key).set(s["total"])
+                self._prom["agent_in_flight"].labels(agent=profile_key).set(s.get("in_flight", 0))
 
         # ── Profile 级有限反馈（Fast/Deep 选择）─────────────────────────────
         # Fast 路径成功率显著偏低且样本足够 → 标记 Fast 不健康，Orchestrator
@@ -251,20 +257,49 @@ class PerformanceMonitor:
                     priority=9,
                 ))
 
-        # ── 路由优化建议 ──────────────────────────────────────────────────────
-        updater = getattr(self._orchestrator, "update_routing_penalties", None)
-        if updater:
-            updater(routing_penalties)
-        self._generate_routing_suggestions(agent_stats)
+        # ── 真实业务/执行维度计数（Task 状态 / Runtime 调用 / Verifier flags）─
+        obs = getattr(self._orchestrator, "observability_counts", lambda: {})()
+        task_status = obs.get("task_status") or {}
+        runtime_counts = obs.get("runtime") or {}
+        verifier_flags = obs.get("verification") or {}
+
+        for status, count in task_status.items():
+            if "task_status" in self._prom:
+                self._prom["task_status"].labels(status=status).set(count)
+        blocked = task_status.get("blocked", 0)
+        failed = task_status.get("failed", 0)
+        if blocked >= 3:
+            self._add_suggestion(Suggestion(
+                title=f"DAG 被阻塞任务 {blocked} 个",
+                detail="依赖失败导致下游任务被 BLOCKED（失败传播正常工作）",
+                action="1. 检查失败的上游任务日志\n2. 确认工具/检索链路可用性",
+                priority=7,
+            ))
+        if failed >= 3:
+            self._add_suggestion(Suggestion(
+                title=f"任务执行失败 {failed} 个",
+                detail="任务 DAG 中出现失败节点，检查模型/工具调用",
+                action="1. 查看 Trace 定位失败任务\n2. 检查对应工具成功率与熔断状态",
+                priority=8,
+            ))
+        for flag, count in verifier_flags.items():
+            if count >= 5:
+                self._add_suggestion(Suggestion(
+                    title=f"出口校验标记 {flag} × {count}",
+                    detail="Verifier 反复标记同一风险（只标注不阻断）",
+                    action="1. 检查对应工具证据/引用链路\n2. 确认是否需要补充检索",
+                    priority=6,
+                ))
+
+        self._generate_profile_suggestions(agent_stats)
 
     @staticmethod
     def _fast_health(agent_stats: Dict[str, Any]) -> bool:
         """
-        Fast profile 健康判定（有限反馈）：所有 Fast 实例健康才算健康。
+        Fast profile 健康判定（有限反馈）：按 profile 字段识别 Fast。
 
-        不依赖 stats key 的字符串格式（key 为 fast.0 / deep.1 等实例序号），
-        而是按每个实例的 profile 字段识别 Fast；样本不足（total < 10）视为
-        健康（不干预）；成功率 < 0.85 视为不健康（临时升级 Deep）。
+        每 Profile 单执行实例（key 为 fast / deep）；样本不足（total < 10）
+        视为健康（不干预）；成功率 < 0.85 视为不健康（临时升级 Deep）。
         只做这一条规则，不引入复杂在线学习。
         """
         from agents.profiles import ProfileName
@@ -280,16 +315,6 @@ class PerformanceMonitor:
                 logger.warning(f"Fast profile 不健康（{key} 成功率 {s['success_rate']:.1%}），临时升级 Deep")
                 return False
         return True
-
-    @staticmethod
-    def _routing_penalty(success_rate: float, avg_ms: float) -> float:
-        """把在线表现转成 0-0.9 的路由降权系数。"""
-        penalty = 0.0
-        if success_rate < 0.90:
-            penalty += min(0.5, (0.90 - success_rate) * 2)
-        if avg_ms > 3000:
-            penalty += min(0.4, (avg_ms - 3000) / 10000)
-        return min(penalty, 0.9)
 
     def _check_threshold(self, metric: str, value: float, label: str) -> None:
         if metric not in self.THRESHOLDS:
@@ -320,21 +345,21 @@ class PerformanceMonitor:
         if self._webhook:
             asyncio.create_task(self._send_webhook(alert))
 
-    def _generate_routing_suggestions(self, agent_stats: Dict[str, Any]) -> None:
+    def _generate_profile_suggestions(self, agent_stats: Dict[str, Any]) -> None:
         """
-        基于 Agent 在线表现生成路由优化建议。
-        这是 Monitor → Orchestrator 反馈闭环的体现。
+        基于 Profile 在线表现生成优化建议。
+        这是 Monitor → Orchestrator 有限反馈（Fast 不健康 → 升级 Deep）的补充。
         """
-        for agent_key, s in agent_stats.items():
+        for profile_key, s in agent_stats.items():
             if s["success_rate"] < 0.85 and s["total"] > 10:
                 self._add_suggestion(Suggestion(
-                    title=f"Agent {agent_key} 成功率偏低",
-                    detail=f"成功率 {s['success_rate']:.1%}，路由评分 {s['routing_score']:.3f}",
+                    title=f"Profile {profile_key} 成功率偏低",
+                    detail=f"成功率 {s['success_rate']:.1%}，P95 延迟 {s.get('p95_ms', 0)}ms",
                     action=(
-                        "Orchestrator 的 _best_agent() 已自动降低该 Agent 的路由权重。\n"
-                        "建议：1. 检查 system_prompt 是否需要优化\n"
-                        "      2. 检查该类型问题的复杂度是否超出 Agent 能力\n"
-                        "      3. 考虑增加同类型 Agent 实例"
+                        "Monitor 已把本应走 Fast 的请求临时升级 Deep。\n"
+                        "建议：1. 检查该 Profile 的模型/端点配置与限流状态\n"
+                        "      2. 查看错误日志与工具成功率\n"
+                        "      3. 确认是否需要调整模型或端点（异构路由）"
                     ),
                     priority=8,
                 ))
@@ -356,9 +381,13 @@ class PerformanceMonitor:
 
     def summary(self) -> Dict[str, Any]:
         """返回当前监控摘要，供 API 层暴露。"""
+        obs = getattr(self._orchestrator, "observability_counts", lambda: {})()
         return {
             "agent_stats":   self._orchestrator.get_stats(),
             "tool_stats":    self._tool_manager.get_stats(),
+            "task_status":   obs.get("task_status") or {},
+            "runtime_counts": obs.get("runtime") or {},
+            "verifier_flags": obs.get("verification") or {},
             "active_alerts": [asdict(a) for a in self._alerts if not a.resolved][-10:],
             "suggestions":   [
                 {"title": s.title, "action": s.action, "priority": s.priority}

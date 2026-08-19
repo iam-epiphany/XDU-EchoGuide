@@ -1,22 +1,27 @@
 """
-Task Agent —— 围绕一个 Task 的独立 Agent Run 执行体（轻量 Multi-Agent Harness）。
+Task Agent —— 围绕一个 Task 的独立 Agent Run 执行体（Agent Harness 的通用执行器）。
 
 v5 收口：不再有 QAAgent / ExecutorAgent 两个职责 Agent 类，也没有 Role→Agent Pool。
 真正的 Agent 单位 = 围绕一个 Task 的一次独立 Agent Run：
-  - 每个 Task 有独立 goal / message / domain / action / depends_on；
+  - 每个 Task 有独立 goal / message / domain / action / depends_on / allowed_tools；
   - QA / EXECUTOR 降级为 Execution Policy（write_policy_for）：
       非 REQUEST 动作 → READ_ONLY（只读工具面）；
       REQUEST 动作 → WRITE_ALLOWED（可暴露满足策略的写工具）；
     Action 只影响工具可见性、写权限与行为指引，不构成 Agent 身份；
   - 领域（IntentDomain）继续只做人格/Skills 挂载键（见 persona.py），
     不参与 Agent 类选择 —— 新增业务领域不需要新增 Agent 类；
-  - Fast / Deep 只是 Execution Profile（profiles.py），不是两个不同 Agent。
+  - Fast / Deep 只是 Execution Profile（profiles.py），每 Profile 一个执行实例，
+    不是多个同构 Agent 竞争（asyncio 并发已足够，实例间无能力差异）。
 
-工具可见性 = 公共工具层 + 双层门禁（防御纵深）：
-  1. 注册级 agent_exposed（Tool 声明，外部工具默认不可见）；
+工具可见性 = 公共工具层 + 三重门禁（防御纵深，交集决定）：
+  Agent-exposed Tools ∩ Action Policy ∩ Task Capability
+  1. 注册级 agent_exposed + effect 声明（Tool.is_agent_visible：未声明副作用
+     的工具不可见，fail-closed）；
   2. Run 级写策略（write_policy_for：非 REQUEST 一律 READ_ONLY）+ Action 级
      Read/Write 策略（persona.action_allows_tool，写工具集合由
-     tool_manager.write_tools() 从 Tool.write 声明推导，不再手工维护黑名单）。
+     tool_manager.write_tools() 从 Tool.effect 声明推导，不再手工维护黑名单）；
+  3. Task 级能力（req.allowed_tools，Planner 声明的任务最小权限）：
+     暴露与执行前双重校验，REQUEST 任务也只能调用任务允许的写工具。
 
 Agentic RAG 工具循环（LLM 自主决定是否检索/调用工具）、上下文卸载、
 Skill 渐进披露都在 BaseAgent/TaskAgent 中实现，是五条主线中 Agentic RAG 的执行体。
@@ -28,6 +33,7 @@ import inspect
 import json
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
@@ -60,12 +66,18 @@ def write_policy_for(action: Optional[IntentAction]) -> WritePolicy:
 
 @dataclass
 class AgentStats:
-    """Agent 运行时统计，供 Monitor 和路由决策使用。"""
+    """Profile 执行统计（供 Monitor 读取；每 Profile 单实例，无实例级路由）。
+
+    保留成功率/延迟/P50/P95/在途作为 Profile 级在线指标；
+    不再有 routing_score / monitor_penalty —— 实例间不存在路由竞争。
+    """
     total:     int   = 0
     success:   int   = 0
     total_ms:  float = 0.0
-    monitor_penalty: float = 0.0
-    in_flight: int = 0
+    in_flight: int   = 0
+    _latencies: "deque[float]" = field(
+        default_factory=lambda: deque(maxlen=200), repr=False,
+    )
 
     @property
     def success_rate(self) -> float:
@@ -75,15 +87,24 @@ class AgentStats:
     def avg_ms(self) -> float:
         return self.total_ms / self.total if self.total else 0.0
 
-    def routing_score(self) -> float:
-        """路由评分：成功率高、延迟低的 Agent 得分高。"""
-        latency_score = 1.0 / (1.0 + self.avg_ms / 1000)
-        base_score = self.success_rate * 0.7 + latency_score * 0.3
-        return base_score * max(0.0, 1.0 - self.monitor_penalty)
+    def record(self, latency_ms: float) -> None:
+        """记录一次执行延迟（P50/P95 分位数依据）。"""
+        self._latencies.append(latency_ms)
 
-    def effective_routing_score(self) -> float:
-        """进程内自适应实例池：少量探索并规避正在处理请求的实例。"""
-        return self.routing_score() + 0.05 / ((self.total + 1) ** 0.5) - 0.10 * self.in_flight
+    @staticmethod
+    def _percentile(sorted_latencies: List[float], pct: float) -> float:
+        if not sorted_latencies:
+            return 0.0
+        idx = min(len(sorted_latencies) - 1, int(len(sorted_latencies) * pct))
+        return sorted_latencies[idx]
+
+    @property
+    def p50_ms(self) -> float:
+        return round(self._percentile(sorted(self._latencies), 0.50), 1)
+
+    @property
+    def p95_ms(self) -> float:
+        return round(self._percentile(sorted(self._latencies), 0.95), 1)
 
 
 @dataclass
@@ -238,6 +259,7 @@ class BaseAgent:
             ms = (time.monotonic() - t0) * 1000
             self.stats.success += 1
             self.stats.total_ms += ms
+            self.stats.record(ms)
             return AgentResponse(
                 content=content,
                 success=True,
@@ -255,6 +277,7 @@ class BaseAgent:
         except Exception as ex:
             ms = (time.monotonic() - t0) * 1000
             self.stats.total_ms += ms
+            self.stats.record(ms)
             logger.error(f"TaskAgent({tag}) 处理失败: {ex}")
             return AgentResponse(
                 content="抱歉，处理你的请求时出现了问题，请稍后重试，或换个方式描述一下。",
@@ -276,32 +299,37 @@ class BaseAgent:
         """
         把 MCPToolManager 中注册的工具与 Skill 工具暴露给 LLM（function calling）。
 
-        可见性 = 公共工具层：所有 agent_exposed=True 的工具对任何请求可见，
-        不按领域剪裁（领域只挂载人格/Skills）。门禁两层（防御纵深）：
-          1. 注册级 agent_exposed（外部工具默认双重不可见）；
+        可见性 = 公共工具层 ∩ Action 策略 ∩ Task 能力（三层交集，防御纵深）：
+          1. 注册级 is_agent_visible（agent_exposed + 显式 effect 声明：
+             未声明副作用 fail-closed 不可见）；
           2. Run 级写策略（write_policy_for：非 REQUEST 一律 READ_ONLY）+
-             Action 级读写策略（QUERY/GREETING 等动作下写工具不暴露）。
+             Action 级读写策略（QUERY/GREETING 等动作下写工具不暴露）；
+          3. Task 级能力（req.allowed_tools，Planner 声明的最小权限）：
+             任务只能看到允许列表内的工具（REQUEST 也只拿必要写工具）。
         Skill 通过统一的 load_skill（渐进披露）追加在 MCP 工具之后，同受
-        allowlist 与 Action 门禁；完整 SKILL.md 由模型按需加载。
+        三重门禁；完整 SKILL.md 由模型按需加载。
         实例可设 _tool_allowlist 覆盖公共层（测试/定制场景）。
         """
         if self._tool_manager is None and self._skill_manager is None:
             return []
         allowed = getattr(self, "_tool_allowlist", None)
+        capability = getattr(req, "allowed_tools", None)
         tools = []
         action = req.action if req is not None else None
         write_tools = self._write_tools()
         write_allowed = self._write_policy(req) == WritePolicy.WRITE_ALLOWED
         if self._tool_manager is not None:
             for name, tool in self._tool_manager._tools.items():
-                if not getattr(tool, "agent_exposed", True):
-                    continue
+                if not getattr(tool, "is_agent_visible", True):
+                    continue  # 注册级：未暴露或未声明副作用（fail-closed）
                 if not write_allowed and name in write_tools:
                     continue  # Run 级写策略：非 REQUEST 动作下不暴露写工具
                 if allowed is not None and name not in allowed:
                     continue  # 实例级覆盖：显式缩小可见集合
                 if action is not None and not action_allows_tool(action, name, write_tools):
                     continue  # Action 层策略：查询/问候等动作下不暴露执行类工具
+                if capability is not None and name not in capability:
+                    continue  # Task 级能力：任务只能看到 Planner 声明的工具
                 tools.append({
                     "name": name,
                     "description": tool.description,
@@ -313,6 +341,8 @@ class BaseAgent:
                 if allowed is not None and name not in allowed:
                     continue
                 if action is not None and not action_allows_tool(action, name, write_tools):
+                    continue
+                if capability is not None and name not in capability:
                     continue
                 tools.append(tool_def)
         return tools
@@ -426,7 +456,13 @@ class BaseAgent:
                     if on_event is not None:
                         await on_event({"type": "tool", "name": name, "status": "start", "input": tool_input})
                     data, error = await self._execute_tool(name, tool_input, req)
-                    if name == "knowledge_search" and isinstance(data, list):
+                    # 证据采集泛化：任何返回「含标题/来源 URL 的条目列表」的工具结果
+                    # 都视为检索证据（Verifier 不再特殊认识 knowledge_search，
+                    # 新增检索类工具自动获得引用校验与出口 Grounding 能力）。
+                    if isinstance(data, list) and any(
+                        isinstance(item, dict) and (item.get("title") or item.get("source_url"))
+                        for item in data
+                    ):
                         tool_evidence.extend({
                             "tool": name,
                             "title": item.get("title", ""),
@@ -561,6 +597,12 @@ class BaseAgent:
         write_tools = self._write_tools()
         write_policy = self._write_policy(req)
         tag = self.profile.name.value
+        capability = getattr(req, "allowed_tools", None)
+        # Task 级能力（防御纵深）：暴露层之外，真正执行前再次校验 ——
+        # 只依赖 Prompt / function schema 的软约束在这里变成硬门禁。
+        if capability is not None and name not in capability:
+            logger.warning(f"TaskAgent({tag}) 尝试调用任务能力外工具 {name}，已拒绝")
+            return None, f"工具 {name} 不在当前任务能力（allowed_tools）范围内"
         # Skill 工具拦截（渐进披露）：完整 SKILL.md 正文本地加载，不经过 MCPToolManager；
         # 与普通工具同受 allowlist 与 Action 门禁（防御纵深）。
         if name in {"load_skill", "load_skill_resource"}:
@@ -602,6 +644,12 @@ class BaseAgent:
             return data, None
         if self._tool_manager is None:
             return None, "工具管理器不可用"
+        # 副作用声明 fail-closed：未声明 effect 的工具即使被请求也不执行
+        # （不依赖手工黑名单，新写工具忘记声明时不会作为只读工具放行）。
+        tool_obj = self._tool_manager._tools.get(name)
+        if tool_obj is None or not getattr(tool_obj, "is_agent_visible", True):
+            logger.warning(f"TaskAgent({tag}) 尝试调用未暴露/未声明副作用的工具 {name}，已拒绝")
+            return None, f"工具 {name} 不在当前执行权限范围内"
         # Run 级写策略（防御纵深）：非 REQUEST 动作即使误判也拒绝写工具。
         if write_policy != WritePolicy.WRITE_ALLOWED and name in write_tools:
             logger.warning(

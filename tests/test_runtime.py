@@ -315,7 +315,7 @@ def test_skill_middleware_caches_by_message_and_prompt_uses_cache():
 
     orch = AgentOrchestrator(api_key=FAKE_KEY)
     fake_skill = FakeSkillManager()
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
     agent._skill_manager = fake_skill
 
     req = _req("转专业政策是什么")

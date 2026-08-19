@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 from agents.agent_orchestrator import Request
 from agents.profiles import ExecutionProfile, ProfileName
 from agents.roles import TaskAgent
-from mcp.tool_manager import MCPToolManager, Tool
+from mcp.tool_manager import MCPToolManager, Tool, ToolEffect
 from runtime.policy import ExecutionPolicy
 from runtime.state import RunState
 
@@ -30,6 +30,7 @@ def _make_agent(profile_name: ProfileName = ProfileName.FAST) -> TaskAgent:
         description="回显工具",
         handler=echo,
         schema={"type": "object", "properties": {"text": {"type": "string"}}},
+        effect=ToolEffect.READ,  # 显式副作用声明（fail-closed）
     ))
     profile = ExecutionProfile(
         name=profile_name, model="m", max_tokens=768, thinking=False,

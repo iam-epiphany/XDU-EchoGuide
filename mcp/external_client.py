@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
-from mcp.tool_manager import MCPToolManager, Tool
+from mcp.tool_manager import MCPToolManager, Tool, ToolEffect
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +251,9 @@ class ExternalMCPSource:
                     schema=schema,
                     timeout_s=30.0,
                     agent_exposed=False,  # 默认不可见，由编排器显式暴露
+                    # 副作用声明：默认只读过滤放行的都是只读命名工具；白名单显式
+                    # 放行的写工具同样按只读声明 —— 只读语义宁紧勿松（fail-closed）。
+                    effect=ToolEffect.READ,
                 ))
                 registered.append(full)
         except Exception as ex:

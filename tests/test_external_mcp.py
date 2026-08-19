@@ -15,7 +15,7 @@ from agents.agent_orchestrator import AgentOrchestrator
 from agents.profiles import ProfileName
 from mcp.external_client import ExternalMCPSource, StreamableHTTPClient
 from mcp.protocol import MCPServer
-from mcp.tool_manager import MCPToolManager, Tool
+from mcp.tool_manager import MCPToolManager, Tool, ToolEffect
 
 FAKE_KEY = "sk-test-not-used"
 
@@ -182,6 +182,7 @@ def test_expose_external_tools_visibility():
         description="搜索校园知识库",
         handler=kb_handler,
         schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        effect=ToolEffect.READ,  # 显式副作用声明（fail-closed）
     ))
     source = ExternalMCPSource("http://test", prefix="github", transport=_transport(_make_server()))
     registered = _run(source.setup(tm))
@@ -190,7 +191,7 @@ def test_expose_external_tools_visibility():
     orch.set_tool_manager(tm)
     orch.expose_external_tools(registered)
 
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
     exposed = [t["name"] for t in agent._build_tools(req=None)]
     assert "github_search_repositories" in exposed
     assert "knowledge_search" in exposed  # 本地工具不受影响（同一公共层）
@@ -205,5 +206,5 @@ def test_unexposed_external_tools_invisible():
 
     orch = AgentOrchestrator(api_key=FAKE_KEY)
     orch.set_tool_manager(tm)
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
     assert "github_search_repositories" not in [t["name"] for t in agent._build_tools(req=None)]

@@ -213,16 +213,22 @@ def test_agent_loop_steps_and_tool_rounds():
                 return msg
             return FakeMessage(text="final answer", input_tokens=50, output_tokens=10)
 
-    class ToolBox:
-        _tools = {}
-        async def call(self, name, params, context=None, **kw):
-            return type("R", (), {"success": True, "data": {"ok": 1}, "error": None})()
+    from mcp.tool_manager import MCPToolManager, Tool, ToolEffect
+
+    async def noop(params, context):
+        return {"ok": 1}
 
     async def run():
         runtime = AgentRuntime(policy=ExecutionPolicy())
+        tm = MCPToolManager(api_key="sk-test")
+        tm.register(Tool(
+            name="noop_tool", description="noop", handler=noop,
+            schema={"type": "object", "properties": {}},
+            effect=ToolEffect.READ,  # 显式副作用声明（fail-closed）
+        ))
         agent = TaskAgent(
             LoopClient(), "test-model",
-            skill_manager=None, tool_manager=ToolBox(),
+            skill_manager=None, tool_manager=tm,
         )
         agent._tool_allowlist = ["noop_tool"]
         req = Request(message="hi", user_id="u1", conv_id="c1", action=None, domain=None)
@@ -260,10 +266,9 @@ def test_fast_deep_fallback_respects_max_retries():
             runtime=runtime,
             fast_model="test-fast", deep_model="test-deep",
         )
-        # 用失败 client 替换两个 profile 的 client，模拟执行失败
-        for agents in orchestrator._pool.values():
-            for a in agents:
-                a._client = FailClient()
+        # 用失败 client 替换两个 profile 的执行实例，模拟执行失败
+        for a in orchestrator._agents.values():
+            a._client = FailClient()
         req = Request(message="hi", user_id="u1", conv_id="c1")
         req.state = _state(runtime.policy)
         req.profile = ProfileName.FAST

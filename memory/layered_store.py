@@ -1,7 +1,7 @@
 """
-分层记忆存储层（L0-L3 金字塔的数据底座，SQLite 零第三方依赖）。
+分层记忆存储层（L0/L1/L3 的数据底座，SQLite 零第三方依赖）。
 
-对应 TencentDB-Agent-Memory 的"记忆金字塔 + 白盒可溯源"思路，四层落库：
+对应 Hierarchical Long-term Memory with Provenance 思路，落库部分：
 
   L0 raw_messages     —— 原始对话全量（永不删除，证据链锚点 turn_id）
   L1 facts            —— 原子事实（结构化，source_conv/source_turn 指向 L0）
@@ -10,6 +10,7 @@
 
 L2 场景块（Scenario）不在此落库：复用 ChromaDB 情景记忆 collection，
 按 metadata layer="scenario" 标记（见 conversation_memory）。
+Working Memory（当前会话近期上下文）存 Redis，不计入 L0-L3。
 
 实现说明：
   - stdlib sqlite3，零第三方依赖；路径由 ECHOGUIDE_MEMORY_DB 配置，

@@ -275,7 +275,7 @@
           </div>
           <table v-if="obsAgents.length" class="obs-table">
             <thead>
-              <tr><th>Agent</th><th>请求</th><th>成功率</th><th>均延迟</th><th>路由分</th><th>在途</th></tr>
+              <tr><th>Profile</th><th>请求</th><th>成功率</th><th>均延迟</th><th>P50</th><th>P95</th><th>在途</th></tr>
             </thead>
             <tbody>
               <tr v-for="a in obsAgents" :key="a.key">
@@ -283,7 +283,8 @@
                 <td>{{ a.total }}</td>
                 <td :class="a.total && a.success_rate < 0.9 ? 'bad' : ''">{{ (a.success_rate * 100).toFixed(0) }}%</td>
                 <td :class="a.avg_ms > 3000 ? 'bad' : ''">{{ Math.round(a.avg_ms) }} ms</td>
-                <td>{{ a.routing_score }}</td>
+                <td>{{ a.p50_ms ?? '-' }} ms</td>
+                <td :class="a.p95_ms > 8000 ? 'bad' : ''">{{ a.p95_ms ?? '-' }} ms</td>
                 <td>{{ a.in_flight }}</td>
               </tr>
             </tbody>

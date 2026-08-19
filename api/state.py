@@ -134,7 +134,7 @@ def _build_runtime() -> None:
     from evaluation.evaluator import EndToEndEvaluator
     from mcp.knowledge_base import KnowledgeBase
     from mcp.semantic_cache import SemanticCache
-    from mcp.tool_manager import MCPToolManager, Tool
+    from mcp.tool_manager import MCPToolManager, Tool, ToolEffect
     from memory.conversation_memory import MemoryManager
     from monitor.performance_monitor import PerformanceMonitor
     from core.skill_loader import SkillManager
@@ -245,6 +245,7 @@ def _build_runtime() -> None:
         supports_rerank=True,
         use_rewrite=True,  # Agent 调用 knowledge_search 也走「改写→并行召回→去重→重排」链路（与 /search 一致）
         fallback=knowledge_fallback,
+        effect=ToolEffect.READ,
     ))
 
     _tool_manager.register(Tool(
@@ -271,6 +272,7 @@ def _build_runtime() -> None:
             "required": ["courses"],
         },
         cache_ttl=0.0,
+        effect=ToolEffect.READ,
     ))
     _tool_manager.register(Tool(
         name="query_affairs_process",
@@ -284,6 +286,7 @@ def _build_runtime() -> None:
             "required": ["service"],
         },
         cache_ttl=300.0,
+        effect=ToolEffect.READ,
     ))
     _tool_manager.register(Tool(
         name="diagnose_it_issue",
@@ -299,6 +302,7 @@ def _build_runtime() -> None:
             },
         },
         cache_ttl=0.0,
+        effect=ToolEffect.READ,
     ))
 
     # ── 个人数据中心（课表 / 待办 / DDL，按 user_id 隔离，SQLite 持久化）──
@@ -316,6 +320,7 @@ def _build_runtime() -> None:
             },
         },
         cache_ttl=0.0,  # 个人数据实时查询，不缓存（缓存 key 不含 user_id）
+        effect=ToolEffect.READ,
     ))
     _tool_manager.register(Tool(
         name="query_todo",
@@ -329,6 +334,7 @@ def _build_runtime() -> None:
             },
         },
         cache_ttl=0.0,
+        effect=ToolEffect.READ,
     ))
     _tool_manager.register(Tool(
         name="add_todo",
@@ -344,7 +350,7 @@ def _build_runtime() -> None:
             "required": ["content"],
         },
         cache_ttl=0.0,
-        write=True,  # 状态修改类工具：读写门禁据此推导（不再手工维护黑名单）
+        effect=ToolEffect.WRITE,  # 状态修改类工具：显式副作用声明（fail-closed）
     ))
     _tool_manager.register(Tool(
         name="complete_todo",
@@ -359,7 +365,7 @@ def _build_runtime() -> None:
             "required": ["id"],
         },
         cache_ttl=0.0,
-        write=True,  # 状态修改类工具：读写门禁据此推导（不再手工维护黑名单）
+        effect=ToolEffect.WRITE,  # 状态修改类工具：显式副作用声明（fail-closed）
     ))
     _tool_manager.register(Tool(
         name="query_ddl",
@@ -372,6 +378,7 @@ def _build_runtime() -> None:
             },
         },
         cache_ttl=0.0,
+        effect=ToolEffect.READ,
     ))
 
     # ── 结构化公开信息（校车/楼宇/场馆/图书馆，data/public/*.json）──
@@ -394,6 +401,7 @@ def _build_runtime() -> None:
             "required": ["category"],
         },
         cache_ttl=0.0,  # 校车查询依赖当前时间，不缓存
+        effect=ToolEffect.READ,
     ))
     _tool_manager.register(Tool(
         name="get_weather",
@@ -408,9 +416,10 @@ def _build_runtime() -> None:
         },
         cache_ttl=300.0,
         timeout_s=15.0,
+        effect=ToolEffect.READ,
     ))
 
-    # Agentic RAG：把工具管理器注入 Agent 池，让 Agent 自主决定何时检索知识库
+    # Agentic RAG：把工具管理器注入执行实例，让 Agent 自主决定何时检索知识库
     _orchestrator.set_tool_manager(_tool_manager)
 
     # 语义缓存（默认关闭）：上下文相关回答做 Semantic Cache 容易错误复用，

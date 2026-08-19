@@ -55,7 +55,7 @@ def _benchmark_strategy(request: Optional[Request]) -> str:
 async def chat(req: ChatRequest, response: Response, request: Request = None):
     """
     主对话接口。完整流程：
-      语义缓存 → 记忆读取 → 意图识别（领域×动作）→ Agent 路由 →
+      语义缓存 → 记忆读取 → 意图识别（领域×动作）→ Planner（Task DAG）→ Profile 选择 →
       Agentic RAG 执行 → 记忆写入 → 语义缓存写入
 
     request 默认 None：HTTP 场景由 FastAPI 注入真实请求，
@@ -147,7 +147,7 @@ async def chat(req: ChatRequest, response: Response, request: Request = None):
         async with span("orchestrator_run"):
             result = await state._orchestrator.run(orch_req)
         result.execution["trace_id"] = trace.trace_id
-        # 记忆 trace（四层命中统计，透出给前端 debug 面板 / 评测统计）
+        # 记忆 trace（分层命中统计，透出给前端 debug 面板 / 评测统计）
         result.execution["memory_trace"] = getattr(mem_ctx, "memory_trace", {})
 
         # 5. 写入记忆
@@ -295,7 +295,7 @@ async def chat_stream(req: ChatRequest, request: Request = None):
                 async with span("orchestrator_run"):
                     result = await state._orchestrator.run(orch_req, on_event=on_event)
                 result.execution["trace_id"] = trace.trace_id
-                # 记忆 trace（四层命中统计，透出给前端 debug 面板 / 评测统计）
+                # 记忆 trace（分层命中统计，透出给前端 debug 面板 / 评测统计）
                 result.execution["memory_trace"] = getattr(mem_ctx, "memory_trace", {})
 
                 async with span("memory_write"):

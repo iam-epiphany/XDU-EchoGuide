@@ -1,27 +1,30 @@
 """
 AgentOrchestrator —— EchoGuide 编排器（决策闭环：Intent → Planner → Harness）。
 
-架构（v5 收口：Task-scoped SubAgent，中心化轻量 Multi-Agent Harness）：
+架构（v5 收口：Task-scoped SubAgent，中心化轻量 Agent Harness）：
   - 不再有 QA/EXECUTOR 职责 Agent 类，也没有 Role→Agent Pool。真正的
     Agent 单位 = 围绕一个 Task 的一次独立 TaskAgent Run：每个 Task 拥有
-    独立 goal / message / domain / action / depends_on 与协作上下文。
+    独立 goal / message / domain / action / depends_on / allowed_tools
+    与协作上下文。
   - QA/EXECUTOR 降级为 Execution Policy（roles.write_policy_for）：
       非 REQUEST 动作 → READ_ONLY（只读工具面）；
       REQUEST 动作 → WRITE_ALLOWED（可暴露满足策略的写工具）。
     Action 只影响工具可见性、写权限与行为指引，不构成 Agent 身份。
   - 领域（IntentDomain）只提供领域人格（DOMAIN_PERSONA）语境与 Skills
     挂载键，不决定工具可见性、不选执行实体 —— "顾问"而非"门卫"。
-  - Fast/Deep 是 Execution Profile（profiles.py）：编排器按 profile 池
-    选实例（在线表现路由），不是两个不同 Agent。
-  - 工具可见性 = 公共工具层：所有 agent_exposed=True 的工具对任何请求
-    可见，门禁两层：注册级 agent_exposed + Run 级写策略（READ_ONLY 缺省）
-    + Action 级读写策略（QUERY/GREETING 拒写），写工具集合由工具自身声明
-    （Tool.write → tool_manager.write_tools()），不再手工维护黑名单。
+  - Fast/Deep 是 Execution Profile（profiles.py）：每 Profile 一个执行
+    实例（同构复制多个 TaskAgent 没有能力差异，并发由 asyncio 承担）；
+    未来接入异构 Model / Provider / Endpoint 时在此扩展路由。
+  - 工具可见性 = 三层门禁交集（Agent-exposed ∩ Action Policy ∩ Task
+    Capability）：注册级 agent_exposed + effect 声明（Tool.is_agent_visible，
+    未声明副作用 fail-closed）+ Run 级写策略（READ_ONLY 缺省）+ Action 级
+    读写策略（QUERY/GREETING 拒写）+ 任务级 allowed_tools（Planner 声明的
+    最小权限），写工具集合由工具自身声明（Tool.effect → write_tools()）。
   - 决策闭环：
       Intent（domain/action/needs_knowledge，不做复杂度判定）
         → Planner（统一输出 ExecutionPlan / Task DAG，single/parallel/
           dependent 由最终 DAG 自动推导；本地 Fast Path 零 LLM，拿不准才
-          升级 LLM 规划）
+          升级 LLM 规划；QUERY+REQUEST 混合优先升级，回落也按任务拆 action）
         → Harness（TaskExecutor 按 depends_on 分波并行执行，失败传播：
           依赖失败 → 下游 BLOCKED；无依赖任务并行；依赖任务只读取声明的
           前序结果注入上下文）
@@ -75,6 +78,7 @@ class Request:
     action:      Optional[IntentAction]   = None        # 动作（Run 执行策略依据）
     goal:        str = ""        # Task goal（Task-scoped 指令，注入 system prompt）
     task_id:     str = ""        # 所属 Task（Agent Run 边界标识）
+    allowed_tools: Optional[List[str]] = None  # 任务级工具能力（Planner 声明，最小权限）
     request_id:  str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     confidence: float = 0.0
     classifier_stage: str = "preset"
@@ -186,26 +190,31 @@ class AgentOrchestrator:
         self._tool_manager  = tool_manager
         self._memory_store  = memory_store  # 上下文卸载落盘（refs 表），与 MemoryManager 共享
 
-        # TaskAgent × Fast/Deep 双实例（Execution Profile 池）：Agent 类是唯一
-        # 的 TaskAgent，实例按 profile 区分；每个 Task 以独立 Run 执行（每次
-        # 注入独立 goal/domain/action/上下文），领域不参与实例选择。
-        def agents(profile: ProfileName, client: Any, model: str):
-            return [
-                TaskAgent(client, model, skill_manager, tool_manager, self._profiles[profile]),
-                TaskAgent(client, model, skill_manager, tool_manager, self._profiles[profile]),
-            ]
-
-        self._pool: Dict[ProfileName, List[BaseAgent]] = {
-            ProfileName.FAST: agents(ProfileName.FAST, fast_client, fast_name),
-            ProfileName.DEEP: agents(ProfileName.DEEP, deep_client, deep_name),
+        # 执行实例（每 Profile 单实例）：TaskAgent 是唯一 Agent 类，实例按
+        # Execution Profile（Fast/Deep）区分；每个 Task 以独立 Run 执行（每次
+        # 注入独立 goal/domain/action/上下文/工具能力），领域不参与实例选择。
+        # 复制多个同构 TaskAgent 没有能力差异（并发由 asyncio 承担），未来接入
+        # 真正异构 Model/Provider/Endpoint 时再扩展路由层。
+        self._agents: Dict[ProfileName, TaskAgent] = {
+            ProfileName.FAST: TaskAgent(
+                fast_client, fast_name, skill_manager, tool_manager,
+                self._profiles[ProfileName.FAST],
+            ),
+            ProfileName.DEEP: TaskAgent(
+                deep_client, deep_name, skill_manager, tool_manager,
+                self._profiles[ProfileName.DEEP],
+            ),
         }
-        # Runtime 广播到所有 Agent 实例（工具/模型边界钩子），与 set_* 注入同一模式
-        for agent_list in self._pool.values():
-            for agent in agent_list:
-                agent._runtime = self._runtime
+        # Runtime 广播到所有执行实例（工具/模型边界钩子），与 set_* 注入同一模式
+        for agent in self._agents.values():
+            agent._runtime = self._runtime
 
         # Monitor 有限反馈：Fast profile 在线表现不健康 → 临时升级 Deep
         self._fast_unhealthy = False
+
+        # Monitor 聚合计数（Profile / 任务状态 / Runtime 调用维度，供观测读取）
+        self._task_status_counts: Dict[str, int] = {}
+        self._runtime_call_counts: Dict[str, int] = {}
 
     @property
     def runtime(self) -> AgentRuntime:
@@ -220,23 +229,26 @@ class AgentOrchestrator:
     def set_skill_manager(self, skill_manager: Optional[Any]) -> None:
         """更新 SkillManager 引用，供运行时重载或测试替换使用。"""
         self._skill_manager = skill_manager
-        for agents in self._pool.values():
-            for agent in agents:
-                agent._skill_manager = skill_manager
+        for agent in self._agents.values():
+            agent._skill_manager = skill_manager
 
     def set_tool_manager(self, tool_manager: Optional[Any]) -> None:
-        """更新工具管理器引用（Agentic RAG：让 Agent 自主调用工具）。"""
+        """更新工具管理器引用（Agentic RAG：让 Agent 自主调用工具）。
+
+        同时把注册工具名集合同步给 Planner（LLM 规划的 tools 字段硬校验）。
+        """
         self._tool_manager = tool_manager
-        for agents in self._pool.values():
-            for agent in agents:
-                agent._tool_manager = tool_manager
+        for agent in self._agents.values():
+            agent._tool_manager = tool_manager
+        self._planner.set_tool_names(
+            set(tool_manager._tools) if tool_manager is not None else None
+        )
 
     def set_memory_store(self, memory_store: Optional[LayeredStore]) -> None:
         """注入/更新分层记忆存储（上下文卸载落盘），与 MemoryManager 共享实例。"""
         self._memory_store = memory_store
-        for agents in self._pool.values():
-            for agent in agents:
-                agent._memory_store = memory_store
+        for agent in self._agents.values():
+            agent._memory_store = memory_store
 
     def expose_external_tools(self, tool_names: List[str]) -> None:
         """把外部 MCP 工具显式加入公共工具层（任何请求可见，仍受 Action 门禁）。"""
@@ -508,7 +520,7 @@ class AgentOrchestrator:
     # ── 协作任务执行 ──────────────────────────────────────────────────────────
 
     def _task_request(self, req: Request, task: Task) -> Request:
-        """Task-scoped 上下文构造：用户必要上下文 + Task goal + 领域 + 执行策略。
+        """Task-scoped 上下文构造：用户必要上下文 + Task goal + 领域 + 执行策略 + 工具能力。
 
         不把完整主会话复制给每个 Task（自包含 message 已携带目标与请求）。
         """
@@ -523,6 +535,7 @@ class AgentOrchestrator:
             action=task.action,   # 任务自己的 action（不继承原始请求，决定 Run 执行策略）
             goal=task.goal,       # Task goal（注入 system prompt [任务目标]）
             task_id=task.task_id, # Agent Run 边界标识
+            allowed_tools=task.allowed_tools,  # 任务级工具能力（最小权限，Agent 双重门禁）
             request_id=req.request_id,
             state=req.state,      # 协作任务继承运行状态（中间件钩子/预算计数不断链）
         )
@@ -573,6 +586,13 @@ class AgentOrchestrator:
             # 待办未创建"。由 Planner 声明，不硬编码具体任务标识。
             if task.required_tool and task.required_tool not in response.tools_used:
                 write_tools = self._tool_manager.write_tools() if self._tool_manager else frozenset()
+                if task.allowed_tools is not None and task.required_tool not in task.allowed_tools:
+                    # Task 级能力：补执行的写工具必须在任务声明的能力内（防御纵深）
+                    logger.warning(
+                        f"协作任务补执行被 Task 能力拒绝: {task.required_tool} "
+                        f"(allowed_tools={task.allowed_tools})"
+                    )
+                    return response
                 if task.action is not None and not action_allows_tool(task.action, task.required_tool, write_tools):
                     # Action 层策略（如 QUERY 只读）：补执行写操作被禁止，跳过（策略内不执行即符合预期）
                     logger.warning(
@@ -618,8 +638,8 @@ class AgentOrchestrator:
             return ProfileName.DEEP
         return selected
 
-    @staticmethod
     def _execution_meta(
+        self,
         req: Request,
         *,
         mode: str,
@@ -642,6 +662,22 @@ class AgentOrchestrator:
             "offloaded_chars": sum(resp.offloaded_chars for resp in responses),
             "saved_tokens": sum(resp.saved_tokens for resp in responses),
         }
+        # Monitor 聚合计数：Task 状态（DAG blocked/failed 数量）与 Runtime 调用
+        # （模型/工具/降级），供 /monitor 与观测面板读取（真实执行维度）。
+        for t in tasks or []:
+            status = t.get("status", "pending")
+            self._task_status_counts[status] = self._task_status_counts.get(status, 0) + 1
+        if req.state is not None:
+            summary = req.state.summary()
+            self._runtime_call_counts["model_calls"] = (
+                self._runtime_call_counts.get("model_calls", 0) + summary["steps"]
+            )
+            self._runtime_call_counts["tool_calls"] = (
+                self._runtime_call_counts.get("tool_calls", 0) + summary["tool_calls"]
+            )
+            self._runtime_call_counts["retries"] = (
+                self._runtime_call_counts.get("retries", 0) + summary["retries"]
+            )
         # Runtime 执行摘要（step/tool/retry 计数与 trace_id），纯增量字段
         if req.state is not None:
             meta["runtime"] = req.state.summary()
@@ -650,17 +686,13 @@ class AgentOrchestrator:
             meta["query_understanding"] = req.state_query
         return meta
 
-    def _best_agent(self, profile: Optional[ProfileName] = None) -> Optional[BaseAgent]:
-        """
-        TaskAgent 实例选择：从该 Profile 池（Fast/Deep 各双实例）中按在线表现
-        选实例（成功率高、延迟低、避开正在处理的实例）；缺省 Fast。
+    def _agent(self, profile: Optional[ProfileName] = None) -> Optional[TaskAgent]:
+        """Profile 的执行实例（每 Profile 单实例，缺省 Fast）。
 
         领域不参与实例选择 —— 领域只做人格/Skills 挂载键，没有领域 Agent 实体。
+        未来接入真正异构 Model/Provider 池时，在这里扩展路由层。
         """
-        agents = self._pool.get(profile or ProfileName.FAST, [])
-        if not agents:
-            return None
-        return max(agents, key=lambda a: a.stats.effective_routing_score())
+        return self._agents.get(profile or ProfileName.FAST)
 
     async def _execute(
         self,
@@ -668,11 +700,11 @@ class AgentOrchestrator:
         on_event: Optional[Any] = None,
     ) -> AgentResponse:
         """
-        执行一次 TaskAgent Run：按 Execution Profile 选实例（写策略由
-        req.action 决定，write_policy_for 在 Agent 内生效）；Fast 失败时
-        同任务 Deep 重试。
+        执行一次 TaskAgent Run：按 Execution Profile 取执行实例（写策略由
+        req.action 决定，write_policy_for 在 Agent 内生效；任务级工具能力由
+        req.allowed_tools 约束）；Fast 失败时同任务 Deep 重试。
         """
-        agent = self._best_agent(req.profile)
+        agent = self._agent(req.profile)
         if agent is None:
             return AgentResponse(
                 content="助手暂时不可用，请稍后重试，或直接联系辅导员/教务老师。",
@@ -695,7 +727,7 @@ class AgentOrchestrator:
             logger.warning("Fast 执行失败，降级重试 Deep")
             if req.state is not None:
                 req.state.retry_count += 1
-            fallback = self._best_agent(ProfileName.DEEP)
+            fallback = self._agent(ProfileName.DEEP)
             if fallback:
                 response = await self._handle_with_runtime(req, fallback, on_event)
 
@@ -743,38 +775,35 @@ class AgentOrchestrator:
     # ── 统计（供 Monitor 读取）────────────────────────────────────────────────
 
     def get_stats(self) -> Dict[str, Any]:
+        """Profile 级执行统计（每 Profile 单实例，无实例级路由）。
+
+        key = "fast" / "deep"；含成功率、平均/P50/P95 延迟与在途请求。
+        Monitor 只做 Profile 级有限反馈（Fast 不健康 → 临时升级 Deep）。
+        """
         result = {}
-        for profile, agents in self._pool.items():
-            for i, agent in enumerate(agents):
-                key = f"{profile.value}.{i}"
-                result[key] = {
-                    "total":        agent.stats.total,
-                    "success_rate": round(agent.stats.success_rate, 3),
-                    "avg_ms":       round(agent.stats.avg_ms, 1),
-                    "monitor_penalty": round(agent.stats.monitor_penalty, 3),
-                    "routing_score": round(agent.stats.routing_score(), 3),
-                    "effective_routing_score": round(agent.stats.effective_routing_score(), 3),
-                    "in_flight": agent.stats.in_flight,
-                    "profile": agent.profile.name.value,
-                    "model": agent.profile.model,
-                }
+        for profile, agent in self._agents.items():
+            s = agent.stats
+            result[profile.value] = {
+                "total":        s.total,
+                "success_rate": round(s.success_rate, 3),
+                "avg_ms":       round(s.avg_ms, 1),
+                "p50_ms":       s.p50_ms,
+                "p95_ms":       s.p95_ms,
+                "in_flight":    s.in_flight,
+                "profile":      profile.value,
+                "model":        agent.profile.model,
+            }
         return result
 
     def verification_stats(self) -> Dict[str, int]:
         """出口校验 flag 计数（health 端点与 Monitor 面板可见，面试可报数）。"""
         return dict(self._verification_flags)
 
-    def update_routing_penalties(self, penalties: Dict[str, float]) -> None:
-        """
-        接收 Monitor 的在线表现反馈，动态调整路由惩罚项（实例级）。
-
-        penalties 的 key 使用 get_stats() 中的 agent key，例如 fast.0 / deep.1
-        （兼容 legacy 下划线写法 fast_0）。Profile 级反馈走 set_fast_health
-        （Fast 不健康 → 临时升级 Deep）。
-        """
-        for profile, agents in self._pool.items():
-            for i, agent in enumerate(agents):
-                key = f"{profile.value}.{i}"
-                legacy_key = f"{profile.value}_{i}"
-                penalty = penalties.get(key, penalties.get(legacy_key, 0.0))
-                agent.stats.monitor_penalty = min(max(penalty, 0.0), 0.9)
+    def observability_counts(self) -> Dict[str, Any]:
+        """Monitor 聚合计数：Task 状态（DAG blocked/failed）、Runtime 模型/工具
+        调用与降级次数、Verifier flags（真实业务/执行维度）。"""
+        return {
+            "task_status": dict(self._task_status_counts),
+            "runtime": dict(self._runtime_call_counts),
+            "verification": dict(self._verification_flags),
+        }

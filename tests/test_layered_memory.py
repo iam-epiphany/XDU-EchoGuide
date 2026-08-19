@@ -438,7 +438,7 @@ def test_extract_mark_persistence(tmp_path):
     asyncio.run(scenario())
 
 
-# ── get_context：四层融合 + 场景优先 + memory_trace ─────────────────────────
+# ── get_context：分层融合 + 场景优先 + memory_trace ─────────────────────────
 
 def test_get_context_layers_and_trace(tmp_path, monkeypatch):
     mgr = _make_manager(tmp_path, monkeypatch)

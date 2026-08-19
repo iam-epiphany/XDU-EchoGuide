@@ -38,37 +38,34 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-# ── 职责角色池 ───────────────────────────────────────────────────────────────
+# ── 执行实例（每 Profile 单实例，无同构实例池）──────────────────────────────
 
-def test_pool_registers_execution_profiles():
-    """Agent 池按 Execution Profile 组织：Fast/Deep 各双实例，Agent 类只有 TaskAgent。"""
+def test_execution_instances_per_profile():
+    """每 Profile 一个执行实例（Fast/Deep），Agent 类只有 TaskAgent。
+
+    同构复制多个 TaskAgent 没有能力差异（并发由 asyncio 承担），
+    收口为单实例；未来异构 Model/Provider 路由在此扩展。
+    """
     orch = _orchestrator()
-    pool = orch._pool
-    assert set(pool.keys()) == {ProfileName.FAST, ProfileName.DEEP}
-    assert len(pool[ProfileName.FAST]) == 2
-    assert len(pool[ProfileName.DEEP]) == 2
-    assert all(isinstance(a, TaskAgent) for agents in pool.values() for a in agents)
+    agents = orch._agents
+    assert set(agents.keys()) == {ProfileName.FAST, ProfileName.DEEP}
+    assert isinstance(agents[ProfileName.FAST], TaskAgent)
+    assert isinstance(agents[ProfileName.DEEP], TaskAgent)
 
 
-def test_pool_instances_match_profile():
-    """Fast 池只含 Fast 实例，Deep 池只含 Deep 实例（修复：构造时混入双 profile 的 bug）。"""
+def test_execution_instances_match_profile():
+    """Fast 实例只带 Fast 配置，Deep 实例只带 Deep 配置。"""
     orch = _orchestrator()
-    assert all(a.profile.name == ProfileName.FAST for a in orch._pool[ProfileName.FAST])
-    assert all(a.profile.name == ProfileName.DEEP for a in orch._pool[ProfileName.DEEP])
-    # 双实例的模型配置也应一致（Fast 池全部用 fast 模型）
-    fast_models = {a.profile.model for a in orch._pool[ProfileName.FAST]}
-    deep_models = {a.profile.model for a in orch._pool[ProfileName.DEEP]}
-    assert len(fast_models) == 1 and len(deep_models) == 1  # 池内模型配置一致
+    assert orch._agents[ProfileName.FAST].profile.name == ProfileName.FAST
+    assert orch._agents[ProfileName.DEEP].profile.name == ProfileName.DEEP
 
 
-def test_best_agent_deep_never_returns_fast():
-    """_best_agent(DEEP) 不可能选到 Fast 实例（含惩罚/统计扰动后）。"""
+def test_agent_returns_profile_instance_only():
+    """_agent(profile) 只可能返回该 Profile 的执行实例（不跨 Profile）。"""
     orch = _orchestrator()
-    # 对 Deep 实例施加惩罚、给 Fast 实例最高分，仍只能在各自池内选择
-    orch.update_routing_penalties({"deep_0": 0.9, "fast_0": 0.0})
-    for _ in range(10):
-        assert orch._best_agent(ProfileName.DEEP).profile.name == ProfileName.DEEP
-        assert orch._best_agent(ProfileName.FAST).profile.name == ProfileName.FAST
+    assert orch._agent(ProfileName.DEEP) is orch._agents[ProfileName.DEEP]
+    assert orch._agent(ProfileName.FAST) is orch._agents[ProfileName.FAST]
+    assert orch._agent() is orch._agents[ProfileName.FAST]  # 缺省 Fast
 
 
 def test_write_policy_maps_action_to_execution_policy():
@@ -245,10 +242,7 @@ def test_profiles_are_real_flash_and_pro_configs():
         fast_model="deepseek-v4-flash",
         deep_model="deepseek-v4-pro",
     )
-    profiles = {
-        agent.profile.name.value: agent.profile
-        for agents in orch._pool.values() for agent in agents
-    }
+    profiles = {p.value: a.profile for p, a in orch._agents.items()}
     assert profiles["fast"].model == "deepseek-v4-flash"
     assert profiles["fast"].thinking is False
     assert profiles["deep"].model == "deepseek-v4-pro"
@@ -256,10 +250,10 @@ def test_profiles_are_real_flash_and_pro_configs():
 
 
 def test_execute_fast_failure_retries_deep():
-    """Fast 实例失败 → Deep 实例重试（同 Task Run，Profile 池内切换）。"""
+    """Fast 执行失败 → Deep 重试（同 Task Run，Profile 间降级）。"""
     orch = _orchestrator()
-    fast = orch._pool[ProfileName.FAST][0]
-    deep = orch._pool[ProfileName.DEEP][0]
+    fast = orch._agents[ProfileName.FAST]
+    deep = orch._agents[ProfileName.DEEP]
 
     async def run_fail(req, on_event=None):
         return AgentResponse(content="", success=False, latency_ms=1.0)
@@ -277,28 +271,19 @@ def test_execute_fast_failure_retries_deep():
     assert response.content == "deep 结果"
 
 
-def test_routing_switches_instance_after_penalty():
-    """Profile 实例选择闭环：实例 0 被 Monitor 惩罚后，_best_agent 应切换到实例 1。"""
+def test_stats_profile_level_with_percentiles():
+    """Profile 统计：成功率/延迟/P50/P95（无实例级路由分）。"""
     orch = _orchestrator()
-    pool = orch._pool[ProfileName.FAST]
-    assert len(pool) == 2  # 双实例
+    stats = orch.get_stats()
+    assert set(stats.keys()) == {"fast", "deep"}
+    assert all("profile" in s and "p50_ms" in s and "p95_ms" in s for s in stats.values())
 
-    # 初始同分：max 稳定取第一个实例
-    assert orch._best_agent(ProfileName.FAST) is pool[0]
-
-    # Monitor 对实例 0 施加惩罚后，实例 1 接管
-    orch.update_routing_penalties({"fast_0": 0.9})
-    assert orch._best_agent(ProfileName.FAST) is pool[1]
-
-    # 惩罚清除后回到实例 0
-    orch.update_routing_penalties({"fast_0": 0.0})
-    assert orch._best_agent(ProfileName.FAST) is pool[0]
-
-
-def test_routing_score_prefers_high_success_low_latency():
-    good = AgentStats(total=10, success=10, total_ms=1000.0)
-    bad = AgentStats(total=10, success=2, total_ms=5000.0)
-    assert good.routing_score() > bad.routing_score()
+    # AgentStats 记录延迟后给出 P50/P95（排序后取分位）
+    s = AgentStats()
+    for ms in (100, 200, 300, 400, 500):
+        s.record(ms)
+    assert s.p50_ms == 300.0
+    assert s.p95_ms == 500.0
 
 
 def test_fast_unhealthy_upgrades_to_deep():
@@ -324,34 +309,33 @@ def _monitor_fast_health(stats):
 
 
 def test_fast_health_detects_unhealthy_fast_via_profile_field():
-    """修复回归：stats key 是 fast.0（不再是 .fast 后缀）时，_fast_health 必须仍能识别 Fast。"""
+    """Profile 级统计（key=fast/deep）：Fast 样本足且成功率 <0.85 → 不健康。"""
     stats = {
-        "fast.0": {"total": 10, "success_rate": 0.80, "profile": "fast"},
-        "fast.1": {"total": 10, "success_rate": 0.95, "profile": "fast"},
-        "deep.0": {"total": 10, "success_rate": 0.99, "profile": "deep"},
+        "fast": {"total": 10, "success_rate": 0.80, "profile": "fast"},
+        "deep": {"total": 10, "success_rate": 0.99, "profile": "deep"},
     }
-    assert _monitor_fast_health(stats) is False  # fast.0 样本足且成功率 <0.85 → 不健康
+    assert _monitor_fast_health(stats) is False
 
 
 def test_fast_health_healthy_when_samples_insufficient_or_ok():
-    """样本不足视为健康；成功率达标视为健康；无 Fast 实例视为健康。"""
+    """样本不足视为健康；成功率达标视为健康；无 Fast 记录视为健康。"""
     # 样本不足（total < 10）→ 不干预
     assert _monitor_fast_health({
-        "fast.0": {"total": 9, "success_rate": 0.5, "profile": "fast"},
+        "fast": {"total": 9, "success_rate": 0.5, "profile": "fast"},
     }) is True
     # 成功率达标 → 健康
     assert _monitor_fast_health({
-        "fast.0": {"total": 10, "success_rate": 0.90, "profile": "fast"},
+        "fast": {"total": 10, "success_rate": 0.90, "profile": "fast"},
     }) is True
-    # 只有 Deep 实例 → 健康
+    # 只有 Deep → 健康
     assert _monitor_fast_health({
-        "deep.0": {"total": 10, "success_rate": 0.5, "profile": "deep"},
+        "deep": {"total": 10, "success_rate": 0.5, "profile": "deep"},
     }) is True
     assert _monitor_fast_health({}) is True
 
 
-def test_fast_health_ignores_legacy_key_format():
-    """不依赖 key 后缀：即使 key 不是 .fast 结尾，只要 profile 字段是 fast 就能识别。"""
+def test_fast_health_ignores_key_format():
+    """不依赖 key 名称：只要 profile 字段是 fast 就能识别（兼容旧 key 形状）。"""
     assert _monitor_fast_health({
         "instance_a": {"total": 10, "success_rate": 0.70, "profile": "fast"},
         "instance_b": {"total": 10, "success_rate": 0.99, "profile": "deep"},
@@ -419,7 +403,7 @@ class _ToolAgent(BaseAgent):
 
 
 def _tool_agent(responses):
-    from mcp.tool_manager import MCPToolManager, Tool
+    from mcp.tool_manager import MCPToolManager, Tool, ToolEffect
 
     tm = MCPToolManager(api_key=FAKE_KEY)
 
@@ -431,6 +415,7 @@ def _tool_agent(responses):
         description="回显工具",
         handler=echo,
         schema={"type": "object", "properties": {"text": {"type": "string"}}},
+        effect=ToolEffect.READ,  # 显式副作用声明（fail-closed）
     ))
     client = _FakeClient(responses)
     agent = _ToolAgent(client, model="test-model", tool_manager=tm)
@@ -657,7 +642,7 @@ def test_task_execute_span_recorded_per_task():
 # ── Agent 工具权限边界 ───────────────────────────────────────────────────────
 
 def _fake_tool_manager():
-    from mcp.tool_manager import MCPToolManager, Tool
+    from mcp.tool_manager import MCPToolManager, Tool, ToolEffect
 
     tm = MCPToolManager(api_key=FAKE_KEY)
 
@@ -677,10 +662,10 @@ def _fake_tool_manager():
         "query_affairs_process": {"type": "object", "properties": {"service": {"type": "string"}}, "required": ["service"]},
         "diagnose_it_issue": {"type": "object", "properties": {"system": {"type": "string"}}},
     }.items():
-        # 写工具由声明推导（Tool.write=True）：add_todo / complete_todo 进入写工具集合
+        # 写工具由副作用声明推导（effect=WRITE）：add_todo / complete_todo 进入写集合
         tm.register(Tool(
             name=name, description=f"{name} 工具", handler=noop, schema=schema,
-            write=name in ("add_todo", "complete_todo"),
+            effect=ToolEffect.WRITE if name in ("add_todo", "complete_todo") else ToolEffect.READ,
         ))
     return tm
 
@@ -689,7 +674,7 @@ def test_build_tools_read_only_policy_surface():
     """QUERY（READ_ONLY）：公共工具层 − 写工具（Run 级写策略，与领域无关）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
     names = {t["name"] for t in agent._build_tools(
         _req("看看我的待办", action=IntentAction.QUERY))}
     assert names == {
@@ -704,7 +689,7 @@ def test_build_tools_write_allowed_policy_full_surface():
     """REQUEST（WRITE_ALLOWED）：全量公共工具层（含写工具）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
     names = {t["name"] for t in agent._build_tools(
         _req("帮我记个待办", action=IntentAction.REQUEST))}
     assert {"add_todo", "complete_todo"} <= names
@@ -715,7 +700,7 @@ def test_execute_tool_respects_instance_allowlist_override():
     """实例级 _tool_allowlist 覆盖公共层（测试/定制）：范围外工具直接拒绝。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
     agent._tool_allowlist = {"knowledge_search"}
 
     data, error = _run(agent._execute_tool("query_schedule", {"date": "今天"}, _req("hi")))
@@ -768,7 +753,7 @@ def test_build_tools_exposes_single_skill_loader():
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
-        agent = orch._pool[ProfileName.FAST][0]
+        agent = orch._agents[ProfileName.FAST]
         names = {t["name"] for t in agent._build_tools(_req("选课什么时候开始", action=IntentAction.QUERY))}
         assert "load_skill" in names
         assert "knowledge_search" in names  # MCP 工具不受影响
@@ -783,7 +768,7 @@ def test_build_tools_skill_tools_hidden_on_greeting():
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
-        agent = orch._pool[ProfileName.FAST][0]
+        agent = orch._agents[ProfileName.FAST]
         assert agent._build_tools(_req("你好", action=IntentAction.GREETING)) == []
         assert agent._build_tools(_req("这个建议很好", action=IntentAction.FEEDBACK)) == []
     finally:
@@ -797,7 +782,7 @@ def test_execute_tool_serves_skill_content_locally():
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
-        agent = orch._pool[ProfileName.FAST][0]
+        agent = orch._agents[ProfileName.FAST]
         data, error = _run(agent._execute_tool("load_skill", {"skill_name": "academic"}, _req("选课")))
         assert error is None
         assert "学业咨询规范的完整正文" in data
@@ -819,7 +804,7 @@ def test_execute_tool_skill_loader_respects_allowlist():
     tmp, mgr = _fake_skill_manager()
     try:
         orch.set_skill_manager(mgr)
-        agent = orch._pool[ProfileName.FAST][0]
+        agent = orch._agents[ProfileName.FAST]
         agent._tool_allowlist = {"load_skill"}
         data, error = _run(agent._execute_tool("query_schedule", {}, _req("食堂")))
         assert data is None
@@ -857,16 +842,46 @@ def test_action_allows_tool_policy_matrix():
 
 
 def test_write_tools_derived_from_tool_declaration():
-    """写工具集合从 Tool.write 声明推导（新写工具无需登记黑名单）。"""
+    """写工具集合从 Tool.effect 声明推导（WRITE / EXTERNAL_SIDE_EFFECT 入写集合）。"""
     tm = _fake_tool_manager()
     assert tm.write_tools() == frozenset({"add_todo", "complete_todo"})
+
+
+def test_undeclared_effect_tool_fail_closed():
+    """未声明 effect 的工具 fail-closed：不暴露给 Agent、不在写集合、不可执行。"""
+    from mcp.tool_manager import MCPToolManager, Tool
+
+    tm = MCPToolManager(api_key=FAKE_KEY)
+
+    async def side_effect(params, context):
+        return {"done": True}  # 实际有副作用但忘记声明 effect
+
+    tm.register(Tool(
+        name="forgot_effect",
+        description="忘记声明副作用的工具",
+        handler=side_effect,
+        schema={"type": "object", "properties": {}},
+        agent_exposed=True,
+    ))
+    assert "forgot_effect" not in tm.write_tools()  # 不在写集合
+
+    orch = _orchestrator()
+    orch.set_tool_manager(tm)
+    agent = orch._agents[ProfileName.FAST]
+    # 暴露层：不可见（fail-closed，不会被只读动作误当只读工具开放）
+    names = {t["name"] for t in agent._build_tools(_req("查一下", action=IntentAction.QUERY))}
+    assert "forgot_effect" not in names
+    # 执行层：直接拒绝
+    data, error = _run(agent._execute_tool("forgot_effect", {}, _req("执行", action=IntentAction.REQUEST)))
+    assert data is None
+    assert "权限" in error
 
 
 def test_build_tools_query_action_readonly():
     """QUERY：只暴露只读工具，不暴露写工具（Action 层门禁）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     names = {t["name"] for t in agent._build_tools(_req("看看我的待办", action=IntentAction.QUERY))}
     assert "query_todo" in names and "query_schedule" in names
@@ -877,7 +892,7 @@ def test_build_tools_request_action_full_surface():
     """REQUEST：暴露完整公共工具层（含执行类工具）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     names = {t["name"] for t in agent._build_tools(_req("帮我记个待办", action=IntentAction.REQUEST))}
     assert "add_todo" in names
@@ -888,7 +903,7 @@ def test_build_tools_default_read_only_blocks_writes():
     """Run 级写策略缺省（动作未知/None）：不暴露写工具（防御纵深）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     names = {t["name"] for t in agent._build_tools(_req("帮我记个待办"))}
     assert "query_schedule" in names
@@ -899,7 +914,7 @@ def test_build_tools_greeting_feedback_no_tools():
     """GREETING / FEEDBACK：原则上不开放任何工具。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     assert agent._build_tools(_req("你好", action=IntentAction.GREETING)) == []
     assert agent._build_tools(_req("这个建议很好", action=IntentAction.FEEDBACK)) == []
@@ -909,7 +924,7 @@ def test_build_tools_complaint_other_readonly():
     """COMPLAINT / OTHER：保守策略，只开放只读工具。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     for action in (IntentAction.COMPLAINT, IntentAction.OTHER):
         names = {t["name"] for t in agent._build_tools(_req("不满", action=action))}
@@ -921,7 +936,7 @@ def test_execute_tool_query_blocks_write_tool():
     """防御纵深：QUERY 动作下写权限角色调用写工具 → 拒绝（Action 门禁），不执行。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     data, error = _run(agent._execute_tool(
         "add_todo", {"content": "买饭卡"}, _req("查一下我的待办", action=IntentAction.QUERY)))
@@ -933,7 +948,7 @@ def test_execute_tool_default_read_only_blocks_write_tool():
     """Run 级写策略缺省（动作未知）：拒绝写工具（防御纵深）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     data, error = _run(agent._execute_tool(
         "add_todo", {"content": "买饭卡"}, _req("帮我记个待办")))
@@ -945,7 +960,7 @@ def test_execute_tool_request_allows_write_tool():
     """REQUEST（WRITE_ALLOWED）写工具正常走执行链（不被权限拦截）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     data, error = _run(agent._execute_tool(
         "add_todo", {"content": "买饭卡"}, _req("帮我记个待办", action=IntentAction.REQUEST)))
@@ -956,7 +971,7 @@ def test_execute_tool_request_allows_write_tool():
 def test_system_prompt_injects_action_guidance():
     """Action 指引注入 system prompt：各动作注入对应行为指令，None 不注入。"""
     orch = _orchestrator()
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     prompt = agent._build_system_prompt(_req("hi", action=IntentAction.QUERY))
     assert "[意图指引]" in prompt
@@ -979,7 +994,7 @@ def test_system_prompt_injects_action_guidance():
 def test_system_prompt_mounts_domain_persona():
     """领域人格按 domain 挂载（只提供语境）；Task goal 注入 [任务目标]。"""
     orch = _orchestrator()
-    agent = orch._pool[ProfileName.FAST][0]
+    agent = orch._agents[ProfileName.FAST]
 
     prompt = agent._build_system_prompt(_req("hi", domain=IntentDomain.IT_HELP))
     assert "[领域人格]" in prompt
@@ -1129,3 +1144,142 @@ def test_needs_knowledge_consumed_by_verifier():
     v = result.execution["verification"]
     assert "expected_retrieval_missing" in v["flags"]
     assert orch.verification_stats()["expected_retrieval_missing"] == 1
+
+
+# ── Task 级工具能力（allowed_tools，最小权限）────────────────────────────────
+
+def test_build_tools_respects_task_capability():
+    """任务级能力：REQUEST 任务只能看到 allowed_tools 内的工具（与 Action 策略取交集）。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    agent = orch._agents[ProfileName.FAST]
+    req = _req("帮我记个待办", action=IntentAction.REQUEST)
+    req.allowed_tools = ["add_todo"]
+
+    names = {t["name"] for t in agent._build_tools(req)}
+    assert names == {"add_todo"}  # 只暴露 add_todo，不因 REQUEST 拿到其他写工具
+    assert "complete_todo" not in names
+    assert "knowledge_search" not in names
+
+
+def test_execute_tool_denies_outside_task_capability():
+    """执行前再次校验：allowed_tools 之外的写工具被硬拒绝（双重门禁）。"""
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    agent = orch._agents[ProfileName.FAST]
+    req = _req("帮我记个待办", action=IntentAction.REQUEST)
+    req.allowed_tools = ["add_todo"]
+
+    # 能力内写工具放行
+    data, error = _run(agent._execute_tool("add_todo", {"content": "x"}, req))
+    assert error is None
+    # 能力外写工具拒绝（即使 action=REQUEST 且工具本身允许）
+    data, error = _run(agent._execute_tool("complete_todo", {"id": 1}, req))
+    assert data is None
+    assert "能力" in error
+
+
+def test_planner_rule_task_carries_capability():
+    """规则链 t3（REQUEST）只声明 add_todo 能力（最小权限，与 required_tool 一致）。"""
+    orch = _orchestrator()
+    req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
+    plan = _run(orch._planner.plan(req, req.domain, req.action))
+    t3 = next(t for t in plan.tasks if t.task_id == "t3")
+    assert t3.action == IntentAction.REQUEST
+    assert t3.allowed_tools == ["add_todo"]
+
+
+def test_planner_single_request_task_gets_write_hint():
+    """单任务 REQUEST 最小权限：'帮我添加一个待办' → 只给 add_todo。"""
+    orch = _orchestrator()
+    req = _req("帮我添加一个补办校园卡的待办", domain=IntentDomain.PERSONAL, action=IntentAction.REQUEST)
+    plan = _run(orch._planner.plan(req, req.domain, req.action))
+    assert plan.mode == "single"
+    assert plan.tasks[0].allowed_tools == ["add_todo"]
+
+
+def test_planner_single_query_task_no_capability():
+    """单任务 QUERY 不做任务级限制（allowed_tools=None，Action 策略已约束）。"""
+    orch = _orchestrator()
+    req = _req("南校区食堂几点关门？", domain=IntentDomain.CAMPUS_LIFE, action=IntentAction.QUERY)
+    plan = _run(orch._planner.plan(req, req.domain, req.action))
+    assert plan.tasks[0].allowed_tools is None
+
+
+def test_tasks_from_llm_validates_tools_field():
+    """LLM 规划的 tools 字段硬校验：合法保留；未注册工具 → 整链作废（fail-closed）。"""
+    orch = _orchestrator()
+    req = _req("帮我记个待办")
+    orch._planner.set_tool_names({"add_todo", "complete_todo", "knowledge_search"})
+
+    # 合法 tools：保留为任务能力
+    tasks = orch._planner._tasks_from_llm([
+        {"id": "t1", "domain": "personal", "action": "request", "tools": ["add_todo"]},
+    ], req)
+    assert tasks is not None
+    assert tasks[0].allowed_tools == ["add_todo"]
+
+    # 引用未注册工具 → None（整链作废，回落本地 Fast Path）
+    assert orch._planner._tasks_from_llm([
+        {"id": "t1", "domain": "personal", "action": "request", "tools": ["delete_todo"]},
+    ], req) is None
+    # 非字符串数组 → None
+    assert orch._planner._tasks_from_llm([
+        {"id": "t1", "domain": "personal", "action": "request", "tools": "add_todo"},
+    ], req) is None
+    # 工具名集合未注入时不校验名称（运行期 Agent 门禁按实际注册表拦截）
+    orch._planner.set_tool_names(None)
+    tasks = orch._planner._tasks_from_llm([
+        {"id": "t1", "domain": "personal", "action": "request", "tools": ["anything"]},
+    ], req)
+    assert tasks is not None and tasks[0].allowed_tools == ["anything"]
+
+
+def test_capability_flows_to_task_request():
+    """allowed_tools 从 Task 流入 Task-scoped Request（Agent 门禁消费同一事实来源）。"""
+    orch = _orchestrator()
+    req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
+    seen = []
+
+    async def fake_execute(task_req, on_event=None):
+        seen.append((task_req.task_id, task_req.allowed_tools))
+        return AgentResponse(agent_type=task_req.domain.value, content="ok", success=True)
+
+    orch._execute = fake_execute
+    plan = _run(orch._planner.plan(req, req.domain, req.action))
+    _run(orch.run_parallel(req, plan))
+    by_id = dict(seen)
+    assert by_id["t1"] is None and by_id["t2"] is None  # QUERY 任务不限制
+    assert by_id["t3"] == ["add_todo"]                  # REQUEST 任务只给 add_todo
+
+
+# ── 复合请求 Task 级 action（不继承顶层 action）──────────────────────────────
+
+def test_parallel_tasks_get_own_action():
+    """并行兜底：'查校车 + 添加待办' 拆出不同 action（campus QUERY / personal REQUEST）。"""
+    orch = _orchestrator()
+
+    async def fake_llm_plan(req):
+        return None  # LLM 不可用 → 回落本地 Fast Path
+
+    orch._planner._llm_plan = fake_llm_plan  # type: ignore[method-assign]
+    req = _req("帮我查一下明天校车，同时帮我添加一个下午三点的待办")
+    plan = _run(orch._planner.plan(req, IntentDomain.CAMPUS_LIFE, IntentAction.QUERY))
+    assert plan.mode == "parallel"
+    by_domain = {t.domain: t.action for t in plan.tasks}
+    assert by_domain[IntentDomain.CAMPUS_LIFE] == IntentAction.QUERY
+    assert by_domain[IntentDomain.PERSONAL] == IntentAction.REQUEST
+
+
+def test_mixed_query_request_upgrades_to_llm_planning():
+    """QUERY + REQUEST 混合（复合形态 + 写操作词）→ 升级 LLM 规划。
+
+    该消息单领域、短句（不触发从句/长度/多领域信号），
+    仅因"复合形态 + 写操作词"升级 —— 让 LLM 显式给出各任务 action。
+    """
+    orch = _orchestrator()
+    req = _req("帮我添加一个待办，然后设置提醒")
+    assert orch._planner._needs_llm_planning(req) is True
+    # 对照：同样短但无写操作词的复合查询不因此升级（纯查询走本地 Fast Path）
+    req2 = _req("校车几点，然后图书馆几点关")
+    assert orch._planner._needs_llm_planning(req2) is False

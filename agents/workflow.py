@@ -17,11 +17,19 @@ Planner 两条路径，但都输出统一 ExecutionPlan：
 
 每个 Task 携带自己的 action（QUERY→READ_ONLY / REQUEST→WRITE_ALLOWED，
 见 roles.write_policy_for），不再继承原始请求的 action —— 复合请求拆分后
-t1/t2 可能是 QUERY、t3 才是 REQUEST。
+t1/t2 可能是 QUERY、t3 才是 REQUEST。REQUEST 任务还带 allowed_tools
+（任务级工具能力，最小权限）：规则链显式声明、写操作词族提示兜底、LLM
+规划可输出，执行侧与 Action 策略、注册级声明取交集（三重门禁）。
 
 Task 才是真正的 Agent 边界（Task-scoped SubAgent）：每个 Task 由一次独立
 TaskAgent Run 执行，拥有独立 goal / message / domain / action / depends_on
-与协作上下文；领域（domain）只做人格/Skills 挂载键，不参与 Agent 类选择。
+/ allowed_tools 与协作上下文；领域（domain）只做人格/Skills 挂载键，
+不参与 Agent 类选择。
+
+确定性规则链（_plan_schedule_errand 等）只是**高频业务场景 Fast Path**：
+只有"高频、稳定、确定性强、用规则明显比 LLM 更可靠"才加规则；通用复杂
+请求（含 QUERY+REQUEST 混合、多个副作用任务、子任务权限不同）由 LLM 规划
+显式生成各 Task 的 action / tools，输出后硬校验，不能完全相信 LLM。
 
 DAG 失败传播：任务状态 SUCCESS / FAILED / BLOCKED / SKIPPED。
 依赖任务 FAILED/BLOCKED → 下游任务 BLOCKED（不执行、不注入上下文），
@@ -43,7 +51,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from anthropic import AsyncAnthropic
 
-from core.domains import DOMAIN_KEYWORDS, IntentAction, IntentDomain, keyword_hit
+from core.domains import (
+    ACTION_KEYWORDS, DOMAIN_KEYWORDS, IntentAction, IntentDomain, keyword_hit,
+)
 from agents.roles import AgentResponse
 
 if TYPE_CHECKING:
@@ -71,6 +81,10 @@ class Task:
     message:     str                      # 自包含请求内容
     action:      IntentAction = IntentAction.QUERY  # 任务自己的动作（决定 Run 执行策略）
     depends_on:  List[str] = field(default_factory=list)  # 依赖的其他 task_id
+    # 任务级工具能力（最小权限）：None = 不做任务级限制（仍受 Action 策略约束）；
+    # 非空 = 该任务只能看到/调用列表内的工具（与 Action 策略、注册级声明取交集）。
+    # 由 Planner 声明（规则链显式声明、写操作词族提示兜底、LLM 规划可输出）。
+    allowed_tools: Optional[List[str]] = None
     # 后置条件：本任务应落地的写操作（模型忘记调用工具时由执行器补执行）。
     # 由 Planner 声明，避免执行器硬编码任务标识。
     required_tool: Optional[str] = None
@@ -183,6 +197,14 @@ class TaskPlanner:
         IntentDomain.PERSONAL:    "从个人助理角度回答用户的请求（我的课表/待办/考试安排等）",
     }
 
+    # 写工具提示（Fast Path 最小权限声明）：REQUEST 任务按写操作词族声明必要
+    # 工具，避免"因为 REQUEST 就拿到所有写工具"。多词族命中取并集；未命中
+    # （语义不明）不做任务级限制，由 Action 策略兜底。
+    _WRITE_TOOL_HINTS: Tuple[Tuple[Tuple[str, ...], Tuple[str, ...]], ...] = (
+        (("添加", "新增", "记一下", "记个", "提醒我", "帮我记", "创建", "设个提醒", "定个提醒", "设置提醒"), ("add_todo",)),
+        (("标记完成", "标为完成", "设为完成", "勾选完成", "标成完成"), ("complete_todo",)),
+    )
+
     def __init__(
         self,
         client: Optional[Any] = None,
@@ -190,6 +212,7 @@ class TaskPlanner:
         gateway: Optional[Any] = None,
         max_tasks: int = 6,
         max_agents: int = 3,
+        tool_names: Optional[Set[str]] = None,
     ):
         # LLM 规划能力（可选注入）：client/model/gateway 由编排器传入；
         # 不注入时 Planner 只走 Fast Path（单任务/规则链/并行）。
@@ -198,20 +221,27 @@ class TaskPlanner:
         self._gateway = gateway
         self._max_tasks = max_tasks
         self._max_agents = max_agents
+        # 注册工具名集合（LLM 规划的 tools 字段硬校验；None = 不做名称校验）
+        self._tool_names = tool_names
+
+    def set_tool_names(self, tool_names: Optional[Set[str]]) -> None:
+        """注入注册工具名集合（编排器 set_tool_manager 时同步更新）。"""
+        self._tool_names = tool_names
 
     # ── 主入口 ────────────────────────────────────────────────────────────────
 
     async def plan(self, req: "Request", domain: IntentDomain, action: IntentAction) -> ExecutionPlan:
         """
         生成 ExecutionPlan：Fast Path 先判；判 single 但"拿不准"时 LLM 规划升级。
+        返回前对 REQUEST 任务做最小权限兜底（写工具提示，见 _apply_write_hints）。
         """
         fast = self._fast_plan(req, domain, action)
         if fast.mode != "single" or not self._needs_llm_planning(req):
-            return fast
+            return self._apply_write_hints(fast)
         llm_plan = await self._llm_plan(req)
         if llm_plan is not None:
-            return llm_plan
-        return fast  # LLM 不可用/输出非法：回落本地（行为不比现状差）
+            return self._apply_write_hints(llm_plan)
+        return self._apply_write_hints(fast)  # LLM 不可用/输出非法：回落本地（行为不比现状差）
 
     # ── Fast Path（本地规则）────────────────────────────────────────────────
 
@@ -222,7 +252,8 @@ class TaskPlanner:
         if rule_tasks is not None:
             return ExecutionPlan(rule_tasks, reason="命中复合规则（存在前后依赖）")
 
-        # 2. 多领域 + 显式连接词 → 并行任务
+        # 2. 多领域 + 显式连接词 → 并行任务（每个任务自己的 action，
+        #    不继承顶层 action：写操作词 + 个人领域才是 REQUEST，见 _task_action）
         targets = self._collaboration_targets(req, domain)
         connectors = ("同时", "还要", "并且", "另外", "以及", "顺便", "然后")
         if len(targets) >= 2 and any(word in req.message for word in connectors):
@@ -232,7 +263,7 @@ class TaskPlanner:
                     domain=at,
                     goal=self.GOAL_TEMPLATES.get(at, "回答用户的请求"),
                     message=f"{self.GOAL_TEMPLATES.get(at, '回答用户的请求')}。\n用户请求: {req.message}",
-                    action=action,
+                    action=self._task_action(req.message, at),
                 )
                 for i, at in enumerate(targets[: self._max_agents])
             ]
@@ -248,6 +279,49 @@ class TaskPlanner:
     # ── 复合规则 ─────────────────────────────────────────────────────────────
 
     @staticmethod
+    def _task_action(message: str, domain: IntentDomain) -> IntentAction:
+        """复合请求中单个任务的 action（确定性判定，不继承顶层 action）。
+
+        Fast Path 兜底口径：写操作词 + 个人领域 → REQUEST（本系统写工具均为
+        个人数据操作）；其余一律 QUERY。拿不准的混合请求优先升级 LLM 规划
+        （_needs_llm_planning），这里只保证回落路径不把查询任务误开写权限
+        （fail-closed：非 REQUEST 一律只读）。
+        """
+        msg = (message or "").lower()
+        if domain == IntentDomain.PERSONAL and any(
+            keyword_hit(kw, msg) for kw in ACTION_KEYWORDS.get(IntentAction.REQUEST, [])
+        ):
+            return IntentAction.REQUEST
+        return IntentAction.QUERY
+
+    @classmethod
+    def _write_tool_hint(cls, message: str) -> Optional[List[str]]:
+        """REQUEST 任务的最小权限声明：消息命中哪个写操作词族就只给哪个写工具。
+
+        多词族命中取并集（如"添加待办并标记完成"→ add_todo + complete_todo）；
+        无命中返回 None（语义不明，不做任务级限制，Action 策略兜底）。
+        """
+        msg = (message or "").lower()
+        tools: List[str] = []
+        for kws, names in cls._WRITE_TOOL_HINTS:
+            if any(keyword_hit(kw, msg) for kw in kws):
+                tools.extend(names)
+        return list(dict.fromkeys(tools)) or None
+
+    def _apply_write_hints(self, plan: ExecutionPlan) -> ExecutionPlan:
+        """REQUEST 任务最小权限兜底：Planner 未显式声明能力时按写操作词族声明。
+
+        规则链/LLM 规划已显式声明 allowed_tools 的任务不覆盖；
+        例如"帮我添加一个待办"→ 只给 add_todo，不因 REQUEST 获得全部写工具。
+        """
+        for task in plan.tasks:
+            if task.action == IntentAction.REQUEST and not task.allowed_tools:
+                hinted = self._write_tool_hint(task.message)
+                if hinted:
+                    task.allowed_tools = hinted
+        return plan
+
+    @staticmethod
     def _extract_errand_content(msg: str) -> str:
         """从用户请求中提取办事内容（"办校园卡" → "校园卡"），避免硬编码业务。"""
         m = re.search(r"(?:办|办理|补办|申请|搞)([\u4e00-\u9fff]{2,8})", msg)
@@ -256,13 +330,16 @@ class TaskPlanner:
     @classmethod
     def _plan_schedule_errand(cls, req: "Request") -> Optional[List[Task]]:
         """
-        规则：个人日程 + 线下办事 + 记待办 的复合请求。
+        高频业务场景 Fast Path（确定性规则，非 DAG 能力的主要证明）：
+        个人日程 + 线下办事 + 记待办 的复合请求。
 
         例："我明天下午有空，想去办校园卡，帮我记个待办"
           t1 查课表（personal, QUERY）→ t2 查办理信息（affairs, QUERY）
           → t3 创建待办（personal, REQUEST，depends_on=[t1,t2]）
         每个任务有自己的 action：t1/t2 是 QUERY（READ_ONLY），
-        t3 是 REQUEST（WRITE_ALLOWED）。
+        t3 是 REQUEST（WRITE_ALLOWED）且只声明 add_todo 能力（最小权限）。
+        只有"高频、稳定、确定性强、用规则明显比 LLM 更可靠"的场景才加这类
+        规则；通用复杂请求由 Planner/LLM 规划负责（输出后仍有硬校验）。
         """
         msg = req.message
         has_schedule = any(keyword_hit(kw, msg) for kw in ("课表", "课程", "空闲", "上课", "没课", "有空"))
@@ -297,6 +374,9 @@ class TaskPlanner:
                     f"用户请求: {msg}"
                 ),
                 depends_on=["t1", "t2"],
+                # 任务级最小权限：本任务只允许调用 add_todo，
+                # 不因 REQUEST 获得其他写工具（与 Action 策略取交集）。
+                allowed_tools=["add_todo"],
                 required_tool="add_todo",
                 required_tool_args={"content": f"办理{content}", "kind": "todo"},
             ),
@@ -353,7 +433,10 @@ class TaskPlanner:
         任一信号命中即升级：
           1. 消息被切出 ≥3 个从句（信息量大，可能复合）；
           2. 长消息（>24 字）且 ≥2 个从句；
-          3. 领域关键词命中 ≥2 个领域但无显式连接词（"隐式复合"）。
+          3. 领域关键词命中 ≥2 个领域但无显式连接词（"隐式复合"）；
+          4. 复合形态 + 写操作词（QUERY+REQUEST 混合 / 多个副作用任务）：
+             子任务 action / 权限可能不同，让 LLM 显式生成各任务的
+             action 与工具能力（确定性兜底只保证 fail-closed）。
         """
         msg = req.message
         clauses = [c for c in self._UPGRADE_CLAUSE_RE.split(msg) if c.strip()]
@@ -366,7 +449,13 @@ class TaskPlanner:
             domain for domain, kws in DOMAIN_KEYWORDS.items()
             if any(keyword_hit(kw, lowered) for kw in kws)
         }
-        return len(hit_domains) >= 2
+        if len(hit_domains) >= 2:
+            return True
+        if len(clauses) >= 2 and any(
+            keyword_hit(kw, lowered) for kw in ACTION_KEYWORDS.get(IntentAction.REQUEST, [])
+        ):
+            return True
+        return False
 
     async def _llm_plan(self, req: "Request") -> Optional[ExecutionPlan]:
         """一次轻量 LLM 调用输出任务链（含每个任务的 action），硬校验后采用。
@@ -381,10 +470,13 @@ class TaskPlanner:
             "拆分为多个任务，有先后依赖的任务用 depends_on 表达。\n"
             "任务字段：\n"
             '  {"id": "t1", "domain": "<领域值>", "action": "<query/request>", '
-            '"goal": "<任务目标>", "message": "<给该子任务的独立请求>", "depends_on": ["<前置任务id>"]}\n'
+            '"goal": "<任务目标>", "message": "<给该子任务的独立请求>", '
+            '"depends_on": ["<前置任务id>"], "tools": ["<允许调用的工具名>"]}\n'
             "- domain 可选值: academic, campus_life, affairs, it_help, personal\n"
             "- action: query=查询咨询；request=需要系统写数据/产生副作用（创建待办等）\n"
             "- 只有明确需要写操作的任务才是 request，查询类任务一律 query\n"
+            "- tools 可选：本任务允许调用的工具名数组（最小权限，如 [\"add_todo\"]）；"
+            "查询类任务不写 tools 即可\n"
             "- depends_on 引用前面已定义任务的 id；无前置依赖省略或为空数组\n"
             f"用户消息: {req.message!r}\n\n"
             "返回格式（仅 JSON，不要其他文字）:\n"
@@ -435,6 +527,8 @@ class TaskPlanner:
           - domain 必须是已知领域（不含 OTHER）
           - action 必须是合法动作（默认 QUERY）
           - depends_on 引用的 id 必须存在，且无环（拓扑检查）
+          - tools（可选）：必须是字符串数组；注入过工具名集合时，引用未注册
+            工具 → 整链作废（fail-closed，不能完全相信 LLM）
           - message 缺失时回落自包含格式（含原始用户请求）
           - required_tool 一律不采用：后置条件是关键词规则链的保险带
         """
@@ -470,6 +564,20 @@ class TaskPlanner:
             ):
                 return None
             deps = list(dict.fromkeys(d.strip() for d in depends))
+            # 任务级工具能力（最小权限）：LLM 声明了 tools 就必须合法；
+            # 名称集合不可用时不校验名称（运行期 Agent 门禁仍会按实际注册表拦截）
+            raw_tools = raw.get("tools")
+            allowed_tools: Optional[List[str]] = None
+            if raw_tools is not None:
+                if not isinstance(raw_tools, list) or not all(
+                    isinstance(t, str) and t.strip() for t in raw_tools
+                ):
+                    return None
+                if self._tool_names is not None and any(
+                    t not in self._tool_names for t in raw_tools
+                ):
+                    return None  # 引用了未注册工具 → 整链作废（fail-closed）
+                allowed_tools = list(dict.fromkeys(t.strip() for t in raw_tools))
             tasks.append(Task(
                 task_id=task_id,
                 domain=domain,
@@ -477,6 +585,7 @@ class TaskPlanner:
                 goal=goal,
                 message=message,
                 depends_on=deps,
+                allowed_tools=allowed_tools,
             ))
             seen_ids.add(task_id)
         # 依赖引用与无环校验

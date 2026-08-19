@@ -110,6 +110,18 @@ class CircuitBreaker:
 
 # ── 工具定义 ──────────────────────────────────────────────────────────────────
 
+class ToolEffect(Enum):
+    """工具副作用声明（fail-closed）：未声明 = 不暴露、不可写。
+
+    - READ: 只读，无副作用（检索/查询）；
+    - WRITE: 修改系统内部状态（如待办数据）；
+    - EXTERNAL_SIDE_EFFECT: 对外部系统产生副作用（如发送通知、调用外部写接口）。
+    """
+    READ                 = "read"
+    WRITE                = "write"
+    EXTERNAL_SIDE_EFFECT = "external_side_effect"
+
+
 @dataclass
 class Tool:
     name:        str
@@ -122,11 +134,28 @@ class Tool:
     use_rewrite: bool = False                # 调用时是否自动走「查询改写→并行召回→去重→重排」链路
     fallback:    Optional[Callable] = None    # sync/async (params, context, error) -> Any
     agent_exposed: bool = True               # 是否暴露给 Agent 的 function calling
-    write: bool = False                      # 状态修改类工具声明（读写门禁据此推导，不手工维护黑名单）
+    # 副作用声明（fail-closed）：None = 未声明 → 不暴露给 Agent、不可写。
+    # 新增工具必须显式声明 effect；忘记声明时只影响它自己（不可见不可写），
+    # 不会被只读动作误当只读工具开放。
+    effect:      Optional[ToolEffect] = None
 
     # 运行时状态（不参与构造）
     stats:   ToolStats    = field(default_factory=ToolStats, init=False)
     breaker: CircuitBreaker = field(default_factory=CircuitBreaker, init=False)
+
+    @property
+    def is_agent_visible(self) -> bool:
+        """Agent 可见性 = 显式暴露 AND 显式声明副作用（fail-closed）。
+
+        未声明 effect 的工具即使 agent_exposed=True 也不进入 Agent 工具面，
+        避免"新增副作用工具忘记声明却被当只读工具开放"。
+        """
+        return self.agent_exposed and self.effect is not None
+
+    @property
+    def is_write(self) -> bool:
+        """是否写工具：WRITE / EXTERNAL_SIDE_EFFECT 均视为有副作用（写集合成员）。"""
+        return self.effect in (ToolEffect.WRITE, ToolEffect.EXTERNAL_SIDE_EFFECT)
 
 
 # ── MCP 工具管理器 ────────────────────────────────────────────────────────────
@@ -173,12 +202,13 @@ class MCPToolManager:
         self._tools.pop(name, None)
 
     def write_tools(self) -> FrozenSet[str]:
-        """读写门禁的写工具集合：由各工具自身声明的 write 属性推导。
+        """读写门禁的写工具集合：由各工具声明的 effect 推导。
 
-        新增状态修改类工具只需声明 write=True，无需再维护任何黑名单
-        （旧版 WRITE_TOOLS 手工登记，新增写工具容易漏登记被只读动作误开放）。
+        新增有副作用的工具只需显式声明 effect=WRITE / EXTERNAL_SIDE_EFFECT，
+        无需维护任何黑名单（旧版 WRITE_TOOLS 手工登记，新增写工具容易漏登记）；
+        未声明 effect 的工具天然不在写集合（fail-closed，不会被只读动作误开放）。
         """
-        return frozenset(name for name, t in self._tools.items() if t.write)
+        return frozenset(name for name, t in self._tools.items() if t.is_write)
 
     # ── 核心调用 ──────────────────────────────────────────────────────────────
 

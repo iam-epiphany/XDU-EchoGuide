@@ -1,18 +1,21 @@
 """
-出口校验（Verifier / Grounding）：回答返回用户前的事实核查。
+出口校验（Verifier）：Post-response Consistency / Grounding Check。
 
-两层：
-  1. 规则校验（免费、全量）：只保留最有价值的规则——
-     - 引用存在性（claim [n] 但无工具证据）；
-     - 写操作落账（声称"已添加/已完成"但未调用写工具）；
-     - 检索需求闭环（意图判定 needs_knowledge=true，但执行链未出现
-       retrieval evidence → expected_retrieval_missing 标记异常）。
-  2. LLM 校验（可选，策略开关，仅 DEEP/执行路径）：一次廉价判定调用，
-     判断回答是否被工具证据支撑；不通过追加免责声明。
+定位：回答返回用户前的**出口一致性 / 依据检查**，不是"能消灭幻觉的事实
+核查系统"——它只标注风险、不阻断主链路（honest-by-design），也不承诺
+"绝对正确"。
 
-设计原则：校验只标注不阻断主链路（honest-by-design）——flags 进
-execution meta 与 Monitor 的 verification 计数，LLM 判定失败时给用户
-追加免责声明而非吞掉回答。LLM 校验异常一律 fail-open（不阻断）。
+重点检查（规则层，免费全量）：
+  - 回答声明了引用（[n]），但没有真实 Tool Evidence；
+  - 回答声称已经执行写操作（"已添加/已完成"），但实际没有调用对应写工具；
+  - needs_knowledge=true，但执行链没有发生知识检索（expected_retrieval_missing）。
+  - 有 Tool Evidence 时，回答是否明显超出证据 → 由可选 LLM 判定承接。
+
+LLM 判定（可选，策略开关，仅 DEEP/执行路径）：一次廉价判定调用，判断回答
+是否被工具证据支撑；不通过追加免责声明，异常一律 fail-open（不阻断）。
+
+证据来源统一：Tool Evidence 由执行链从工具结果泛化采集（含标题/来源 URL
+的条目列表即视为证据），Verifier 不特殊认识任何具体工具名。
 """
 from __future__ import annotations
 
