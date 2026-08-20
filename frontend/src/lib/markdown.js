@@ -114,16 +114,18 @@ export function renderMarkdown(text) {
       continue
     }
 
-    // 有序列表
-    const ol = /^\d+[.)]\s+(.*)$/.exec(trimmed)
+    // 有序列表：每个 <ol> 从该项自己的序号开始（start 属性）。
+    // LLM 回答中列表常被空行/段落/引用打断，若每个 <ol> 都从 1 开始，
+    // 浏览器会把后续项全部重新编号成 1. —— 用 start 保持原始序号。
+    const ol = /^(\d+)[.)]\s+(.*)$/.exec(trimmed)
     if (ol) {
       flushParagraph(para)
       if (listType !== 'ol') {
         closeList()
-        out.push('<ol>')
+        out.push(`<ol start="${ol[1]}">`)
         listType = 'ol'
       }
-      out.push(`<li>${inline(escapeHtml(ol[1]))}</li>`)
+      out.push(`<li>${inline(escapeHtml(ol[2]))}</li>`)
       continue
     }
 

@@ -33,11 +33,25 @@ def split_sentences(text: str) -> List[str]:
     """中文/英文混合句子拆分：按句末标点与换行切分，标点保留在句尾。
 
     引用标注按句粒度进行：一个事实性 claim 对应一个句子。
+    返回裁剪后的句子（供证据匹配与 trace 分析）。
     """
     if not text:
         return []
     parts = re.split(r"(?<=[。！？!?；;\n])", text)
     return [p.strip() for p in parts if p.strip()]
+
+
+def split_sentences_raw(text: str) -> List[str]:
+    """保留原始分隔（换行/缩进）的句子拆分。
+
+    与 split_sentences 的区别：不 strip、不丢空白部分——引用标注后按原样
+    拼回，保证不破坏 Markdown 列表结构（"1. 甲。乙。" 这类列表项内部的
+    句号不会把一项拆成两行，否则前端会把每个列表项渲染成独立 <ol>，
+    序号全部从 1 重新开始）。
+    """
+    if not text:
+        return []
+    return [p for p in re.split(r"(?<=[。！？!?；;\n])", text) if p]
 
 
 def _bigrams(s: str) -> set:
@@ -143,12 +157,16 @@ async def annotate_citations(
         return {"text": answer or "", "sentences": [], "citation_indices": [], "unsupported_sentences": []}
 
     body = strip_citation_markers(answer or "")
-    sentences = split_sentences(body)
+    # 用保留原始分隔的拆分：列表项内部句号不换行，标注后原样拼回
+    parts = split_sentences_raw(body)
     cited_sents: List[Dict[str, Any]] = []
     unsupported: List[str] = []
     indices: set = set()
 
-    for sent in sentences:
+    for part in parts:
+        sent = part.strip()
+        if not sent:
+            continue
         idx, dice, cos = await match_evidence(sent, evidences)
         if idx >= 0 and supported(dice, cos):
             cited_sents.append({
@@ -161,15 +179,23 @@ async def annotate_citations(
         else:
             unsupported.append(sent)
 
-    # 拼接：支持句加 [i]，unsupported 句保持原样
+    # 拼接：支持句在原位追加 [i]，其余部分原样保留（含换行/缩进），
+    # 用 "" 拼回以还原原始文本结构（split 的 lookbehind 保留了分隔符）。
+    # 标注插在行尾空白之前：part 可能以 "\n" 结尾（分隔符留在尾部），
+    # 若直接追加会得到独立的 "[1]" 行。
     out_parts: List[str] = []
-    for sent in sentences:
+    for part in parts:
+        sent = part.strip()
+        if not sent:
+            out_parts.append(part)
+            continue
         mark = next(
             (f"[{c['evidence_idx'] + 1}]" for c in cited_sents if c["sentence"] == sent),
             "",
         )
-        out_parts.append(f"{sent}{mark}")
-    annotated = "\n".join(out_parts)
+        tail = part[len(part.rstrip()):]  # 行尾空白（换行/缩进）
+        out_parts.append(f"{part.rstrip()}{mark}{tail}")
+    annotated = "".join(out_parts)
 
     return {
         "text": annotated,
