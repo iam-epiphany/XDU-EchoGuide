@@ -3,7 +3,7 @@
 
 职责收口（v5 Task-scoped 架构）：Intent 只负责"理解用户想做什么"——
   - 领域 IntentDomain（academic/campus_life/affairs/it_help/other）
-      —— 人格/Skills 挂载键（顾问），不做 Agent 路由（真正的 Agent 单位
+      —— 人格挂载键（顾问），不做 Agent 路由（真正的 Agent 单位
          是 Task，执行体是唯一 TaskAgent，见 agents/roles.py）。
   - 动作 IntentAction（query/request/greeting/complaint/feedback）
       —— 行为决策依据（Run 执行策略 write_policy_for + 工具读写门禁）。
@@ -156,6 +156,7 @@ class IntentRecognizer:
         embedding_threshold: float = 0.80,
         embedding_margin: float = 0.10,
         gateway: Optional[Any] = None,  # 统一模型调用入口（编排器注入；None 时直接调用）
+        ablation_mode: str = "full",    # 消融档位：full=完整级联 / pattern_only=仅关键词 / no_llm=免费路径（无 LLM 仲裁）
     ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -186,6 +187,10 @@ class IntentRecognizer:
         self.cache_hits   = 0
         self.cache_misses = 0
 
+        # 消融模式（评测专用，生产恒为 full）：pattern_only 与 no_llm 用于
+        # 量化"关键词 → +Embedding → +LLM 仲裁"每一档的贡献（evaluation/run_intent_eval.py）。
+        self._ablation_mode = ablation_mode
+
     # ── 公开接口 ──────────────────────────────────────────────────────────────
 
     async def recognize(
@@ -194,18 +199,28 @@ class IntentRecognizer:
         history: Optional[List[Dict[str, str]]] = None,
         force_llm: bool = False,
         state: Optional[Any] = None,  # RunState（有则经 ModelGateway 统计模型调用）
+        _trace: Optional[Dict[str, Any]] = None,  # 路由决策 trace（评测错误分析用）
     ) -> IntentResult:
         """
         识别用户意图（领域 + 动作 + 是否需要知识检索）。
 
         history 格式：[{"role": "user"/"assistant", "content": "..."}]
         缓存 key 包含最近对话指纹 —— 同一句追问在不同上下文不会命中陈旧结果。
+
+        _trace: 传入 dict 时记录各级信号（pattern / embedding 候选 / 最终
+        决策），供 evaluation/error_analysis 与可观测性消费；不传则零开销。
         """
         key = self._cache_key(message, history) + (":llm" if force_llm else "")
         if key in self._cache:
             self.cache_hits += 1
             return self._cache[key]
         self.cache_misses += 1
+
+        # 消融模式（评测专用）：不缓存、不计延迟，直接返回对应档位的结果
+        if self._ablation_mode == "pattern_only":
+            return self._ablate_pattern_only(message)
+        if self._ablation_mode == "no_llm":
+            return await self._ablate_no_llm(message)
 
         t0 = time.monotonic()
 
@@ -220,14 +235,39 @@ class IntentRecognizer:
             stage = "pattern"
             needs_knowledge = False
 
+            if _trace is not None:
+                # 路由决策 trace：关键词信号 / 追问形态 / Embedding 候选，
+                # 供评测错误分析与可观测性复盘（与生产路径同一实现）。
+                _trace["pattern"] = {
+                    "domain": pat.get("domain").value if pat.get("domain") else None,
+                    "action": pat.get("action").value if pat.get("action") else None,
+                    "confidence": round(float(pat.get("confidence", 0.0)), 4),
+                }
+                _trace["is_followup"] = self._is_followup_shaped(
+                    message, pat.get("domain") != IntentDomain.OTHER
+                )
+                try:
+                    _trace["embedding_candidates"] = [
+                        {"domain": d.value, "score": round(s, 4)}
+                        for s, d in await self._embedding_candidates(message, top_n=3)
+                    ]
+                except Exception as ex:
+                    logger.warning(f"路由 trace 记录 Embedding 候选失败: {ex}")
+                    _trace["embedding_candidates"] = []
+
             if force_llm:
                 llm = await self._llm_recognize(message, history, state=state)
+                if _trace is not None:
+                    _trace["llm_domain"] = (
+                        llm.get("domain").value if isinstance(llm.get("domain"), IntentDomain) else None
+                    )
+                    _trace["llm_domain_confidence"] = round(float(llm.get("domain_confidence", 0.0)), 4)
                 action = llm.get("action", action)
                 confidence = float(llm.get("confidence", 0.0))
                 reasoning = llm.get("reasoning", "")
                 stage = "llm"
                 needs_knowledge = bool(llm.get("needs_knowledge", False))
-                domain = self._domain_fallback(message, history)  # LLM 不输出领域：免费回填
+                domain = self._resolve_domain(llm, message, history)
             elif self._is_followup_shaped(message, pat.get("domain") != IntentDomain.OTHER):
                 # 追问形态 → 直接 LLM（带最近对话，由 LLM 结合上下文裁决 action 与
                 # 查询理解；领域由历史关键词回溯免费回填）：
@@ -242,7 +282,7 @@ class IntentRecognizer:
                 reasoning = llm.get("reasoning", "")
                 stage = "llm"
                 needs_knowledge = bool(llm.get("needs_knowledge", False))
-                domain = self._domain_fallback(message, history)  # 追问继承：历史关键词回溯
+                domain = self._resolve_domain(llm, message, history)
             elif (
                 pat.get("domain") != IntentDomain.OTHER
                 and pat.get("confidence", 0.0) >= self.pattern_threshold
@@ -285,7 +325,7 @@ class IntentRecognizer:
                     reasoning = f"{reason_detail}，LLM 仲裁"
                     stage = "llm"
                     needs_knowledge = bool(llm.get("needs_knowledge", False))
-                    domain = self._domain_fallback(message, history)  # LLM 不输出领域：免费回填
+                    domain = self._resolve_domain(llm, message, history)
             else:
                     emb = await self._embedding_recognize(message) if self._embedding_enabled else {
                         "domain": IntentDomain.OTHER,
@@ -311,7 +351,7 @@ class IntentRecognizer:
                             reasoning = f"Pattern 弱命中 {pat['domain'].value} 与 Embedding {emb['domain'].value} 分歧，LLM 仲裁"
                             stage = "llm"
                             needs_knowledge = bool(llm.get("needs_knowledge", False))
-                            domain = self._domain_fallback(message, history)  # LLM 不输出领域：免费回填
+                            domain = self._resolve_domain(llm, message, history)
                         else:
                             domain = emb["domain"]
                             confidence = float(emb["confidence"])
@@ -324,7 +364,14 @@ class IntentRecognizer:
                         reasoning = llm.get("reasoning", "")
                         stage = "llm"
                         needs_knowledge = bool(llm.get("needs_knowledge", False))
-                        domain = self._domain_fallback(message, history)  # LLM 不输出领域：免费回填
+                        domain = self._resolve_domain(llm, message, history)
+
+        if _trace is not None:
+            _trace["stage"] = stage
+            _trace["confidence"] = round(confidence, 4)
+            _trace["reasoning"] = reasoning
+            _trace["domain"] = domain.value if domain else None
+            _trace["action"] = action.value if action else None
 
         result = IntentResult(
             domain=domain,
@@ -344,6 +391,66 @@ class IntentRecognizer:
         self._cache[key] = result
         return result
 
+    # ── 消融档位（评测专用，evaluation/run_intent_eval.py）────────────────────
+    # pattern_only：只跑关键词匹配（最朴素基线，零成本、可离线复现）。
+    # no_llm：级联免费路径（关键词 + Embedding），跳过全部 LLM 仲裁——
+    #   追问继承、低置信度兜底这两类"花钱买正确"的行为在无 LLM 档位下
+    #   会表现为准确率回落，从而量化 LLM 仲裁档的贡献。
+
+    def _ablate_pattern_only(self, message: str) -> IntentResult:
+        pat = self._pattern_recognize(message)
+        domain, action = pat["domain"], pat["action"]
+        return IntentResult(
+            domain=domain,
+            action=action,
+            intent=self._legacy_intent(domain, action),
+            confidence=round(float(pat["confidence"]), 4),
+            reasoning="ablation:pattern_only",
+            latency_ms=0.0,
+            classifier_stage="pattern",
+        )
+
+    async def _ablate_no_llm(self, message: str) -> IntentResult:
+        pat = self._pattern_recognize(message)
+        domain, action = pat["domain"], pat["action"]
+        reasoning = "ablation:no_llm"
+        stage = "pattern"
+
+        if pat["domain"] != IntentDomain.OTHER and pat["confidence"] >= self.pattern_threshold:
+            # 关键词高置信：full 档还会要求 Embedding 双确认（防关键词子串误配），
+            # no_llm 档放宽为直接采用，代表"免费路径上限"
+            reasoning = "ablation:no_llm（pattern 高置信直返）"
+        else:
+            emb = await self._embedding_recognize(message) if self._embedding_enabled else {
+                "domain": IntentDomain.OTHER, "action": IntentAction.OTHER,
+                "confidence": 0.0, "margin": 0.0,
+            }
+            if (
+                emb.get("domain") != IntentDomain.OTHER
+                and emb.get("confidence", 0.0) >= self.embedding_threshold
+                and emb.get("margin", 0.0) >= self.embedding_margin
+            ):
+                if pat["domain"] != IntentDomain.OTHER and emb["domain"] != pat["domain"]:
+                    # 关键词与 Embedding 分歧：full 档升级 LLM 仲裁；无 LLM 时
+                    # 保守采用关键词规则（确定性优先）
+                    reasoning = f"ablation:no_llm（分歧，采用 pattern {pat['domain'].value}）"
+                else:
+                    domain = emb["domain"]
+                    stage = "embedding"
+                    reasoning = "ablation:no_llm（embedding 高置信命中）"
+            else:
+                reasoning = "ablation:no_llm（未命中免费路径，无 LLM 兜底）"
+
+        return IntentResult(
+            domain=domain,
+            action=action,
+            intent=self._legacy_intent(domain, action),
+            confidence=round(float(pat["confidence"]), 4),
+            reasoning=reasoning,
+            latency_ms=0.0,
+            classifier_stage=stage,
+        )
+
     def learn(self, message: str, correct: IntentDomain) -> None:
         """在线学习：将纠正样本加入领域模板，清除对应 Embedding 缓存。"""
         tpls = _DOMAIN_TEMPLATES.setdefault(correct, [])
@@ -352,9 +459,25 @@ class IntentRecognizer:
             self._tpl_embeddings.pop(correct, None)  # 下次重新计算
             logger.info(f"学习新样本 → {correct.value}: {message[:40]}")
 
-    # ── 领域回填（LLM 不再输出领域）──────────────────────────────────────────
-    # v4：领域只用于人格挂载与观测，全部由免费路径产出——
-    #   当前消息关键词 → 最近 4 轮用户消息关键词回溯（追问继承）→ OTHER。
+    # ── 领域回填（LLM 仲裁路径）────────────────────────────────────────────
+    # v5：LLM 结构化输出 domain（带领域定义，错误分析补强），失败/低置信时
+    # 回退关键词回填——免费路径信号（当前消息 → 最近 4 轮用户消息 → OTHER）
+    # 作为确定性兜底，不静默落 OTHER。
+    @staticmethod
+    def _resolve_domain(
+        llm: Dict[str, Any],
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+    ) -> IntentDomain:
+        llm_domain = llm.get("domain")
+        if (
+            isinstance(llm_domain, IntentDomain)
+            and llm_domain != IntentDomain.OTHER
+            and float(llm.get("domain_confidence", 0.0)) >= 0.60
+        ):
+            return llm_domain
+        return IntentRecognizer._domain_fallback(message, history)
+
     @staticmethod
     def _domain_fallback(
         message: str,
@@ -381,10 +504,14 @@ class IntentRecognizer:
         """
         LLM 查询理解（Few-shot + 上下文）。
 
-        输出 action + confidence + reasoning + needs_knowledge
-        （v4：不再输出领域——领域由免费路径回填；不再输出复杂度——任务
-        拆分统一交给 Planner；不再输出 entities/skills_to_reference——
-        本地 SkillManager 自己判断，不维护第二套 Skill Router）。
+        输出 action + domain + confidence + reasoning + needs_knowledge。
+
+        domain 输出是错误分析后的补强（v5）：LLM 仲裁路径下领域回填只靠
+        关键词（_domain_fallback），词表覆盖不到的问法（"预选和正选有什么
+        区别？"）会静默落回 OTHER —— 而 LLM 的 reasoning 明显理解领域。
+        结构化输出让 LLM 仲裁路径的领域决策由 LLM 给出（带领域定义），
+        免费路径（pattern+embedding 双确认）优先级不变，LLM 失败时回退
+        关键词回填。
         """
         message = self._clean_text(message)
 
@@ -401,7 +528,23 @@ class IntentRecognizer:
                 action_examples.append(f'  消息: "{t}" → action: {action.value}')
         examples_text = "\n".join(action_examples[:12])
 
-        prompt = f"""你是西电校园智慧助手（EchoGuide）的查询理解模块。分析用户消息并输出结构化 JSON（v4：不需要输出领域，也不需要判断任务复杂度）。
+        domain_defs = "\n".join(
+            f"- {d.value}: {_DOMAIN_TEMPLATES[d][0]}"
+            for d in IntentDomain
+            if d != IntentDomain.OTHER
+        )
+
+        # 领域边界说明（错误分析补强：affairs/academic 的"教务"常识混淆、
+        # 地点类按对象归属而非查询类型判断）。只描述 taxonomy 边界，
+        # 不针对具体评测问题。
+        boundary_notes = """领域判断边界：
+- 归属以"对象/事项"为准，不以查询形式为准：问"学生处在哪""图书馆几点关门"都是地点/时间查询，但对象学生处=affairs、图书馆=campus_life。
+- academic 只含学业规则（选课/绩点/重修/保研/培养方案/考试规则）；涉及行政流程的事项即使与学业相关（缓考、注册、休学、奖学金、助学金、困难认定、校历、缴费、在读证明）一律归 affairs。
+- 校园卡相关：余额/充值/消费归 campus_life；补办/挂失/补卡归 affairs。
+- personal 只含个人数据与日程（我的课表、待办、作业、提醒、空闲时间、截止日期、考试倒计时）；通用教务规则（期末考时间）归 academic。
+- 电子图书馆/网上图书馆的登录、无法访问问题归 it_help；图书馆的开放时间、资源访问说明归 campus_life。"""
+
+        prompt = f"""你是西电校园智慧助手（EchoGuide）的查询理解模块。分析用户消息并输出结构化 JSON。
 
 动作 action 可选值: {", ".join(a.value for a in IntentAction)}
 定义：
@@ -412,16 +555,22 @@ class IntentRecognizer:
 动作示例:
 {examples_text}
 
+领域 domain 可选值: {", ".join(d.value for d in IntentDomain)}
+领域定义与典型问法：
+{domain_defs}
+{boundary_notes}
+
 {ctx}
 用户消息: "{message}"
 
 返回格式（仅 JSON，不要其他文字）:
-{{"action": "<动作值>", "confidence": <0-1>, "reasoning": "<一句话说明>", "needs_knowledge": <true/false>}}
+{{"action": "<动作值>", "domain": "<领域值>", "domain_confidence": <0-1>, "confidence": <0-1>, "reasoning": "<一句话说明>", "needs_knowledge": <true/false>}}
 
 要求：
 - action 表示用户希望系统做什么（查询/操作/问候/投诉/反馈等）；只有明确需要系统写数据或产生副作用才是 request。
+- domain 按领域定义与边界说明判断消息归属；拿不准时给最合理的领域（不要用 other 逃避）。
 - needs_knowledge 表示该问题是否需要检索校园知识库（政策/流程/规则类 true；闲聊/个人数据操作 false）。
-- 追问（如"那几点开门？"）应结合最近对话推断 action。"""
+- 追问（如"那几点开门？"）应结合最近对话推断 action 与 domain。"""
         prompt = self._clean_text(prompt)
 
         try:
@@ -453,16 +602,40 @@ class IntentRecognizer:
                 data["action"] = IntentAction(data.get("action", "other"))
             except ValueError:
                 data["action"] = IntentAction.OTHER
+            try:
+                data["domain"] = IntentDomain(data.get("domain", "other"))
+            except ValueError:
+                data["domain"] = IntentDomain.OTHER
             data["needs_knowledge"] = bool(data.get("needs_knowledge", False))
+            data["domain_confidence"] = float(data.get("domain_confidence", 1.0))
             return data
         except Exception as ex:
             logger.warning(f"LLM 识别失败: {ex}")
             return {
                 "action": IntentAction.OTHER,
+                "domain": IntentDomain.OTHER,
                 "confidence": 0.0,
                 "reasoning": "LLM 失败",
                 "failed": True,
             }
+
+    async def _embedding_candidates(
+        self, message: str, top_n: int = 3
+    ) -> List[tuple[float, IntentDomain]]:
+        """按模板相似度降序返回 Top-N 领域候选（(score, domain)）。
+
+        供 _embedding_recognize 与路由 trace（评测错误分析）共用：
+        错误分析需要"正确意图是否在候选内"来区分 Embedding 召回失败
+        与阈值/仲裁问题，单一最佳值无法回答。
+        """
+        await self._load_template_embeddings()
+        msg_vec = await self._embed_text(message, is_query=False)
+        scored: List[tuple[float, IntentDomain]] = []
+        for domain, vecs in self._tpl_embeddings.items():
+            score = max(_cosine(msg_vec, v) for v in vecs)
+            scored.append((score, domain))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return scored[:top_n]
 
     async def _embedding_recognize(self, message: str) -> Dict[str, Any]:
         """策略 2：Embedding 向量相似度匹配（按领域模板）。
@@ -473,16 +646,9 @@ class IntentRecognizer:
         压到 ~0.79（实测），导致阈值再紧都无法命中、Embedding 级联空转。
         """
         try:
-            await self._load_template_embeddings()
-            msg_vec = await self._embed_text(message, is_query=False)
-
-            scored: List[tuple[float, IntentDomain]] = []
-            for domain, vecs in self._tpl_embeddings.items():
-                score = max(_cosine(msg_vec, v) for v in vecs)
-                scored.append((score, domain))
-            scored.sort(key=lambda item: item[0], reverse=True)
-            best_score, best_domain = scored[0] if scored else (0.0, IntentDomain.OTHER)
-            second_score = scored[1][0] if len(scored) > 1 else 0.0
+            cands = await self._embedding_candidates(message, top_n=2)
+            best_score, best_domain = cands[0] if cands else (0.0, IntentDomain.OTHER)
+            second_score = cands[1][0] if len(cands) > 1 else 0.0
             return {
                 "domain": best_domain,
                 "action": IntentAction.OTHER,

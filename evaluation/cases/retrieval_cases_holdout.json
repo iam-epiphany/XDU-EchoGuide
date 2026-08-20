@@ -1,0 +1,75 @@
+{
+  "version": "1.0",
+  "description": "retrieval_cases 留出集（20%，优化过程不可见）",
+  "cases": [
+    {
+      "query": "几号考完试开始放假？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ],
+      "hard": true
+    },
+    {
+      "query": "退改选期间可以退课吗？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "借的书怎么续借？",
+      "relevant_titles": [
+        "图书馆"
+      ],
+      "hard": true
+    },
+    {
+      "query": "选课要注意先修课程吗？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "校车在哪里乘坐？",
+      "relevant_titles": [
+        "校园穿梭车（校车）"
+      ]
+    },
+    {
+      "query": "跨校区通勤可以坐什么车？",
+      "relevant_titles": [
+        "校园穿梭车（校车）"
+      ]
+    },
+    {
+      "query": "食堂几点开门？",
+      "relevant_titles": [
+        "食堂与餐饮"
+      ]
+    },
+    {
+      "query": "怎么从新校区去老校区？",
+      "relevant_titles": [
+        "校园穿梭车（校车）"
+      ],
+      "hard": true
+    },
+    {
+      "query": "期末考试周在什么时候？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ]
+    },
+    {
+      "query": "退改选截止后还能调整吗？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "转专业什么时候开始报名？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ]
+    }
+  ]
+}

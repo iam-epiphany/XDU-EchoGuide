@@ -209,10 +209,17 @@ Agent 响应: {response}
 Agent 回答: {response}
 
 评分规则（0.0-1.0）：
-- 回答中的所有事实性陈述都能在知识来源中找到依据 → 1.0
-- 部分内容在来源中找不到依据（编造/幻觉）→ 按无依据内容占比扣分
+- 回答中的所有**事实性陈述**都能在知识来源中找到依据 → 1.0
+- 部分事实性陈述在来源中找不到依据（编造/幻觉）→ 按无依据事实占比扣分
 - 回答大量编造来源中不存在的信息 → 接近 0.0
 - 知识来源为空/不相关，无法判断 → 给 0.5
+
+只评估事实性陈述（具体数字、时间、流程、政策、事实结论）。以下**不算事实性陈述**，不应扣分：
+- 结构性/过渡性文字（标题、列表符号、语气词、"我帮你梳理一下"等）
+- 建议与引导语（"建议你关注通知""可以到服务点办理"）
+- 免责声明与兜底说明（"以学校最新通知为准""具体以官方公告为准"）
+- 礼貌语与追问（"还有其他问题欢迎继续问""需要我帮你记待办吗？"）
+- 明确标注为个人推测的内容
 
 只返回 JSON，例如: {{"faithfulness": 0.9}}"""
 
@@ -401,7 +408,10 @@ def compute_retrieval_metrics(
         top_titles = [str(item.get("title", "")) for item in res[:top_k]]
         rel_set = set(rel)
         hit = any(t in rel_set for t in top_titles)
-        recalled = sum(1 for t in top_titles if t in rel_set)
+        # 去重后计数：改写/并行召回的合并结果可能携带同一文档的多个片段
+        # （不同子查询命中同一 chunk 时 score 不同 → 内容哈希去重失效），
+        # 重复标题会放大 recalled 计数；按标题集合计算避免 recall > 1。
+        recalled = sum(1 for t in set(top_titles) if t in rel_set)
         recall = recalled / len(rel_set) if rel_set else 0.0
         rank = next((i + 1 for i, t in enumerate(top_titles) if t in rel_set), None)
         mrr = 1.0 / rank if rank else 0.0
@@ -514,6 +524,7 @@ class EndToEndEvaluator:
         judge_client = AsyncAnthropic(**judge_kwargs)
 
         self._orchestrator     = orchestrator
+        self._model            = model
         self._judge            = LLMJudge(judge_client, judge_model or model)
         self._judge_model      = judge_model or model
         # 独立 Judge：只有显式配置了不同的 API Key / 端点 / 模型才算独立
@@ -725,7 +736,7 @@ class EndToEndEvaluator:
 
                 if sources:
                     sources_text = "\n".join(
-                        f"[{i + 1}] {s.get('title', '')}: {s.get('content', '')[:200]}"
+                        f"[{i + 1}] {s.get('title', '')}: {s.get('content', '')[:800]}"
                         for i, s in enumerate(sources)
                     )
                     faithfulness, faithfulness_failed = await self._judge.judge_faithfulness(

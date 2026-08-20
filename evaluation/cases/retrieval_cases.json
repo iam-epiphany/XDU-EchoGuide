@@ -1,0 +1,390 @@
+{
+  "version": "1.0",
+  "description": "EchoGuide RAG 检索标注集（40 条）：relevant_titles 为知识库 knowledge_base_v3 collection 中实际存在的文档标题（7 篇）。查询由各文档内容要点派生，覆盖直接问/同义表述/场景化表述。",
+  "generated_at": "2026-08-19",
+  "cases": [
+    {
+      "query": "这学期什么时候开学？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ]
+    },
+    {
+      "query": "期末考试周在什么时候？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ]
+    },
+    {
+      "query": "一个学期有多少个教学周？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ]
+    },
+    {
+      "query": "什么时候放寒假？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ]
+    },
+    {
+      "query": "成绩发布是什么时候？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ]
+    },
+    {
+      "query": "选课分几个阶段？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "退改选期间可以退课吗？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "退改选截止后还能调整吗？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "选课要注意先修课程吗？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "选课人数不达标的课程会怎么样？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "总学分上限是多少？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "南校区到北校区怎么坐车？",
+      "relevant_titles": [
+        "校园穿梭车（校车）",
+        "校车时刻表说明"
+      ]
+    },
+    {
+      "query": "校车需要提前预约吗？",
+      "relevant_titles": [
+        "校园穿梭车（校车）",
+        "校车时刻表说明"
+      ]
+    },
+    {
+      "query": "周末和节假日的校车班次多吗？",
+      "relevant_titles": [
+        "校园穿梭车（校车）",
+        "校车时刻表说明"
+      ]
+    },
+    {
+      "query": "校车在哪里乘坐？",
+      "relevant_titles": [
+        "校园穿梭车（校车）",
+        "校车时刻表说明"
+      ]
+    },
+    {
+      "query": "跨校区通勤可以坐什么车？",
+      "relevant_titles": [
+        "校园穿梭车（校车）",
+        "校车时刻表说明"
+      ]
+    },
+    {
+      "query": "校车末班车几点？",
+      "relevant_titles": [
+        "校园穿梭车（校车）",
+        "校车时刻表说明"
+      ]
+    },
+    {
+      "query": "食堂几点开门？",
+      "relevant_titles": [
+        "食堂与餐饮"
+      ]
+    },
+    {
+      "query": "校园卡在哪里充值？",
+      "relevant_titles": [
+        "校园卡充值说明",
+        "食堂与餐饮"
+      ]
+    },
+    {
+      "query": "食堂有哪些餐食选择？",
+      "relevant_titles": [
+        "食堂与餐饮"
+      ]
+    },
+    {
+      "query": "食堂支持移动支付吗？",
+      "relevant_titles": [
+        "食堂与餐饮"
+      ]
+    },
+    {
+      "query": "食堂晚餐几点结束？",
+      "relevant_titles": [
+        "食堂与餐饮"
+      ]
+    },
+    {
+      "query": "有清真餐窗口吗？",
+      "relevant_titles": [
+        "食堂与餐饮"
+      ]
+    },
+    {
+      "query": "宿舍可以用大功率电器吗？",
+      "relevant_titles": [
+        "宿舍管理"
+      ]
+    },
+    {
+      "query": "宿舍设施坏了怎么报修？",
+      "relevant_titles": [
+        "宿舍管理"
+      ]
+    },
+    {
+      "query": "宿舍有门禁时间吗？",
+      "relevant_titles": [
+        "宿舍管理"
+      ]
+    },
+    {
+      "query": "宿舍水电用完了怎么充值？",
+      "relevant_titles": [
+        "宿舍管理"
+      ]
+    },
+    {
+      "query": "怎么申请调宿？",
+      "relevant_titles": [
+        "宿舍管理"
+      ]
+    },
+    {
+      "query": "宿舍是学校统一分配的吗？",
+      "relevant_titles": [
+        "宿舍管理"
+      ]
+    },
+    {
+      "query": "怎么预约图书馆自习座位？",
+      "relevant_titles": [
+        "图书馆",
+        "图书馆开放时间说明"
+      ]
+    },
+    {
+      "query": "图书馆电子资源怎么访问？",
+      "relevant_titles": [
+        "图书馆",
+        "图书馆开放时间说明"
+      ]
+    },
+    {
+      "query": "图书馆借书能续借吗？",
+      "relevant_titles": [
+        "图书馆",
+        "图书馆开放时间说明"
+      ]
+    },
+    {
+      "query": "考试周图书馆开放时间会延长吗？",
+      "relevant_titles": [
+        "图书馆",
+        "图书馆开放时间说明"
+      ]
+    },
+    {
+      "query": "进图书馆需要带什么？",
+      "relevant_titles": [
+        "图书馆",
+        "图书馆开放时间说明"
+      ]
+    },
+    {
+      "query": "图书馆逾期归还怎么办？",
+      "relevant_titles": [
+        "图书馆",
+        "图书馆开放时间说明"
+      ]
+    },
+    {
+      "query": "转专业需要满足什么条件？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ]
+    },
+    {
+      "query": "转专业报名审核流程是怎样的？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ]
+    },
+    {
+      "query": "转专业名额有多少？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ]
+    },
+    {
+      "query": "转专业考核方式和成绩要求？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ]
+    },
+    {
+      "query": "大类招生怎么分流？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ]
+    },
+    {
+      "query": "转专业什么时候开始报名？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ]
+    },
+    {
+      "query": "学校什么时候开学？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ],
+      "hard": true
+    },
+    {
+      "query": "一学期上多少周课？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ],
+      "hard": true
+    },
+    {
+      "query": "几号考完试开始放假？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ],
+      "hard": true
+    },
+    {
+      "query": "想退一门课怎么办？",
+      "relevant_titles": [
+        "选课指南"
+      ],
+      "hard": true
+    },
+    {
+      "query": "补选课怎么操作？",
+      "relevant_titles": [
+        "选课指南"
+      ],
+      "hard": true
+    },
+    {
+      "query": "上课时间冲突了怎么调？",
+      "relevant_titles": [
+        "选课指南"
+      ],
+      "hard": true
+    },
+    {
+      "query": "怎么从新校区去老校区？",
+      "relevant_titles": [
+        "校园穿梭车（校车）",
+        "校车时刻表说明"
+      ],
+      "hard": true
+    },
+    {
+      "query": "周末去北校区上课怎么过去？",
+      "relevant_titles": [
+        "校园穿梭车（校车）",
+        "校车时刻表说明"
+      ],
+      "hard": true
+    },
+    {
+      "query": "中午去哪吃饭？",
+      "relevant_titles": [
+        "食堂与餐饮"
+      ],
+      "hard": true
+    },
+    {
+      "query": "学校晚上几点开饭？",
+      "relevant_titles": [
+        "食堂与餐饮"
+      ],
+      "hard": true
+    },
+    {
+      "query": "晚归要登记吗？",
+      "relevant_titles": [
+        "宿舍管理"
+      ],
+      "hard": true
+    },
+    {
+      "query": "寝室东西坏了找谁修？",
+      "relevant_titles": [
+        "宿舍管理"
+      ],
+      "hard": true
+    },
+    {
+      "query": "自习座位要预约吗？",
+      "relevant_titles": [
+        "图书馆",
+        "图书馆开放时间说明"
+      ],
+      "hard": true
+    },
+    {
+      "query": "借的书怎么续借？",
+      "relevant_titles": [
+        "图书馆",
+        "图书馆开放时间说明"
+      ],
+      "hard": true
+    },
+    {
+      "query": "复习周去哪看书？",
+      "relevant_titles": [
+        "图书馆",
+        "图书馆开放时间说明"
+      ],
+      "hard": true
+    },
+    {
+      "query": "想换学院读有什么要求？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ],
+      "hard": true
+    },
+    {
+      "query": "怎么换专业？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ],
+      "hard": true
+    }
+  ]
+}

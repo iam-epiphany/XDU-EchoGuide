@@ -20,11 +20,12 @@ from typing import Dict, List
 
 
 class IntentDomain(Enum):
-    """领域维度 —— 人格/Skills 挂载键（顾问，不做 Agent 路由）。
+    """领域维度 —— 人格挂载键（顾问，不做 Agent 路由）。
 
     真正的 Agent 单位是 Task（agents/workflow.py），执行体是唯一的
-    TaskAgent（agents/roles.py）；领域只决定挂载什么人格与 Skills，
-    不决定工具可见性、不选执行实体 —— 新增领域不需要新增 Agent 类。
+    TaskAgent（agents/roles.py）；领域只决定挂载什么人格语境，不决定
+    工具可见性、不选执行实体、不过滤 Skill（Skill 平级发现）——
+    新增领域不需要新增 Agent 类。
     """
     ACADEMIC    = "academic"      # 学业支持
     CAMPUS_LIFE = "campus_life"   # 校园生活
@@ -50,21 +51,24 @@ DOMAIN_KEYWORDS: Dict[IntentDomain, List[str]] = {
     IntentDomain.ACADEMIC: [
         "选课", "考试", "成绩", "绩点", "学分", "重修", "保研", "转专业",
         "挂科", "补考", "培养方案", "先修课", "培养计划", "退改选", "期末考试",
+        "预选", "正选",
     ],
     IntentDomain.CAMPUS_LIFE: [
         "食堂", "餐厅", "早餐", "午餐", "晚餐", "宿舍", "校车", "班车", "校园卡",
         "快递", "水电", "超市", "运动场", "体育馆", "社团", "充值",
         "门禁", "报修", "南校区", "北校区", "通勤", "图书馆", "自习",
+        "操场", "健身房", "借书", "还书",
     ],
     IntentDomain.AFFAIRS: [
         "校历", "请假", "奖学金", "助学金", "证明", "在读证明", "缴费", "学费",
         "注册", "学籍", "学生处", "教务处", "办事", "流程", "盖章", "假期",
         "校园卡补办", "补卡", "挂失", "补办", "缓考",
+        "病假", "事假", "休学", "困难认定",
     ],
     IntentDomain.IT_HELP: [
         "教务系统", "校园网", "vpn", "邮箱", "统一身份认证", "登录不上", "报错",
         "密码重置", "验证码", "网络连不上", "无法访问", "账号", "激活", "配置",
-        "证书", "重置密码",
+        "证书", "重置密码", "无线网", "wifi", "断网",
     ],
     # 个人助理：课表类词归个人领域（"我的课表/今天有什么课"），
     # academic 只保留教务规则类词（选课流程/绩点算法）。
@@ -73,7 +77,7 @@ DOMAIN_KEYWORDS: Dict[IntentDomain, List[str]] = {
     IntentDomain.PERSONAL: [
         "课表", "课程表", "我的课表", "日程", "待办", "提醒", "作业", "考试",
         "考试安排", "ddl", "上课", "下课", "什么课", "第几节", "几点上课",
-        "几点下课", "安排",
+        "几点下课", "安排", "周几", "空闲",
     ],
 }
 
@@ -120,6 +124,10 @@ def domain_hit_score(message: str) -> tuple[IntentDomain | None, float]:
     # 高精度业务短语优先于通用词计数。它们既让级联分类器可以零 LLM
     # 直达，也解决“宿舍 + 校园网”“校园卡 + 补办”这类跨词表平局。
     if "待办" in msg and any(word in msg for word in ("课表", "课程", "空闲", "上课", "没课", "有空")):
+        return IntentDomain.PERSONAL, 0.95
+    # 个人日程可用性/倒计时类短语（"有空/没课/周几/倒计时"），须先于
+    # 校园卡规则——"有空就安排我去补办校园卡"类混合句以日程意图为主。
+    if any(word in msg for word in ("没课", "周几", "有空", "空闲", "倒计时", "有没有课", "截止日期")):
         return IntentDomain.PERSONAL, 0.95
     if "校园卡" in msg and any(word in msg for word in ("丢", "挂失", "补办", "补卡")):
         return IntentDomain.AFFAIRS, 0.95

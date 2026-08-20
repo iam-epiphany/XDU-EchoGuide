@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-08-20T09:03:29.799803",
+  "dataset": "dialog_cases_v1",
+  "dataset_counts": {
+    "intent": 0,
+    "routing": 0,
+    "retrieval": 0,
+    "dialog": 18
+  },
+  "code_commit": "ee2658b3b5f6c3dcfa3d0b1ce9ca612a7e8e3b95",
+  "generator_model": "deepseek-v4-flash",
+  "judge_model": "deepseek-v4-flash",
+  "judge_independent": false,
+  "pass_rate": 1.0,
+  "total_cases": 21,
+  "passed": 21,
+  "avg_scores": {
+    "relevance": 0.9952,
+    "accuracy": 0.9357,
+    "completeness": 0.9357,
+    "helpfulness": 0.9595,
+    "faithfulness": 0.9278,
+    "answer_correctness": 0.8571,
+    "citation_correctness": 1.0
+  },
+  "regressions": []
+}

@@ -1,0 +1,82 @@
+{
+  "version": "1.0",
+  "description": "retrieval_cases 开发集（20%）",
+  "cases": [
+    {
+      "query": "转专业需要满足什么条件？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ]
+    },
+    {
+      "query": "学校什么时候开学？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ],
+      "hard": true
+    },
+    {
+      "query": "考试周图书馆开放时间会延长吗？",
+      "relevant_titles": [
+        "图书馆"
+      ]
+    },
+    {
+      "query": "晚归要登记吗？",
+      "relevant_titles": [
+        "宿舍管理"
+      ],
+      "hard": true
+    },
+    {
+      "query": "周末和节假日的校车班次多吗？",
+      "relevant_titles": [
+        "校园穿梭车（校车）"
+      ]
+    },
+    {
+      "query": "补选课怎么操作？",
+      "relevant_titles": [
+        "选课指南"
+      ],
+      "hard": true
+    },
+    {
+      "query": "复习周去哪看书？",
+      "relevant_titles": [
+        "图书馆"
+      ],
+      "hard": true
+    },
+    {
+      "query": "一个学期有多少个教学周？",
+      "relevant_titles": [
+        "校历与重要时间节点"
+      ]
+    },
+    {
+      "query": "怎么申请调宿？",
+      "relevant_titles": [
+        "宿舍管理"
+      ]
+    },
+    {
+      "query": "转专业名额有多少？",
+      "relevant_titles": [
+        "2023级本科生转专业公开实施方案示例"
+      ]
+    },
+    {
+      "query": "选课分几个阶段？",
+      "relevant_titles": [
+        "选课指南"
+      ]
+    },
+    {
+      "query": "图书馆逾期归还怎么办？",
+      "relevant_titles": [
+        "图书馆"
+      ]
+    }
+  ]
+}

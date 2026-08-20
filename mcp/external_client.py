@@ -10,6 +10,9 @@ initialize 握手 → tools/list 枚举 → tools/call 转发，把外部工具�
 设计原则（对齐项目全链路降级哲学）：
   - 连接失败/超时/鉴权失败只记日志并返回空列表，服务照常启动；
   - 默认只读过滤：写操作工具不注册（不依赖 WRITE_TOOLS——那是给本地工具登记的）；
+  - 副作用声明 fail-closed：只读命名放行 → effect=READ；白名单显式放行的
+    写工具 → effect=EXTERNAL_SIDE_EFFECT（进入写集合，不能伪装成只读，
+    否则会被 QUERY 动作误放行）；
   - 工具名加前缀（默认 github_）避免与本地工具冲突；
   - 注册的工具默认 agent_exposed=False，由编排器显式暴露给指定 Agent。
 """
@@ -235,9 +238,15 @@ class ExternalMCPSource:
                 if tool_whitelist is not None:
                     if full not in tool_whitelist and name not in tool_whitelist:
                         continue
+                    # 白名单显式放行：只读命名仍按 READ；被写关键词命中的按
+                    # EXTERNAL_SIDE_EFFECT 声明 —— 写工具不能伪装成只读，
+                    # 否则会被 QUERY 动作误放行（fail-closed）。
+                    effect = ToolEffect.READ if is_read_only_tool(name) else ToolEffect.EXTERNAL_SIDE_EFFECT
                 elif not is_read_only_tool(name):
                     logger.info("外部 MCP 跳过写工具: %s", full)
                     continue
+                else:
+                    effect = ToolEffect.READ
                 if full in tool_manager._tools:
                     logger.warning("外部 MCP 工具名冲突，跳过: %s", full)
                     continue
@@ -251,9 +260,7 @@ class ExternalMCPSource:
                     schema=schema,
                     timeout_s=30.0,
                     agent_exposed=False,  # 默认不可见，由编排器显式暴露
-                    # 副作用声明：默认只读过滤放行的都是只读命名工具；白名单显式
-                    # 放行的写工具同样按只读声明 —— 只读语义宁紧勿松（fail-closed）。
-                    effect=ToolEffect.READ,
+                    effect=effect,
                 ))
                 registered.append(full)
         except Exception as ex:

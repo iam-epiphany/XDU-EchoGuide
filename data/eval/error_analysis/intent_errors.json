@@ -1,0 +1,6349 @@
+{
+  "ablation": "full",
+  "total_domain_cases": 167,
+  "domain_accuracy": 0.994,
+  "domain_correct": 166,
+  "action_accuracy": 1.0,
+  "error_categories": {
+    "C1": 1
+  },
+  "error_stages": {
+    "llm": 1
+  },
+  "per_domain": {
+    "academic": {
+      "total": 26,
+      "correct": 25,
+      "accuracy": 0.9615
+    },
+    "affairs": {
+      "total": 32,
+      "correct": 32,
+      "accuracy": 1.0
+    },
+    "campus_life": {
+      "total": 42,
+      "correct": 42,
+      "accuracy": 1.0
+    },
+    "it_help": {
+      "total": 29,
+      "correct": 29,
+      "accuracy": 1.0
+    },
+    "other": {
+      "total": 5,
+      "correct": 5,
+      "accuracy": 1.0
+    },
+    "personal": {
+      "total": 33,
+      "correct": 33,
+      "accuracy": 1.0
+    }
+  },
+  "confusion": {
+    "academic→affairs": 1
+  },
+  "errors": [
+    {
+      "query": "转专业报名审核流程是怎样的？",
+      "gold_domain": "academic",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "转专业报名审核流程属于行政流程事项，归为affairs领域，且用户是在咨询流程规则，需要检索知识库。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.5634
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5045
+        },
+        {
+          "domain": "personal",
+          "score": 0.4758
+        }
+      ],
+      "correct": false,
+      "category": "C1",
+      "category_reason": "LLM 仲裁判 affairs，但信号本可给出 academic（关键词命中=True，Embedding 候选[academic(0.56)、campus_life(0.50)、personal(0.48)]）；LLM 未采纳强信号"
+    }
+  ],
+  "all": [
+    {
+      "query": "这学期选课什么时候开始？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 1.0
+        },
+        {
+          "domain": "affairs",
+          "score": 0.6287
+        },
+        {
+          "domain": "personal",
+          "score": 0.5994
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "选课分几个阶段？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户询问选课阶段，属于学业规则中的选课流程，归为academic领域。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.7139
+        },
+        {
+          "domain": "personal",
+          "score": 0.5875
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5358
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "预选和正选有什么区别？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问选课相关术语区别，属于学业规则范畴。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.4023
+        },
+        {
+          "domain": "personal",
+          "score": 0.371
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3677
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "退改选期间可以退课吗？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问退改选期间是否可以退课，属于选课规则咨询，归为academic领域。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.5246
+        },
+        {
+          "domain": "personal",
+          "score": 0.48
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4461
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "退改选截止后还能改课吗？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问退改选截止后的改课规则，属于学业规则咨询，不涉及系统写操作。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4566
+        },
+        {
+          "domain": "academic",
+          "score": 0.4429
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4215
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "选课人数不达标会停开吗？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问选课人数不达标是否停开，属于选课规则，归为academic领域，且需要检索教务政策知识库。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5597
+        },
+        {
+          "domain": "academic",
+          "score": 0.4811
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4785
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "怎么查看我的选课结果？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问查看选课结果的方法，属于学业规则查询，不涉及系统写操作。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6441
+        },
+        {
+          "domain": "academic",
+          "score": 0.5766
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4471
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "选课要注意先修课要求吗？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问选课先修课要求，属于学业规则中的选课规则，归为academic领域。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.6003
+        },
+        {
+          "domain": "personal",
+          "score": 0.5689
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5051
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "培养方案的学分要求是什么？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 0.9919,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.9919
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5275
+        },
+        {
+          "domain": "personal",
+          "score": 0.4558
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "通识选修课有学分上限吗？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问通识选修课学分上限，属于学业规则中的选课/学分问题，归为academic领域。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.571
+        },
+        {
+          "domain": "personal",
+          "score": 0.5169
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4612
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "期末考试周是什么时候？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问期末考试周时间，属于学业规则中的考试安排，归为academic领域。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.6625
+        },
+        {
+          "domain": "personal",
+          "score": 0.6337
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5479
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "期中考试在什么时候？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问期中考试时间，属于学业规则中的考试安排，归为academic领域。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.6595
+        },
+        {
+          "domain": "personal",
+          "score": 0.5492
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5397
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "考试成绩什么时候发布？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问考试成绩发布时间，属于学业规则类查询，归为academic。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5951
+        },
+        {
+          "domain": "academic",
+          "score": 0.5441
+        },
+        {
+          "domain": "personal",
+          "score": 0.5165
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "补考什么时候报名？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "补考报名属于学业规则中的考试规则，因此归为academic领域。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.6113
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5774
+        },
+        {
+          "domain": "personal",
+          "score": 0.497
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "挂科了会有什么影响？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问挂科影响，属于学业规则咨询，不涉及系统状态修改。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.4542
+        },
+        {
+          "domain": "personal",
+          "score": 0.4466
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4307
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "挂科了怎么重修？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问挂科后重修流程，属于学业规则咨询，不涉及系统写操作。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.6733
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5366
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4885
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "重修怎么报名？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 1.0
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.6934
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4343
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "绩点怎么算的？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 1.0
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4909
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4685
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "加权成绩怎么计算？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.65 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.6524
+        },
+        {
+          "domain": "personal",
+          "score": 0.4344
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4317
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "怎么申请成绩复核？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "成绩复核属于学业规则相关流程，归为academic领域，且为查询类问题。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.5368
+        },
+        {
+          "domain": "personal",
+          "score": 0.4451
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4074
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "保研有什么条件？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 1.0
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4196
+        },
+        {
+          "domain": "personal",
+          "score": 0.3854
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "保研推免流程是什么？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问保研推免流程，属于学业规则中的保研政策，归为academic领域，且为查询操作。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.6028
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4461
+        },
+        {
+          "domain": "personal",
+          "score": 0.3904
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "转专业需要满足什么条件？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问转专业条件，属于学业规则类咨询，归为academic领域。",
+      "pattern": {
+        "domain": "academic",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.5986
+        },
+        {
+          "domain": "personal",
+          "score": 0.4084
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4036
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "转专业报名审核流程是怎样的？",
+      "gold_domain": "academic",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "转专业报名审核流程属于行政流程事项，归为affairs领域，且用户是在咨询流程规则，需要检索知识库。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.5634
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5045
+        },
+        {
+          "domain": "personal",
+          "score": 0.4758
+        }
+      ],
+      "correct": false,
+      "category": "C1",
+      "category_reason": "LLM 仲裁判 affairs，但信号本可给出 academic（关键词命中=True，Embedding 候选[academic(0.56)、campus_life(0.50)、personal(0.48)]）；LLM 未采纳强信号"
+    },
+    {
+      "query": "南校区食堂几点关门？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 1.0
+        },
+        {
+          "domain": "personal",
+          "score": 0.429
+        },
+        {
+          "domain": "academic",
+          "score": 0.4115
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "食堂早餐几点开始？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户询问食堂早餐开始时间，属于校园生活信息查询。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6814
+        },
+        {
+          "domain": "academic",
+          "score": 0.5162
+        },
+        {
+          "domain": "personal",
+          "score": 0.4811
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学校有哪些食堂？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "用户询问学校食堂信息，属于校园生活领域的地点查询。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6021
+        },
+        {
+          "domain": "academic",
+          "score": 0.4002
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3959
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "食堂可以用移动支付吗？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问食堂支付方式，属于校园生活信息查询。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.3936
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3547
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3234
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "食堂几点关门？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 0.881,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.881
+        },
+        {
+          "domain": "personal",
+          "score": 0.4621
+        },
+        {
+          "domain": "academic",
+          "score": 0.4567
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "宿舍几点关门？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 0.8087,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.8087
+        },
+        {
+          "domain": "personal",
+          "score": 0.476
+        },
+        {
+          "domain": "academic",
+          "score": 0.4443
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "宿舍晚上几点熄灯？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "用户询问宿舍熄灯时间，属于校园生活信息查询，不涉及系统状态修改。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6084
+        },
+        {
+          "domain": "personal",
+          "score": 0.414
+        },
+        {
+          "domain": "academic",
+          "score": 0.3883
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "宿舍水电怎么充值？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.61 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6065
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4224
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3568
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "宿舍设施坏了怎么报修？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 0.8438,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.8438
+        },
+        {
+          "domain": "academic",
+          "score": 0.6413
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "宿舍能用大功率电器吗？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问宿舍电器使用规定，属于校园生活规则查询，不涉及系统操作。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.4354
+        },
+        {
+          "domain": "personal",
+          "score": 0.336
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3318
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "宿舍怎么申请调宿？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问宿舍调宿申请流程，属于校园生活服务信息查询，不涉及系统写操作。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6721
+        },
+        {
+          "domain": "academic",
+          "score": 0.392
+        },
+        {
+          "domain": "personal",
+          "score": 0.3917
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "从南校区到北校区下一班校车几点？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.74 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.7355
+        },
+        {
+          "domain": "academic",
+          "score": 0.4871
+        },
+        {
+          "domain": "personal",
+          "score": 0.4425
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校车需要提前预约吗？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.51 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.5075
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4455
+        },
+        {
+          "domain": "personal",
+          "score": 0.4227
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "周末校车班次会减少吗？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "关键词与 Embedding 分歧（IntentDomain.PERSONAL），LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5896
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.589
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4563
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校车末班车是几点？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.8719
+        },
+        {
+          "domain": "personal",
+          "score": 0.5002
+        },
+        {
+          "domain": "academic",
+          "score": 0.4975
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校车在哪里坐？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.54 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.5377
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4715
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3713
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "南校区到北校区怎么走？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问南校区到北校区的交通方式，属于校园生活信息查询。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6485
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4361
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4194
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "图书馆几点开门？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "Embedding 同向但分数 0.62 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6244
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4396
+        },
+        {
+          "domain": "academic",
+          "score": 0.4377
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "图书馆自习座位怎么预约？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.42 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.4235
+        },
+        {
+          "domain": "personal",
+          "score": 0.4102
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3565
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "图书馆电子资源怎么访问？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "关键词与 Embedding 分歧（IntentDomain.IT_HELP），LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.3281
+        },
+        {
+          "domain": "personal",
+          "score": 0.323
+        },
+        {
+          "domain": "affairs",
+          "score": 0.282
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "借书逾期了怎么办？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "借书逾期属于图书馆服务范畴，归属校园生活领域，用户询问处理办法，是查询类动作。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.4202
+        },
+        {
+          "domain": "personal",
+          "score": 0.3838
+        },
+        {
+          "domain": "academic",
+          "score": 0.3611
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "图书馆有通宵自习室吗？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.43 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.4261
+        },
+        {
+          "domain": "personal",
+          "score": 0.4023
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3193
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "南校区图书馆在哪里？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "Embedding 同向但分数 0.48 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.4801
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3574
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3275
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "体育馆开放时间？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户询问体育馆开放时间，属于校园设施信息查询，归为campus_life。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.418
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3957
+        },
+        {
+          "domain": "personal",
+          "score": 0.3816
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "南校区游泳中心怎么收费？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问南校区游泳中心的收费，属于校园生活设施信息查询。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.4893
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4706
+        },
+        {
+          "domain": "academic",
+          "score": 0.3474
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "操场晚上开放吗？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问操场晚上是否开放，属于校园设施的时间查询，归为campus_life。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4112
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3997
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3779
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "南校区快递站在哪？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "用户询问南校区快递站位置，属于校园生活设施地点查询，不涉及系统状态修改。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.5616
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4516
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3706
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园卡在哪充值？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 1.0
+        },
+        {
+          "domain": "affairs",
+          "score": 0.6636
+        },
+        {
+          "domain": "it_help",
+          "score": 0.5024
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园卡余额怎么查？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "用户询问校园卡余额查询方式，属于校园卡消费相关，归为campus_life。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.7035
+        },
+        {
+          "domain": "affairs",
+          "score": 0.6258
+        },
+        {
+          "domain": "personal",
+          "score": 0.5198
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "明天南校区天气怎么样？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.58 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.5789
+        },
+        {
+          "domain": "personal",
+          "score": 0.4119
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3634
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "社团招新什么时候？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "社团招新属于校园活动，归为校园生活领域，且为查询类问题。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.4559
+        },
+        {
+          "domain": "academic",
+          "score": 0.4309
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3688
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学校健身房在哪？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问学校健身房的位置，属于校园生活设施地点查询，归为campus_life。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.4189
+        },
+        {
+          "domain": "academic",
+          "score": 0.385
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3446
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我准备考研，想找个晚上开放的自习室",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户询问晚上开放的自习室，属于校园生活设施查询，归为campus_life。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5581
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4353
+        },
+        {
+          "domain": "academic",
+          "score": 0.4273
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "信远楼在哪个校区？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "用户询问信远楼所在校区，属于校园地点信息查询，归为campus_life领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.35
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.4637
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4079
+        },
+        {
+          "domain": "academic",
+          "score": 0.38
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "远望谷体育馆几点关门？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "用户询问体育馆的关门时间，属于校园生活设施的时间查询。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6496
+        },
+        {
+          "domain": "academic",
+          "score": 0.3898
+        },
+        {
+          "domain": "personal",
+          "score": 0.3708
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园卡丢了怎么补办？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 1.0
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.6636
+        },
+        {
+          "domain": "it_help",
+          "score": 0.5434
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园卡丢了，补办需要什么材料？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.909
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5986
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4861
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园卡挂失后还能找回吗？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问校园卡挂失后的找回问题，属于校园卡挂失/补办行政流程，归为affairs。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.7511
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5863
+        },
+        {
+          "domain": "it_help",
+          "score": 0.5438
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "补办校园卡要多少钱？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.76 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.7649
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.7066
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4759
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园卡怎么挂失？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.843
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.6874
+        },
+        {
+          "domain": "it_help",
+          "score": 0.6534
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我要请假怎么走流程？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 0.9737,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.9737
+        },
+        {
+          "domain": "personal",
+          "score": 0.4229
+        },
+        {
+          "domain": "academic",
+          "score": 0.3686
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "病假需要什么材料？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "病假材料属于行政流程类事项，归为affairs。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5413
+        },
+        {
+          "domain": "personal",
+          "score": 0.4702
+        },
+        {
+          "domain": "academic",
+          "score": 0.4469
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "事假最多可以请几天？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问事假请假天数，属于行政流程规则，归为affairs领域。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.6212
+        },
+        {
+          "domain": "personal",
+          "score": 0.5249
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4203
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "请假要经过辅导员审批吗？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问请假审批流程，属于行政流程事项，归为affairs领域。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.569
+        },
+        {
+          "domain": "personal",
+          "score": 0.5071
+        },
+        {
+          "domain": "academic",
+          "score": 0.4295
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "在读证明在哪开？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 1.0
+        },
+        {
+          "domain": "personal",
+          "score": 0.482
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4316
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "开在读证明需要什么材料？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 0.8047,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.8047
+        },
+        {
+          "domain": "personal",
+          "score": 0.4706
+        },
+        {
+          "domain": "academic",
+          "score": 0.4622
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "成绩单证明怎么盖章？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问成绩单证明盖章流程，属于行政流程事项，归为affairs。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5576
+        },
+        {
+          "domain": "academic",
+          "score": 0.4853
+        },
+        {
+          "domain": "personal",
+          "score": 0.3887
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "奖学金什么时候评定？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 0.9598,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.9598
+        },
+        {
+          "domain": "academic",
+          "score": 0.6123
+        },
+        {
+          "domain": "personal",
+          "score": 0.4453
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "国家奖学金申请条件是什么？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "国家奖学金申请条件属于行政流程类政策咨询，归为affairs领域，且需要检索知识库。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.6607
+        },
+        {
+          "domain": "academic",
+          "score": 0.5869
+        },
+        {
+          "domain": "personal",
+          "score": 0.3462
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "助学金怎么申请？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问助学金申请流程，属于行政流程事项，归为affairs。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5671
+        },
+        {
+          "domain": "academic",
+          "score": 0.4774
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4218
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "困难认定需要什么材料？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "困难认定属于行政流程事项，归affairs领域，且为咨询类查询。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.4714
+        },
+        {
+          "domain": "personal",
+          "score": 0.4616
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4131
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学费什么时候交？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "学费缴纳属于行政流程事项，归affairs领域，且用户仅查询时间，不产生写操作。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.7227
+        },
+        {
+          "domain": "academic",
+          "score": 0.6825
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4773
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学费缴费方式有哪些？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "other",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 1.0
+        },
+        {
+          "domain": "academic",
+          "score": 0.516
+        },
+        {
+          "domain": "personal",
+          "score": 0.4933
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "缓考申请流程是什么？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "用户询问缓考申请流程，缓考属于行政流程，归为affairs领域，且为查询操作。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5393
+        },
+        {
+          "domain": "academic",
+          "score": 0.4895
+        },
+        {
+          "domain": "personal",
+          "score": 0.4863
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "缓考会影响成绩吗？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问缓考对成绩的影响，缓考属于行政流程事项，归为affairs领域。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.4926
+        },
+        {
+          "domain": "personal",
+          "score": 0.479
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3976
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "新学期注册流程是怎样的？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问新学期注册流程，属于行政流程事项，归为affairs。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5568
+        },
+        {
+          "domain": "academic",
+          "score": 0.5149
+        },
+        {
+          "domain": "personal",
+          "score": 0.4317
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学籍异动怎么办理？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问学籍异动办理流程，属于行政流程类事项，归为affairs领域。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5048
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4356
+        },
+        {
+          "domain": "academic",
+          "score": 0.3846
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校历这个学期什么时候放假？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问校历放假时间，校历属于行政流程事项，归为affairs。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.7028
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5551
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5364
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校历有哪些重要时间节点？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "校历属于行政流程事项，查询重要时间节点是信息咨询，不产生系统状态修改。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.5438
+        },
+        {
+          "domain": "academic",
+          "score": 0.4899
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4851
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学生处在哪里？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问学生处位置，学生处属于行政事务部门，因此归为affairs领域。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.7
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.4433
+        },
+        {
+          "domain": "academic",
+          "score": 0.4328
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4301
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "休学怎么申请？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问休学申请流程，属于行政流程事项，归为affairs领域。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5032
+        },
+        {
+          "domain": "academic",
+          "score": 0.4887
+        },
+        {
+          "domain": "personal",
+          "score": 0.4884
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学生证补办怎么办理？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "学生证补办属于行政流程，归affairs领域，用户询问办理方法，是查询操作。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.6592
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4839
+        },
+        {
+          "domain": "academic",
+          "score": 0.4148
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学位证丢失了怎么补办？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "学位证补办属于行政流程，归affairs领域，用户是在咨询流程而非执行操作。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.7578
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4797
+        },
+        {
+          "domain": "academic",
+          "score": 0.4547
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "教务系统登录不上怎么办？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.951
+        },
+        {
+          "domain": "academic",
+          "score": 0.4711
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4605
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "教务系统登录报错密码错误",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.74 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.7357
+        },
+        {
+          "domain": "academic",
+          "score": 0.4463
+        },
+        {
+          "domain": "personal",
+          "score": 0.4271
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "教务系统一直转圈打不开",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.71 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.7107
+        },
+        {
+          "domain": "personal",
+          "score": 0.4439
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4331
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校外怎么访问教务系统？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "Embedding 同向但分数 0.58 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.5771
+        },
+        {
+          "domain": "personal",
+          "score": 0.4397
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4287
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "教务系统密码忘了怎么重置？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "Embedding 同向但分数 0.63 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.6278
+        },
+        {
+          "domain": "academic",
+          "score": 0.499
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4935
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园网连不上",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "other",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 1.0
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5434
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5024
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园网认证成功但所有网页都打不开",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.75 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.7512
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4884
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3975
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "宿舍校园网显示认证成功，但网页打不开",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.74 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.7385
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4954
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4241
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园网到期怎么续费？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.59 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.5915
+        },
+        {
+          "domain": "affairs",
+          "score": 0.579
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5735
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学校WiFi连接不上",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "other",
+      "router_stage": "embedding",
+      "confidence": 0.8235,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.8235
+        },
+        {
+          "domain": "personal",
+          "score": 0.4767
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4662
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "VPN怎么配置？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 1.0
+        },
+        {
+          "domain": "personal",
+          "score": 0.4171
+        },
+        {
+          "domain": "academic",
+          "score": 0.413
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园VPN连接失败怎么办？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.75 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.7451
+        },
+        {
+          "domain": "affairs",
+          "score": 0.548
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4504
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "统一身份认证登录失败",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.69 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.6914
+        },
+        {
+          "domain": "academic",
+          "score": 0.3986
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3697
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "统一身份认证账号忘了怎么办？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.48 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.4811
+        },
+        {
+          "domain": "affairs",
+          "score": 0.453
+        },
+        {
+          "domain": "academic",
+          "score": 0.4055
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "学校邮箱收不到邮件",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "other",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 1.0
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4343
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3569
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "邮箱密码怎么重置？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问邮箱密码重置方法，属于IT服务支持范畴。",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.4703
+        },
+        {
+          "domain": "academic",
+          "score": 0.4019
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3956
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "邮箱怎么配置到手机？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问邮箱配置到手机的方法，属于IT技术支持类问题，需要检索校园邮箱配置指南。",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.5396
+        },
+        {
+          "domain": "personal",
+          "score": 0.3175
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3169
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "验证码一直收不到怎么办？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问验证码收不到的问题，属于信息系统登录或使用中的技术故障，归为it_help领域。",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.5608
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4505
+        },
+        {
+          "domain": "personal",
+          "score": 0.3856
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "账号被锁定了怎么解锁？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问账号锁定后的解锁方法，属于IT系统使用问题，归为it_help领域。",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.4006
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3901
+        },
+        {
+          "domain": "academic",
+          "score": 0.3521
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "新账号怎么激活？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户询问新账号激活方法，属于IT账号相关操作流程，归为it_help领域。",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.3857
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3434
+        },
+        {
+          "domain": "personal",
+          "score": 0.3379
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园网MAC地址绑定怎么弄？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.66 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.656
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5107
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5033
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园网账号密码是什么？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.55 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.5529
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5124
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4699
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "无线网连上了但没网速",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户描述无线网连接但无网速的问题，属于网络故障投诉，归属IT支持领域。",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.7171
+        },
+        {
+          "domain": "personal",
+          "score": 0.3436
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3395
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "电子图书馆怎么登录？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "关键词与 Embedding 分歧（IntentDomain.IT_HELP），LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.4849
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3458
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3359
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "教室多媒体设备报错怎么处理？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户询问教室多媒体设备报错的处理方法，属于设备故障求助，归为it_help领域。",
+      "pattern": {
+        "domain": "it_help",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.5612
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4926
+        },
+        {
+          "domain": "personal",
+          "score": 0.4897
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我查一下我的课表",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 1.0
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4933
+        },
+        {
+          "domain": "academic",
+          "score": 0.4429
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "今天有什么课？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 1.0
+        },
+        {
+          "domain": "academic",
+          "score": 0.5381
+        },
+        {
+          "domain": "affairs",
+          "score": 0.39
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "明天第几节在哪上课？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "embedding",
+      "confidence": 1.0,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 1.0
+        },
+        {
+          "domain": "academic",
+          "score": 0.5994
+        },
+        {
+          "domain": "affairs",
+          "score": 0.482
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我今天的课表安排是什么？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户查询个人课表安排，属于个人数据与日程领域。",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6999
+        },
+        {
+          "domain": "academic",
+          "score": 0.4927
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4307
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "这周周几没课？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "other",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 1.0
+        },
+        {
+          "domain": "academic",
+          "score": 0.5803
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5079
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我下周一上午有课吗？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "other",
+      "router_stage": "embedding",
+      "confidence": 0.8227,
+      "reason": "Embedding 高置信度命中",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.8227
+        },
+        {
+          "domain": "academic",
+          "score": 0.5606
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5091
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "今天几点上课？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问今天的上课时间，属于个人课表日程查询，归为personal领域。",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6728
+        },
+        {
+          "domain": "academic",
+          "score": 0.6096
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5942
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "今天几点下课？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问下课时间，属于个人日程查询，不涉及系统状态修改。",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6517
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5977
+        },
+        {
+          "domain": "academic",
+          "score": 0.5733
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我看看明天的课",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "用户查询明天的课表，属于个人日程数据查询，不产生系统状态修改。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.5
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6836
+        },
+        {
+          "domain": "academic",
+          "score": 0.4818
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4735
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我的待办有哪些？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "Embedding 同向但分数 0.55 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5456
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4843
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4095
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我还有哪些没做完的？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户询问未完成事项，属于个人待办查询，不产生系统状态修改。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.9056
+        },
+        {
+          "domain": "academic",
+          "score": 0.4465
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3649
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我最近的考试安排？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "other",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 1.0
+        },
+        {
+          "domain": "academic",
+          "score": 0.4652
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4417
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我的考试倒计时还有几天？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问个人考试倒计时，属于个人日程数据查询，不涉及系统状态修改。",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.678
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4955
+        },
+        {
+          "domain": "academic",
+          "score": 0.4549
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "作业截止时间是什么时候？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问作业截止时间，属于个人日程与截止日期查询，归为personal领域。",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.5641
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5021
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4852
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我的DDL有哪些？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问个人待办中的DDL，属于个人日程数据查询。",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.5806
+        },
+        {
+          "domain": "personal",
+          "score": 0.5136
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4273
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "最近有什么截止日期？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "Embedding 同向但分数 0.48 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4819
+        },
+        {
+          "domain": "academic",
+          "score": 0.4279
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3994
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我安排一下今天下午的时间",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户要求安排时间，属于个人日程的写操作，需要修改日程数据。",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6068
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4455
+        },
+        {
+          "domain": "academic",
+          "score": 0.4348
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我下午有空吗？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.57 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5722
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4106
+        },
+        {
+          "domain": "academic",
+          "score": 0.3703
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "这周有什么安排？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问本周安排，属于个人日程查询，不涉及系统状态修改。",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.616
+        },
+        {
+          "domain": "academic",
+          "score": 0.4805
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4706
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "明天有什么安排？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问明天的安排，属于个人日程查询，不涉及系统状态修改。",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5715
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4091
+        },
+        {
+          "domain": "academic",
+          "score": 0.4052
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我规划一下周末",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户请求规划周末，涉及个人日程安排，属于个人数据与日程领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6386
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4379
+        },
+        {
+          "domain": "academic",
+          "score": 0.4081
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "待办里补办校园卡哪天到期？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "Embedding 同向但分数 0.66 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.6617
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.555
+        },
+        {
+          "domain": "personal",
+          "score": 0.512
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我什么时候有空去办证？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "关键词与 Embedding 分歧（IntentDomain.AFFAIRS），LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.4636
+        },
+        {
+          "domain": "personal",
+          "score": 0.4477
+        },
+        {
+          "domain": "academic",
+          "score": 0.4454
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我看看明天下午有没有课",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "Embedding 同向但分数 0.69 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6935
+        },
+        {
+          "domain": "academic",
+          "score": 0.4698
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4616
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "看看我明天下午有没有课，如果有空就安排我去补办校园卡",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "Embedding 同向但分数 0.65 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6487
+        },
+        {
+          "domain": "affairs",
+          "score": 0.6217
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5626
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我这周哪天能挤出空？得跑一趟把学费结清",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户询问本周空闲时间，属于个人日程查询，涉及学费结清但未要求系统执行操作。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5852
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5278
+        },
+        {
+          "domain": "academic",
+          "score": 0.4876
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我把实验报告的待办改成下周五",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "other",
+      "router_stage": "pattern",
+      "confidence": 0.95,
+      "reason": "关键词高置信命中（Embedding 双确认）",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.8264
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4559
+        },
+        {
+          "domain": "academic",
+          "score": 0.4277
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "我今天什么时候有空？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.61 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6066
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4528
+        },
+        {
+          "domain": "academic",
+          "score": 0.4453
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我排个学习计划",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户请求系统帮助创建学习计划，属于个人日程安排，需要产生写操作或副作用。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6048
+        },
+        {
+          "domain": "academic",
+          "score": 0.531
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4942
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "明天上午上什么课？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "Embedding 同向但分数 0.78 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "query",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.7778
+        },
+        {
+          "domain": "academic",
+          "score": 0.5293
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4411
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "你会什么？",
+      "gold_domain": "other",
+      "predict_domain": "other",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.8,
+      "reason": "用户询问助手功能，属于对助手本身的了解，不涉及具体校园领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.3
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5435
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4758
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4411
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "你是AI吗？",
+      "gold_domain": "other",
+      "predict_domain": "other",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户询问AI身份，属于闲聊类问题，不涉及校园具体领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.538
+        },
+        {
+          "domain": "personal",
+          "score": 0.4695
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3842
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "讲个笑话",
+      "gold_domain": "other",
+      "predict_domain": "other",
+      "gold_action": null,
+      "predict_action": "other",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户要求讲笑话，属于闲聊娱乐，不涉及校园知识或操作。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4381
+        },
+        {
+          "domain": "academic",
+          "score": 0.372
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3628
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "随便聊聊",
+      "gold_domain": "other",
+      "predict_domain": "other",
+      "gold_action": null,
+      "predict_action": "greeting",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户消息'随便聊聊'表示闲聊意图，属于问候/寒暄类，不涉及具体领域或知识检索。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5328
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3722
+        },
+        {
+          "domain": "academic",
+          "score": 0.3301
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我写首诗",
+      "gold_domain": "other",
+      "predict_domain": "other",
+      "gold_action": null,
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户请求系统创作诗歌，属于产生内容的写操作，且不涉及校园领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4916
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3334
+        },
+        {
+          "domain": "academic",
+          "score": 0.3038
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我添加一个补办校园卡的待办",
+      "gold_domain": null,
+      "predict_domain": "affairs",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "Embedding 同向但分数 0.71 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "affairs",
+        "action": "request",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.709
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.554
+        },
+        {
+          "domain": "it_help",
+          "score": 0.5441
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "记一下明天交实验报告",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户要求记录一个待办事项，属于个人日程管理，需要系统写入数据。",
+      "pattern": {
+        "domain": "other",
+        "action": "request",
+        "confidence": 0.7
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.7896
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4595
+        },
+        {
+          "domain": "academic",
+          "score": 0.4069
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "提醒我周三下午去开会",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户要求系统设置提醒，属于个人日程的写操作，因此action为request，domain为personal。",
+      "pattern": {
+        "domain": "personal",
+        "action": "request",
+        "confidence": 0.7
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5516
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.47
+        },
+        {
+          "domain": "academic",
+          "score": 0.4372
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "把这个待办标记为完成",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "Embedding 同向但分数 0.62 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "request",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6231
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4621
+        },
+        {
+          "domain": "academic",
+          "score": 0.4285
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "删除那条买书的待办",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户要求删除待办，属于个人数据写操作，归为personal领域。",
+      "pattern": {
+        "domain": "personal",
+        "action": "request",
+        "confidence": 0.95
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4479
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4228
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3698
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我新增一条DDL：6月1日英语六级考试",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.98,
+      "reason": "用户明确要求新增一条个人DDL（待办），属于个人日程数据写入操作，因此action为request，domain为personal。",
+      "pattern": {
+        "domain": "personal",
+        "action": "request",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4897
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3812
+        },
+        {
+          "domain": "academic",
+          "score": 0.3665
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "设置明天早上八点的提醒",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户要求设置提醒，属于个人日程的写操作，需要系统创建提醒，因此是request，领域为personal。",
+      "pattern": {
+        "domain": "personal",
+        "action": "request",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.4738
+        },
+        {
+          "domain": "personal",
+          "score": 0.4605
+        },
+        {
+          "domain": "academic",
+          "score": 0.3806
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我记个事：下周二去校医院",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户明确要求系统记录一个待办事项（下周二去校医院），属于个人日程写入操作，因此action为request，domain为personal。",
+      "pattern": {
+        "domain": "other",
+        "action": "request",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.7121
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4444
+        },
+        {
+          "domain": "academic",
+          "score": 0.443
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "完成那条取快递的待办",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户明确要求完成一条待办，属于个人数据写操作，领域为个人日程。",
+      "pattern": {
+        "domain": "personal",
+        "action": "request",
+        "confidence": 0.95
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4972
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4278
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4236
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "把复习高数标为已完成",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户明确要求将复习高数这一待办事项标记为已完成，属于个人日程数据的写操作。",
+      "pattern": {
+        "domain": "other",
+        "action": "request",
+        "confidence": 0.6
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4996
+        },
+        {
+          "domain": "academic",
+          "score": 0.4699
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3695
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我创建一条日程：周五下午图书馆",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "关键词与 Embedding 分歧（IntentDomain.PERSONAL），LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "request",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5462
+        },
+        {
+          "domain": "academic",
+          "score": 0.4284
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4046
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "记一下：周六下午参加社团活动",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户明确要求记录日程安排，属于个人数据写入操作，因此action为request，domain为personal。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "request",
+        "confidence": 0.7
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5655
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3938
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3764
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "提醒我后天交实验报告",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户要求设置提醒，属于个人日程管理，需要系统创建提醒，因此是request。",
+      "pattern": {
+        "domain": "personal",
+        "action": "request",
+        "confidence": 0.7
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.7868
+        },
+        {
+          "domain": "academic",
+          "score": 0.4323
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3877
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我添加课表外的临时安排",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户明确要求添加临时安排，属于写操作，且涉及个人日程数据，归为personal领域。",
+      "pattern": {
+        "domain": "personal",
+        "action": "request",
+        "confidence": 0.75
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.644
+        },
+        {
+          "domain": "academic",
+          "score": 0.4923
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.476
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "把今天的所有待办提醒都删掉",
+      "gold_domain": null,
+      "predict_domain": "personal",
+      "gold_action": "request",
+      "predict_action": "request",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "Embedding 同向但分数 0.54 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5375
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4329
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3895
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "宿舍热水一直不来！",
+      "gold_domain": null,
+      "predict_domain": "campus_life",
+      "gold_action": "complaint",
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户表达对宿舍热水供应问题的不满，属于投诉，且涉及宿舍生活设施，归为校园生活领域。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.4999
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4603
+        },
+        {
+          "domain": "personal",
+          "score": 0.4301
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校车等了半小时还没来",
+      "gold_domain": null,
+      "predict_domain": "campus_life",
+      "gold_action": "complaint",
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户表达对校车等待时间过长的不满，属于投诉，且校车属于校园生活领域。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6182
+        },
+        {
+          "domain": "personal",
+          "score": 0.4839
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4487
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "食堂排队太久了",
+      "gold_domain": null,
+      "predict_domain": "campus_life",
+      "gold_action": "complaint",
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户表达对食堂排队时间的不满，属于投诉，且食堂属于校园生活领域。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.4773
+        },
+        {
+          "domain": "personal",
+          "score": 0.4268
+        },
+        {
+          "domain": "affairs",
+          "score": 0.365
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "校园网又断了，太差了",
+      "gold_domain": null,
+      "predict_domain": "it_help",
+      "gold_action": "complaint",
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户抱怨校园网断连，属于网络IT服务问题，且表达不满情绪。",
+      "pattern": {
+        "domain": "it_help",
+        "action": "complaint",
+        "confidence": 0.95
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.7103
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5803
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4849
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "教务系统老是崩",
+      "gold_domain": null,
+      "predict_domain": "it_help",
+      "gold_action": "complaint",
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "Embedding 同向但分数 0.69 低于阈值 0.8，LLM 仲裁",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.6867
+        },
+        {
+          "domain": "personal",
+          "score": 0.4745
+        },
+        {
+          "domain": "academic",
+          "score": 0.3879
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "图书馆自习室太吵了",
+      "gold_domain": null,
+      "predict_domain": "campus_life",
+      "gold_action": "complaint",
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "关键词与 Embedding 分歧（IntentDomain.PERSONAL），LLM 仲裁",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.3725
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3647
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3303
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "快递站排队太长，等了很久",
+      "gold_domain": null,
+      "predict_domain": "campus_life",
+      "gold_action": "complaint",
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户对快递站排队时间长表达不满，属于投诉，快递站属于校园生活领域。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "complaint",
+        "confidence": 0.6
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.403
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3536
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3469
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "报修一周了都没人处理，我要投诉",
+      "gold_domain": null,
+      "predict_domain": "campus_life",
+      "gold_action": "complaint",
+      "predict_action": "complaint",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户明确表达不满，要求投诉报修未处理，属于投诉类消息；报修事项涉及校园生活设施，归为campus_life。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "complaint",
+        "confidence": 0.7
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5934
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5931
+        },
+        {
+          "domain": "academic",
+          "score": 0.51
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "这个助手很实用！",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "feedback",
+      "predict_action": "feedback",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户表达对助手的正面评价，属于反馈，不涉及具体校园领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4944
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4027
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3564
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "回答得很清楚，谢谢",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "feedback",
+      "predict_action": "feedback",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户表达感谢和正面评价，属于反馈类消息，不涉及具体领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5299
+        },
+        {
+          "domain": "academic",
+          "score": 0.4371
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4338
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "帮我大忙了",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "feedback",
+      "predict_action": "feedback",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户表达感谢和正面评价，属于反馈。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6032
+        },
+        {
+          "domain": "academic",
+          "score": 0.4204
+        },
+        {
+          "domain": "affairs",
+          "score": 0.39
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "查课表真方便，好用",
+      "gold_domain": null,
+      "predict_domain": "campus_life",
+      "gold_action": "feedback",
+      "predict_action": "feedback",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户表达对查课表功能的正面反馈，属于反馈类动作，领域上因涉及课表查询功能，归为校园生活相关。",
+      "pattern": {
+        "domain": "personal",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.692
+        },
+        {
+          "domain": "affairs",
+          "score": 0.5018
+        },
+        {
+          "domain": "academic",
+          "score": 0.4278
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "谢谢你，回答太详细了",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "feedback",
+      "predict_action": "feedback",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户表达感谢和正面评价，属于反馈。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5712
+        },
+        {
+          "domain": "academic",
+          "score": 0.4456
+        },
+        {
+          "domain": "affairs",
+          "score": 0.426
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "这个工具很好用，赞",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "feedback",
+      "predict_action": "feedback",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户表达对工具的正面评价，属于反馈，不涉及具体领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4279
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4096
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3673
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "比之前方便多了",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "feedback",
+      "predict_action": "feedback",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户表达对助手的正面评价，属于反馈，不涉及具体领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5149
+        },
+        {
+          "domain": "affairs",
+          "score": 0.369
+        },
+        {
+          "domain": "it_help",
+          "score": 0.3344
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "你好",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "greeting",
+      "predict_action": "greeting",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户发送问候语'你好'，属于greeting动作，不涉及具体领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "greeting",
+        "confidence": 0.7
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5178
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3741
+        },
+        {
+          "domain": "academic",
+          "score": 0.3633
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "您好",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "greeting",
+      "predict_action": "greeting",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户发送问候语'您好'，属于greeting动作，不涉及具体领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "greeting",
+        "confidence": 0.7
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4856
+        },
+        {
+          "domain": "academic",
+          "score": 0.3422
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3387
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "嗨",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "greeting",
+      "predict_action": "greeting",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户发送问候语'嗨'，属于greeting动作，不涉及具体领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.3773
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3482
+        },
+        {
+          "domain": "academic",
+          "score": 0.3288
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "早上好",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "greeting",
+      "predict_action": "greeting",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户发送问候语'早上好'，属于greeting动作，无具体领域归属。",
+      "pattern": {
+        "domain": "other",
+        "action": "greeting",
+        "confidence": 0.7
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4693
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4492
+        },
+        {
+          "domain": "academic",
+          "score": 0.3987
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "在吗",
+      "gold_domain": null,
+      "predict_domain": "other",
+      "gold_action": "greeting",
+      "predict_action": "greeting",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户发送'在吗'，属于日常问候，不涉及具体查询或操作。",
+      "pattern": {
+        "domain": "other",
+        "action": "greeting",
+        "confidence": 0.65
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5183
+        },
+        {
+          "domain": "personal",
+          "score": 0.4666
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4146
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "那几点开门呢？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户追问食堂开门时间，属于校园生活领域，且为查询动作。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.35
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6126
+        },
+        {
+          "domain": "academic",
+          "score": 0.5837
+        },
+        {
+          "domain": "personal",
+          "score": 0.5441
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "那几点关门呢？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 1.0,
+      "reason": "用户追问图书馆关门时间，结合上文指南校区图书馆，属于校园生活信息查询。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.35
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.6707
+        },
+        {
+          "domain": "personal",
+          "score": 0.5251
+        },
+        {
+          "domain": "academic",
+          "score": 0.4853
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "怎么重置？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户追问密码重置方法，延续之前教务系统密码问题，属于IT帮助领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.3
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.6182
+        },
+        {
+          "domain": "it_help",
+          "score": 0.6013
+        },
+        {
+          "domain": "personal",
+          "score": 0.4818
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "那选课呢？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户追问'那选课呢？'，结合上文'期末考试'，推断为询问选课时间，属于学业规则查询。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.641
+        },
+        {
+          "domain": "personal",
+          "score": 0.6066
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4548
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "下午呢？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户追问'下午呢？'，结合上文询问课表，属于个人日程查询。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6246
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.49
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4398
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "那图书馆呢？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户追问'那图书馆呢？'，结合上文'自习室在哪？'，是在询问图书馆的位置，属于校园生活领域。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.38
+        },
+        {
+          "domain": "affairs",
+          "score": 0.3496
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.3261
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "周末呢？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户追问周末校车班次，属于校园生活交通信息查询，结合最近对话推断为查询动作。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.735
+        },
+        {
+          "domain": "academic",
+          "score": 0.4594
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4242
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "还要预约吗？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户追问校车是否需要预约，结合最近对话关于校车乘坐点，属于校园生活查询。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.4689
+        },
+        {
+          "domain": "personal",
+          "score": 0.4667
+        },
+        {
+          "domain": "academic",
+          "score": 0.369
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "那补办呢？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户追问'那补办呢？'，结合上文关于校园卡挂失的对话，是在咨询补办流程，属于行政事务查询。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5635
+        },
+        {
+          "domain": "personal",
+          "score": 0.5261
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.4574
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "需要什么材料？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户追问请假流程所需材料，属于行政事务流程咨询，需检索知识库。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.3
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.4749
+        },
+        {
+          "domain": "personal",
+          "score": 0.4563
+        },
+        {
+          "domain": "it_help",
+          "score": 0.4415
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "那VPN呢？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户追问VPN问题，延续上一轮关于校园网连接故障的IT支持话题，属于网络连接咨询。",
+      "pattern": {
+        "domain": "it_help",
+        "action": "other",
+        "confidence": 0.95
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.5704
+        },
+        {
+          "domain": "personal",
+          "score": 0.5169
+        },
+        {
+          "domain": "academic",
+          "score": 0.4255
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "怎么弄？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户追问邮箱配置方法，结合上文属于IT帮助领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.3
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "it_help",
+          "score": 0.559
+        },
+        {
+          "domain": "personal",
+          "score": 0.494
+        },
+        {
+          "domain": "academic",
+          "score": 0.4847
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "明天呢？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户追问'明天呢？'，结合最近对话中'今天有什么课？'，推断是在查询明天的课表，属于个人日程查询。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.5803
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4714
+        },
+        {
+          "domain": "academic",
+          "score": 0.4053
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "那几点呢？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.95,
+      "reason": "用户追问图书馆开门时间，结合最近对话，仍属于校园生活查询。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.35
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.5789
+        },
+        {
+          "domain": "personal",
+          "score": 0.5635
+        },
+        {
+          "domain": "campus_life",
+          "score": 0.5392
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "奖学金呢？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.9,
+      "reason": "用户追问'奖学金呢？'，结合上文询问助学金申请时间，此处指奖学金申请时间，属于行政流程事项，归affairs。",
+      "pattern": {
+        "domain": "affairs",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": false,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.7548
+        },
+        {
+          "domain": "academic",
+          "score": 0.4774
+        },
+        {
+          "domain": "personal",
+          "score": 0.4602
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "那考试呢？",
+      "gold_domain": "academic",
+      "predict_domain": "academic",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户追问'那考试呢？'，结合上文选课话题，指考试时间安排，属于学业规则，归academic。",
+      "pattern": {
+        "domain": "academic",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.6824
+        },
+        {
+          "domain": "academic",
+          "score": 0.4958
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4481
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "密码呢？",
+      "gold_domain": "it_help",
+      "predict_domain": "it_help",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户追问'密码呢？'，结合上文账号锁定解锁场景，属于IT账号密码问题，归为it_help。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "academic",
+          "score": 0.4568
+        },
+        {
+          "domain": "personal",
+          "score": 0.4327
+        },
+        {
+          "domain": "affairs",
+          "score": 0.4245
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "别的呢？",
+      "gold_domain": "personal",
+      "predict_domain": "personal",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户追问'别的呢？'，结合最近对话中'这周有什么安排？'，推断用户想查询其他个人日程安排，属于个人数据查询。",
+      "pattern": {
+        "domain": "other",
+        "action": "other",
+        "confidence": 0.0
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "personal",
+          "score": 0.4989
+        },
+        {
+          "domain": "it_help",
+          "score": 0.453
+        },
+        {
+          "domain": "academic",
+          "score": 0.4317
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "那食堂呢？",
+      "gold_domain": "campus_life",
+      "predict_domain": "campus_life",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户追问'那食堂呢？'，结合上文询问校车乘车点，推断为询问食堂位置，属于校园生活领域。",
+      "pattern": {
+        "domain": "campus_life",
+        "action": "other",
+        "confidence": 0.55
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "campus_life",
+          "score": 0.5277
+        },
+        {
+          "domain": "personal",
+          "score": 0.4182
+        },
+        {
+          "domain": "academic",
+          "score": 0.394
+        }
+      ],
+      "correct": true
+    },
+    {
+      "query": "多少钱？",
+      "gold_domain": "affairs",
+      "predict_domain": "affairs",
+      "gold_action": null,
+      "predict_action": "query",
+      "router_stage": "llm",
+      "confidence": 0.85,
+      "reason": "用户追问补办校园卡的费用，属于行政流程事项，归affairs领域。",
+      "pattern": {
+        "domain": "other",
+        "action": "query",
+        "confidence": 0.35
+      },
+      "is_followup": true,
+      "embedding_candidates": [
+        {
+          "domain": "affairs",
+          "score": 0.5065
+        },
+        {
+          "domain": "academic",
+          "score": 0.4696
+        },
+        {
+          "domain": "personal",
+          "score": 0.4546
+        }
+      ],
+      "correct": true
+    }
+  ]
+}

@@ -463,6 +463,9 @@ class MCPToolManager:
         """本地 bge-reranker 重排（线程池执行，避免阻塞事件循环）。
 
         模型不可用返回 None，由 _rerank 决定降级路径。
+        min_signal=0.7 为高置信门禁（只有明确相关才重排）：小模型对
+        近义改写（"补办"vs"办理"）常给出 0.3-0.6 的不确定分数，此时重排
+        只会引入噪声；实测两套检索集在 0.7 门禁下从不劣化、偶有修复。
         """
         try:
             from mcp.embeddings import get_reranker
@@ -470,7 +473,7 @@ class MCPToolManager:
             reranker = get_reranker()
             if reranker is None:
                 return None
-            return await asyncio.to_thread(reranker.rerank, query, items, top_k)
+            return await asyncio.to_thread(reranker.rerank, query, items, top_k, 0.7)
         except Exception as ex:
             logger.warning(f"本地重排失败: {ex}")
             return None

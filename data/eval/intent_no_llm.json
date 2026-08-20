@@ -1,0 +1,25 @@
+{
+  "mode": "no_llm",
+  "total_cases": 202,
+  "held_out_ratio": 0.0,
+  "train": {
+    "domain": {
+      "accuracy": 0.8743,
+      "macro_f1": 0.8286,
+      "total": 167,
+      "correct": 146
+    },
+    "action": {
+      "accuracy": 0.6,
+      "macro_f1": 0.48,
+      "total": 35,
+      "correct": 21
+    },
+    "all": {
+      "accuracy": 0.8267,
+      "macro_f1": 0.7245,
+      "total": 202,
+      "correct": 167
+    }
+  }
+}

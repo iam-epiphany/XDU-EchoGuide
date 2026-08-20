@@ -1,5 +1,5 @@
 """
-轻量多 Agent 协作（复杂任务编排）—— ExecutionPlan / Task / Planner / Executor / Synthesizer。
+轻量多任务协作（复杂任务编排）—— ExecutionPlan / Task / Planner / Executor / Synthesizer。
 
 决策闭环：复杂度判定从 IntentRecognizer 移入 Planner——
 Intent 只负责理解用户想做什么（domain/action），Planner 统一输出
@@ -10,21 +10,23 @@ ExecutionPlan（Task DAG），single/parallel/dependent 由最终 DAG 自动推�
     存在 depends_on       → dependent
 
 Planner 两条路径，但都输出统一 ExecutionPlan：
-  - Fast Path（本地规则）：明显单任务直接生成 1 个 Task；命中复合规则生成
-    依赖链；多领域 + 连接词生成并行任务。零额外 LLM 调用。
+  - Fast Path（本地规则，零 LLM）：明显单任务直接生成 1 个 Task；命中复合
+    规则生成依赖链；多领域 + 连接词生成并行任务（每个任务用 _task_action
+    推导自己的 action，不继承顶层 action）。
   - LLM 规划（升级路径）：本地判单任务但"拿不准"（多从句/长句/多领域无
-    连接词）→ 一次轻量 LLM 调用输出任务链，硬校验后采用，非法回落本地。
+    连接词/复合形态含写操作词即 QUERY+REQUEST 混合）→ 一次轻量 LLM 调用
+    输出任务链（含每个任务的 action 与 tools），硬校验后采用，非法回落本地。
 
 每个 Task 携带自己的 action（QUERY→READ_ONLY / REQUEST→WRITE_ALLOWED，
 见 roles.write_policy_for），不再继承原始请求的 action —— 复合请求拆分后
-t1/t2 可能是 QUERY、t3 才是 REQUEST。REQUEST 任务还带 allowed_tools
-（任务级工具能力，最小权限）：规则链显式声明、写操作词族提示兜底、LLM
-规划可输出，执行侧与 Action 策略、注册级声明取交集（三重门禁）。
+t1/t2 可能是 QUERY、t3 才是 REQUEST。REQUEST 任务还带 allowed_write_tools
+（任务级写工具白名单，最小权限；读工具不受限）：规则链显式声明、写操作词族
+提示兜底、LLM 规划可输出，执行侧与 Action 策略、注册级声明取交集。
 
 Task 才是真正的 Agent 边界（Task-scoped SubAgent）：每个 Task 由一次独立
 TaskAgent Run 执行，拥有独立 goal / message / domain / action / depends_on
-/ allowed_tools 与协作上下文；领域（domain）只做人格/Skills 挂载键，
-不参与 Agent 类选择。
+/ allowed_write_tools 与协作上下文；领域（domain）只做人格挂载键，
+不参与 Agent 类选择，也不过滤 Skill（Skill 平级发现）。
 
 确定性规则链（_plan_schedule_errand 等）只是**高频业务场景 Fast Path**：
 只有"高频、稳定、确定性强、用规则明显比 LLM 更可靠"才加规则；通用复杂
@@ -72,7 +74,7 @@ TASK_SKIPPED = "skipped"
 class Task:
     """多 Agent 协作中的最小执行单元（自包含：不依赖原始对话上下文）。
 
-    domain 是领域挂载键（人格/Skills 语境），不参与 Agent 类选择 ——
+    domain 是领域挂载键（人格语境；Skill 平级发现，不按领域过滤），不参与 Agent 类选择 ——
     真正的 Agent 单位是围绕本 Task 的一次 TaskAgent Run。
     """
     task_id:     str
@@ -81,10 +83,10 @@ class Task:
     message:     str                      # 自包含请求内容
     action:      IntentAction = IntentAction.QUERY  # 任务自己的动作（决定 Run 执行策略）
     depends_on:  List[str] = field(default_factory=list)  # 依赖的其他 task_id
-    # 任务级工具能力（最小权限）：None = 不做任务级限制（仍受 Action 策略约束）；
-    # 非空 = 该任务只能看到/调用列表内的工具（与 Action 策略、注册级声明取交集）。
+    # 任务级写工具能力（最小权限）：None = 不做任务级写限制（仍受 Action 策略约束）；
+    # 非空 = 本任务只能调用列表内的写工具（读工具不受限，与 Action 策略取交集）。
     # 由 Planner 声明（规则链显式声明、写操作词族提示兜底、LLM 规划可输出）。
-    allowed_tools: Optional[List[str]] = None
+    allowed_write_tools: Optional[List[str]] = None
     # 后置条件：本任务应落地的写操作（模型忘记调用工具时由执行器补执行）。
     # 由 Planner 声明，避免执行器硬编码任务标识。
     required_tool: Optional[str] = None
@@ -309,16 +311,16 @@ class TaskPlanner:
         return list(dict.fromkeys(tools)) or None
 
     def _apply_write_hints(self, plan: ExecutionPlan) -> ExecutionPlan:
-        """REQUEST 任务最小权限兜底：Planner 未显式声明能力时按写操作词族声明。
+        """REQUEST 任务最小权限兜底：Planner 未显式声明写能力时按写操作词族声明。
 
-        规则链/LLM 规划已显式声明 allowed_tools 的任务不覆盖；
+        规则链/LLM 规划已显式声明 allowed_write_tools 的任务不覆盖；
         例如"帮我添加一个待办"→ 只给 add_todo，不因 REQUEST 获得全部写工具。
         """
         for task in plan.tasks:
-            if task.action == IntentAction.REQUEST and not task.allowed_tools:
+            if task.action == IntentAction.REQUEST and not task.allowed_write_tools:
                 hinted = self._write_tool_hint(task.message)
                 if hinted:
-                    task.allowed_tools = hinted
+                    task.allowed_write_tools = hinted
         return plan
 
     @staticmethod
@@ -374,9 +376,9 @@ class TaskPlanner:
                     f"用户请求: {msg}"
                 ),
                 depends_on=["t1", "t2"],
-                # 任务级最小权限：本任务只允许调用 add_todo，
-                # 不因 REQUEST 获得其他写工具（与 Action 策略取交集）。
-                allowed_tools=["add_todo"],
+                # 任务级最小权限：本任务只允许调用 add_todo 这个写工具
+                # （读工具不受限），不因 REQUEST 获得其他写工具。
+                allowed_write_tools=["add_todo"],
                 required_tool="add_todo",
                 required_tool_args={"content": f"办理{content}", "kind": "todo"},
             ),
@@ -430,13 +432,16 @@ class TaskPlanner:
         """
         升级预筛：本地判 single 后，判断这条请求是否值得升级 LLM 规划。
 
-        任一信号命中即升级：
+        注意前提：本函数只在 fast.mode == "single" 时被调用（多领域 + 显式
+        连接词时 Fast Path 已生成并行任务，直接返回，不升级）。任一信号命中即升级：
           1. 消息被切出 ≥3 个从句（信息量大，可能复合）；
           2. 长消息（>24 字）且 ≥2 个从句；
-          3. 领域关键词命中 ≥2 个领域但无显式连接词（"隐式复合"）；
-          4. 复合形态 + 写操作词（QUERY+REQUEST 混合 / 多个副作用任务）：
-             子任务 action / 权限可能不同，让 LLM 显式生成各任务的
-             action 与工具能力（确定性兜底只保证 fail-closed）。
+          3. 领域关键词命中 ≥2 个领域（无显式连接词时 Fast Path 只能判
+             single，即"隐式复合"）；
+          4. 恰好 2 个从句（≥3 已被第 1 条覆盖）且含写操作词 —— QUERY+
+             REQUEST 混合 / 多个副作用任务的信号：子任务 action / 写工具
+             权限可能不同，让 LLM 显式生成各任务的 action 与 tools；
+             确定性兜底（_task_action）只保证回落路径不把查询任务误开写权限。
         """
         msg = req.message
         clauses = [c for c in self._UPGRADE_CLAUSE_RE.split(msg) if c.strip()]
@@ -564,10 +569,11 @@ class TaskPlanner:
             ):
                 return None
             deps = list(dict.fromkeys(d.strip() for d in depends))
-            # 任务级工具能力（最小权限）：LLM 声明了 tools 就必须合法；
-            # 名称集合不可用时不校验名称（运行期 Agent 门禁仍会按实际注册表拦截）
+            # 任务级写工具能力（最小权限）：LLM 声明了 tools 就必须合法；
+            # 名称集合不可用时不校验名称（运行期 Agent 门禁仍会按实际注册表拦截）。
+            # 语义为"允许的写工具白名单"：读工具不受限，非写工具名在其中无副作用。
             raw_tools = raw.get("tools")
-            allowed_tools: Optional[List[str]] = None
+            allowed_write_tools: Optional[List[str]] = None
             if raw_tools is not None:
                 if not isinstance(raw_tools, list) or not all(
                     isinstance(t, str) and t.strip() for t in raw_tools
@@ -577,7 +583,7 @@ class TaskPlanner:
                     t not in self._tool_names for t in raw_tools
                 ):
                     return None  # 引用了未注册工具 → 整链作废（fail-closed）
-                allowed_tools = list(dict.fromkeys(t.strip() for t in raw_tools))
+                allowed_write_tools = list(dict.fromkeys(t.strip() for t in raw_tools))
             tasks.append(Task(
                 task_id=task_id,
                 domain=domain,
@@ -585,7 +591,7 @@ class TaskPlanner:
                 goal=goal,
                 message=message,
                 depends_on=deps,
-                allowed_tools=allowed_tools,
+                allowed_write_tools=allowed_write_tools,
             ))
             seen_ids.add(task_id)
         # 依赖引用与无环校验
@@ -631,7 +637,7 @@ class TaskExecutor:
         """
         run_task: async (req, task, shared, on_event) -> AgentResponse
         （由编排器提供：构造 Task-scoped 上下文执行一次 TaskAgent Run ——
-        领域只决定人格/Skills 挂载，执行策略由 task.action 决定）。
+        领域只提供人格语境，执行策略由 task.action 决定）。
         """
         self._run_task = run_task
 

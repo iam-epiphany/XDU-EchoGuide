@@ -1,0 +1,12 @@
+{
+  "mode": "baseline",
+  "description": "单查询向量检索（无改写无重排）",
+  "total": 16,
+  "metrics": {
+    "hit_rate@K": 1.0,
+    "recall@K": 1.0,
+    "mrr": 1.0,
+    "top_k": 5,
+    "total": 16
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "mode": "rerank",
+  "description": "多召回 + 本地重排（无改写）",
+  "total": 58,
+  "metrics": {
+    "hit_rate@K": 1.0,
+    "recall@K": 0.9914,
+    "mrr": 0.9784,
+    "top_k": 5,
+    "total": 58
+  }
+}

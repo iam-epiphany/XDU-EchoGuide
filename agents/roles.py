@@ -3,12 +3,13 @@ Task Agent —— 围绕一个 Task 的独立 Agent Run 执行体（Agent Harnes
 
 v5 收口：不再有 QAAgent / ExecutorAgent 两个职责 Agent 类，也没有 Role→Agent Pool。
 真正的 Agent 单位 = 围绕一个 Task 的一次独立 Agent Run：
-  - 每个 Task 有独立 goal / message / domain / action / depends_on / allowed_tools；
+  - 每个 Task 有独立 goal / message / domain / action / depends_on / allowed_write_tools；
   - QA / EXECUTOR 降级为 Execution Policy（write_policy_for）：
       非 REQUEST 动作 → READ_ONLY（只读工具面）；
       REQUEST 动作 → WRITE_ALLOWED（可暴露满足策略的写工具）；
     Action 只影响工具可见性、写权限与行为指引，不构成 Agent 身份；
-  - 领域（IntentDomain）继续只做人格/Skills 挂载键（见 persona.py），
+  - 领域（IntentDomain）继续只做人格挂载键（见 persona.py；Skill 平级发现，
+    不按领域过滤），
     不参与 Agent 类选择 —— 新增业务领域不需要新增 Agent 类；
   - Fast / Deep 只是 Execution Profile（profiles.py），每 Profile 一个执行实例，
     不是多个同构 Agent 竞争（asyncio 并发已足够，实例间无能力差异）。
@@ -20,7 +21,7 @@ v5 收口：不再有 QAAgent / ExecutorAgent 两个职责 Agent 类，也没有
   2. Run 级写策略（write_policy_for：非 REQUEST 一律 READ_ONLY）+ Action 级
      Read/Write 策略（persona.action_allows_tool，写工具集合由
      tool_manager.write_tools() 从 Tool.effect 声明推导，不再手工维护黑名单）；
-  3. Task 级能力（req.allowed_tools，Planner 声明的任务最小权限）：
+  3. Task 级写能力（req.allowed_write_tools，Planner 声明的写工具白名单；读工具不受限）：
      暴露与执行前双重校验，REQUEST 任务也只能调用任务允许的写工具。
 
 Agentic RAG 工具循环（LLM 自主决定是否检索/调用工具）、上下文卸载、
@@ -243,19 +244,27 @@ class BaseAgent:
                  input_tokens, output_tokens,
                  offloaded_chars, saved_tokens) = await self._call_llm(req, on_event=on_event)
             # 引用是检索链路的执行后置条件，不依赖模型是否自觉把 URL 抄进正文。
-            # 仅追加工具返回的公开标题/URL/更新时间，不暴露原始参数或内部上下文。
-            cited = []
-            seen_urls = set()
-            for item in tool_evidence:
-                url = str(item.get("source_url") or "").strip()
-                if not url or url in seen_urls or url in content:
-                    continue
-                seen_urls.add(url)
-                title = str(item.get("title") or "公开来源").strip()
-                updated = str(item.get("updated_at") or "").strip()
-                cited.append(f"- [{title}]({url})" + (f"（更新：{updated}）" if updated else ""))
-            if cited:
-                content = f"{content.rstrip()}\n\n### 可核验来源\n" + "\n".join(cited)
+            # v6 升级为 sentence-level citation：剥离模型自觉 [n] → 逐句确定性
+            # 匹配证据（Dice + bge 余弦）→ 支持的句子追加 [i]，来源区按 [i]
+            # 编号列出 —— 引用正确性由执行层保证，不再依赖模型自觉（core/grounding.py）。
+            if tool_evidence:
+                from core.grounding import annotate_citations, build_source_section
+
+                annotated = await annotate_citations(content, tool_evidence)
+                content = annotated["text"]
+                sources = build_source_section(tool_evidence, annotated["citation_indices"])
+                if sources:
+                    content = f"{content.rstrip()}\n{sources}"
+                if annotated["unsupported_sentences"]:
+                    logger.info(
+                        f"TaskAgent({tag}) {len(annotated['unsupported_sentences'])} 句无证据支持，未加引用"
+                    )
+            else:
+                # 无证据时剥掉模型自标的 [n]：没有来源区的裸引用是噪声
+                # （个人数据/工具回答场景模型仍可能照抄引用习惯）。
+                from core.grounding import strip_citation_markers
+
+                content = strip_citation_markers(content)
             ms = (time.monotonic() - t0) * 1000
             self.stats.success += 1
             self.stats.total_ms += ms
@@ -299,13 +308,13 @@ class BaseAgent:
         """
         把 MCPToolManager 中注册的工具与 Skill 工具暴露给 LLM（function calling）。
 
-        可见性 = 公共工具层 ∩ Action 策略 ∩ Task 能力（三层交集，防御纵深）：
+        可见性 = 公共工具层 ∩ Action 策略 ∩ Task 写能力（三层交集，防御纵深）：
           1. 注册级 is_agent_visible（agent_exposed + 显式 effect 声明：
              未声明副作用 fail-closed 不可见）；
           2. Run 级写策略（write_policy_for：非 REQUEST 一律 READ_ONLY）+
              Action 级读写策略（QUERY/GREETING 等动作下写工具不暴露）；
-          3. Task 级能力（req.allowed_tools，Planner 声明的最小权限）：
-             任务只能看到允许列表内的工具（REQUEST 也只拿必要写工具）。
+          3. Task 级写能力（req.allowed_write_tools，Planner 声明的写工具
+             白名单）：只限制写工具，读工具不受限（REQUEST 也只拿必要写工具）。
         Skill 通过统一的 load_skill（渐进披露）追加在 MCP 工具之后，同受
         三重门禁；完整 SKILL.md 由模型按需加载。
         实例可设 _tool_allowlist 覆盖公共层（测试/定制场景）。
@@ -313,7 +322,7 @@ class BaseAgent:
         if self._tool_manager is None and self._skill_manager is None:
             return []
         allowed = getattr(self, "_tool_allowlist", None)
-        capability = getattr(req, "allowed_tools", None)
+        capability = getattr(req, "allowed_write_tools", None)
         tools = []
         action = req.action if req is not None else None
         write_tools = self._write_tools()
@@ -328,8 +337,8 @@ class BaseAgent:
                     continue  # 实例级覆盖：显式缩小可见集合
                 if action is not None and not action_allows_tool(action, name, write_tools):
                     continue  # Action 层策略：查询/问候等动作下不暴露执行类工具
-                if capability is not None and name not in capability:
-                    continue  # Task 级能力：任务只能看到 Planner 声明的工具
+                if capability is not None and name in write_tools and name not in capability:
+                    continue  # Task 级写能力：写工具必须在 Planner 声明的白名单内
                 tools.append({
                     "name": name,
                     "description": tool.description,
@@ -342,7 +351,7 @@ class BaseAgent:
                     continue
                 if action is not None and not action_allows_tool(action, name, write_tools):
                     continue
-                if capability is not None and name not in capability:
+                if capability is not None and name in write_tools and name not in capability:
                     continue
                 tools.append(tool_def)
         return tools
@@ -384,11 +393,26 @@ class BaseAgent:
         def _clean(s: str) -> str:
             return s.encode("utf-8", errors="ignore").decode("utf-8")
 
+        tools_used: List[str] = []
+        tool_evidence: List[Dict[str, Any]] = []
+
         messages = []
         if req.context:
             messages.append({"role": "user", "content": f"[背景信息]\n{_clean(req.context)}"})
             messages.append({"role": "assistant", "content": "好的，我已了解背景信息。"})
         messages.append({"role": "user", "content": _clean(req.message)})
+        # 知识类请求：Harness 预检索注入证据（retrieval-first）。
+        # 不依赖模型自觉调用 knowledge_search——trace 实测模型大多靠参数记忆
+        # 作答并输出越界引用，导致无证据可引用（faithfulness/citation 双低）。
+        # 与工具循环同一执行边界（ToolManager.call + 证据采集格式），证据进入
+        # tool_evidence 后自动获得引用标注与出口 Grounding 能力。
+        if getattr(req, "auto_retrieve", False):
+            evidence_text, auto_evidence = await self._auto_retrieve(req)
+            if auto_evidence:
+                tool_evidence.extend(auto_evidence)
+                tools_used.append("knowledge_search")
+                messages.append({"role": "user", "content": evidence_text})
+                messages.append({"role": "assistant", "content": "好的，我已查看检索资料，将基于资料回答。"})
 
         tools = self._build_tools(req)
         system = self._build_system_prompt(req)
@@ -396,13 +420,12 @@ class BaseAgent:
             system = (
                 f"{system}\n\n[工具使用]\n"
                 "你可以调用可用工具来获取信息（如检索校园知识库、查询外部数据源）。"
-                "检索到相关资料时，回答末尾用 [1][2] 标注引用来源。"
-                "能直接回答就不要调用工具；一次调用无进展或检索不到时如实说明，"
+                "若上下文中已提供「系统已检索资料」，直接基于资料回答，"
+                "不要再重复调用检索工具；事实性句子后面用 [i] 标注对应资料编号。"
+                "未提供资料且需要知识时先调用检索工具；一次调用无进展或检索不到时如实说明，"
                 "不要反复调用同一工具或编造内容。"
             )
 
-        tools_used: List[str] = []
-        tool_evidence: List[Dict[str, Any]] = []
         input_tokens = 0
         output_tokens = 0
         offloaded_chars = 0   # 上下文卸载统计（从上下文移出的字符数）
@@ -490,12 +513,15 @@ class BaseAgent:
                                 req.user_id, req.conv_id, name, tool_text
                             )
                             char_len = len(tool_text)
+                            full_estimate = estimate_tokens(tool_text)
                             tool_text = (
                                 f"{tool_text[:OFFLOAD_SUMMARY_CHARS]}..."
                                 f"[完整结果 refs/{ref_id}，共 {char_len} 字符]"
                             )
                             offloaded_chars += char_len - len(tool_text)
-                            saved_tokens += estimate_tokens(char_len - len(tool_text))
+                            # estimate_tokens 只接受文本：按"全量 token - 摘要行 token"
+                            # 统计卸载节省，传入字符数差（int）会抛 TypeError
+                            saved_tokens += full_estimate - estimate_tokens(tool_text)
                         except Exception as ex:
                             # 落盘失败（磁盘/权限等）：保持全量回填，不阻断主链路
                             logger.warning(f"上下文卸载落盘失败，保持全量回填: {ex}")
@@ -597,12 +623,13 @@ class BaseAgent:
         write_tools = self._write_tools()
         write_policy = self._write_policy(req)
         tag = self.profile.name.value
-        capability = getattr(req, "allowed_tools", None)
-        # Task 级能力（防御纵深）：暴露层之外，真正执行前再次校验 ——
+        capability = getattr(req, "allowed_write_tools", None)
+        # Task 级写能力（防御纵深）：暴露层之外，真正执行前再次校验 ——
         # 只依赖 Prompt / function schema 的软约束在这里变成硬门禁。
-        if capability is not None and name not in capability:
-            logger.warning(f"TaskAgent({tag}) 尝试调用任务能力外工具 {name}，已拒绝")
-            return None, f"工具 {name} 不在当前任务能力（allowed_tools）范围内"
+        # 只约束写工具：读工具不受任务白名单影响。
+        if capability is not None and name in write_tools and name not in capability:
+            logger.warning(f"TaskAgent({tag}) 尝试调用任务写能力外工具 {name}，已拒绝")
+            return None, f"工具 {name} 不在当前任务写能力（allowed_write_tools）范围内"
         # Skill 工具拦截（渐进披露）：完整 SKILL.md 正文本地加载，不经过 MCPToolManager；
         # 与普通工具同受 allowlist 与 Action 门禁（防御纵深）。
         if name in {"load_skill", "load_skill_resource"}:
@@ -699,6 +726,64 @@ class BaseAgent:
         if not result.success:
             return None, result.error or "工具执行失败"
         return result.data, None
+
+    async def _auto_retrieve(self, req: Any) -> Tuple[str, List[Dict[str, Any]]]:
+        """Harness 预检索：知识类请求注入一次确定性检索证据（retrieval-first）。
+
+        与模型工具循环同走 ToolManager.call（含改写/重排/缓存/卸载策略），
+        返回 (注入文本, 证据列表)。检索失败或为空时返回空，不阻断主链路。
+        """
+        if self._tool_manager is None:
+            return "", []
+        name = "knowledge_search"
+        tool = self._tool_manager._tools.get(name)
+        if tool is None:
+            return "", []
+        # 追问轮检索补全：省略追问（"那几点关门呢？"）无主题词，直接检索会
+        # 召回无关文档；用最近一轮用户消息补全 query（对话式 RAG 的标准做法）。
+        query = getattr(req, "message", "") or ""
+        if len(query) <= 12:
+            history = getattr(req, "history", None) or []
+            for m in reversed(history):
+                if m.get("role") == "user" and m.get("content"):
+                    query = f"{m['content']} {query}"
+                    break
+        params = {"query": query, "top_k": self.profile.rag_top_k}
+        try:
+            result = await self._tool_manager.call(
+                name,
+                params,
+                context={
+                    "agent_type": req.domain.value if req.domain is not None else "task_agent",
+                    "user_id": getattr(req, "user_id", ""),
+                },
+                rerank_top_k=self.profile.rag_top_k if self.profile.use_rerank else 0,
+                use_rewrite=self.profile.use_rewrite,
+            )
+        except Exception as ex:
+            logger.warning(f"预检索失败: {ex}")
+            return "", []
+        if not result.success or not isinstance(result.data, list):
+            return "", []
+        items = result.data[: self.profile.rag_top_k]
+        evidence = [
+            {
+                "tool": name,
+                "title": str(item.get("title", "")),
+                "source_url": str(item.get("source_url", "")),
+                "updated_at": str(item.get("updated_at", "")),
+                "content": str(item.get("content", ""))[:800],
+            }
+            for item in items
+        ]
+        if not evidence:
+            return "", []
+        lines = [
+            f"[{i + 1}] {str(item.get('title', ''))}: {str(item.get('content', ''))}"
+            for i, item in enumerate(items)
+        ]
+        text = "[系统已检索资料，请严格基于以下资料回答：]\n" + "\n".join(lines)
+        return text, evidence
 
     @staticmethod
     def _tool_round_signature(tool_calls: List[Any]) -> Optional[str]:

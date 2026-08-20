@@ -262,8 +262,17 @@ class KnowledgeBase:
                 metas.append(meta)
 
         if ids:
-            # ChromaDB 会自动生成 Embedding
-            self._collection.upsert(ids=ids, documents=docs, metadatas=metas)
+            # ChromaDB 会自动生成 Embedding；但 chroma 0.5.x 在本地
+            # PersistentClient 路径下对 ndarray 型 embedding 执行
+            # `embeddings == []` 判空（numpy 广播崩溃，公开知识导入失败的
+            # 根因）。这里用本地 embedder 显式计算并以 Python list 传入，
+            # 绕开该缺陷；embedder 不可用（回退 MiniLM）时仍由 Chroma 生成。
+            kwargs: Dict[str, Any] = {"ids": ids, "documents": docs, "metadatas": metas}
+            embedder = getattr(self, "_embedding_function", None)
+            if embedder is not None:
+                vecs = embedder.embed_documents(docs)
+                kwargs["embeddings"] = [v.tolist() for v in vecs]
+            self._collection.upsert(**kwargs)
             logger.info(f"知识库导入 {len(ids)} 个文档片段")
 
         return len(ids)

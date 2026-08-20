@@ -157,6 +157,20 @@ def test_source_whitelist_overrides_readonly_filter():
     registered = _run(source.setup(tm, tool_whitelist={"github_create_issue"}))
     assert registered == ["github_create_issue"]
     assert "github_search_repositories" not in tm._tools
+    # 写工具不能伪装成 READ：create_issue 必须按 EXTERNAL_SIDE_EFFECT 声明
+    # （进入写集合，QUERY 动作不可见不可执行），而不是被当只读工具放行
+    assert tm._tools["github_create_issue"].effect == ToolEffect.EXTERNAL_SIDE_EFFECT
+    assert "github_create_issue" in tm.write_tools()
+
+
+def test_source_whitelist_read_tool_stays_read():
+    """白名单放行只读命名工具 → 仍按 READ 声明（不误伤只读工具）。"""
+    tm = MCPToolManager(api_key=FAKE_KEY)
+    source = ExternalMCPSource("http://test", prefix="github", transport=_transport(_make_server()))
+    registered = _run(source.setup(tm, tool_whitelist={"github_search_repositories"}))
+    assert registered == ["github_search_repositories"]
+    assert tm._tools["github_search_repositories"].effect == ToolEffect.READ
+    assert "github_search_repositories" not in tm.write_tools()
 
 
 def test_source_connection_failure_degrades():

@@ -1,0 +1,348 @@
+{
+  "version": "1.0",
+  "description": "intent_cases 开发集（20%）",
+  "cases": [
+    {
+      "id": "affairs-019",
+      "message": "缓考申请流程是什么？",
+      "expected": "affairs",
+      "source": "knowledge:缓考申请",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "academic-010",
+      "message": "通识选修课有学分上限吗？",
+      "expected": "academic",
+      "source": "keywords:学分",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "affairs-024",
+      "message": "校历有哪些重要时间节点？",
+      "expected": "affairs",
+      "source": "knowledge:校历",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-comp-004",
+      "message": "校园网又断了，太差了",
+      "expected": "complaint",
+      "source": "keywords:太差",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "personal-008",
+      "message": "今天几点下课？",
+      "expected": "personal",
+      "source": "keywords:几点下课",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-003",
+      "message": "教务系统一直转圈打不开",
+      "expected": "it_help",
+      "source": "keywords:教务系统",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "affairs-010",
+      "message": "在读证明在哪开？",
+      "expected": "affairs",
+      "source": "skills:leave-and-certificate",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-030",
+      "message": "明天南校区天气怎么样？",
+      "expected": "campus_life",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-004",
+      "message": "校外怎么访问教务系统？",
+      "expected": "it_help",
+      "source": "skills:campus-network-troubleshooting",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-008",
+      "message": "宿舍校园网显示认证成功，但网页打不开",
+      "expected": "it_help",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-018",
+      "message": "图书馆几点开门？",
+      "expected": "campus_life",
+      "source": "knowledge:图书馆",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-007",
+      "message": "校园网认证成功但所有网页都打不开",
+      "expected": "it_help",
+      "source": "knowledge:it_diagnostics",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "personal-005",
+      "message": "这周周几没课？",
+      "expected": "personal",
+      "source": "keywords:什么课",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-comp-003",
+      "message": "食堂排队太久了",
+      "expected": "complaint",
+      "source": "keywords:太差",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-req-012",
+      "message": "记一下：周六下午参加社团活动",
+      "expected": "request",
+      "source": "keywords:记一下",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-002",
+      "message": "食堂早餐几点开始？",
+      "expected": "campus_life",
+      "source": "keywords:食堂",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-greet-005",
+      "message": "在吗",
+      "expected": "greeting",
+      "source": "keywords:在吗",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-req-001",
+      "message": "帮我添加一个补办校园卡的待办",
+      "expected": "request",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "affairs-016",
+      "message": "困难认定需要什么材料？",
+      "expected": "affairs",
+      "source": "skills:scholarship-aid",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-035",
+      "message": "远望谷体育馆几点关门？",
+      "expected": "campus_life",
+      "source": "knowledge:场馆",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-req-006",
+      "message": "帮我新增一条DDL：6月1日英语六级考试",
+      "expected": "request",
+      "source": "keywords:新增",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "academic-018",
+      "message": "绩点怎么算的？",
+      "expected": "academic",
+      "source": "keywords:绩点",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-026",
+      "message": "操场晚上开放吗？",
+      "expected": "campus_life",
+      "source": "keywords:运动场",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-006",
+      "message": "校园网连不上",
+      "expected": "it_help",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "affairs-017",
+      "message": "学费什么时候交？",
+      "expected": "affairs",
+      "source": "keywords:学费",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "personal-030",
+      "message": "明天上午上什么课？",
+      "expected": "personal",
+      "source": "keywords:什么课",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "academic-021",
+      "message": "保研有什么条件？",
+      "expected": "academic",
+      "source": "skills:academic-policy-consulting",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-010",
+      "message": "学校WiFi连接不上",
+      "expected": "it_help",
+      "source": "keywords:校园网",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-008",
+      "message": "宿舍水电怎么充值？",
+      "expected": "campus_life",
+      "source": "keywords:水电",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "personal-026",
+      "message": "我这周哪天能挤出空？得跑一趟把学费结清",
+      "expected": "personal",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "personal-006",
+      "message": "我下周一上午有课吗？",
+      "expected": "personal",
+      "source": "keywords:上课",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "academic-012",
+      "message": "期中考试在什么时候？",
+      "expected": "academic",
+      "source": "keywords:考试",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "affairs-009",
+      "message": "请假要经过辅导员审批吗？",
+      "expected": "affairs",
+      "source": "skills:leave-and-certificate",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-greet-003",
+      "message": "嗨",
+      "expected": "greeting",
+      "source": "keywords:嗨",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-002",
+      "message": "教务系统登录报错密码错误",
+      "expected": "it_help",
+      "source": "keywords:教务系统",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-005",
+      "message": "教务系统密码忘了怎么重置？",
+      "expected": "it_help",
+      "source": "keywords:密码重置",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-001",
+      "message": "南校区食堂几点关门？",
+      "expected": "campus_life",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-011",
+      "message": "VPN怎么配置？",
+      "expected": "it_help",
+      "source": "keywords:vpn",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "followup-002",
+      "message": "那几点关门呢？",
+      "expected": "campus_life",
+      "source": "seed",
+      "context": {
+        "history": [
+          {
+            "role": "user",
+            "content": "南校区图书馆在哪里？"
+          },
+          {
+            "role": "assistant",
+            "content": "南校区图书馆在信远楼旁边。"
+          }
+        ]
+      },
+      "reviewed": false
+    },
+    {
+      "id": "followup-011",
+      "message": "那VPN呢？",
+      "expected": "it_help",
+      "source": "curated:追问",
+      "context": {
+        "history": [
+          {
+            "role": "user",
+            "content": "校园网连不上怎么办？"
+          },
+          {
+            "role": "assistant",
+            "content": "可以先检查账号认证状态。"
+          }
+        ]
+      },
+      "reviewed": false
+    }
+  ]
+}

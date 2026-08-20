@@ -164,7 +164,8 @@ def test_rerank_local_backend_uses_local_reranker():
     expected = [{"title": "c"}, {"title": "a"}]  # 本地重排结果
 
     class _FakeReranker:
-        def rerank(self, query, items_, top_k):
+        def rerank(self, query, items_, top_k, min_signal=0.0):
+            assert min_signal == 0.7  # 高置信门禁：低于该分值的候选不重排
             return expected
 
     with patch("mcp.embeddings.get_reranker", return_value=_FakeReranker()), \

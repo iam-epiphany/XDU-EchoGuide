@@ -273,7 +273,12 @@ class LocalEmbedder:
         mask_f = feeds["attention_mask"].astype(np.float32)[:, :, None]
         pooled = (hidden * mask_f).sum(axis=1) / mask_f.sum(axis=1).clip(min=1e-9)
         norm = np.linalg.norm(pooled, axis=1, keepdims=True).clip(min=1e-9)
-        return [v.tolist() for v in (pooled / norm).astype(np.float32)]
+        # 返回 ndarray：chromadb 0.5.x 的 HttpClient 路径（fastapi.py）对
+        # query/upsert 的 embeddings 直接调 convert_np_embeddings_to_list，
+        # 传入 list 会抛 'list' object has no attribute 'tolist'（服务端部署
+        # 下知识库导入与检索全链路失败）；PersistentClient 与直连调用方
+        # （意图识别 embed_query/embed_documents）对 ndarray 均兼容。
+        return (pooled / norm).astype(np.float32)
 
     def embed_query(self, texts: List[str]) -> List[List[float]]:
         """query 侧（带指令前缀）。"""
@@ -299,6 +304,22 @@ class LocalReranker:
     def available(self) -> bool:
         return self._model.ensure_loaded() is not None
 
+    @staticmethod
+    def _item_text(item: Any) -> str:
+        """把检索结果条目转成 passage 文本（cross-encoder 打分输入）。
+
+        cross-encoder 的输入是 (query, passage) 文本对：检索条目是
+        {title, content, score, metadata...} 字典时，直接 str(item) 会把
+        score/domain/source_url 等元数据一起喂给模型 —— JSON 噪声会干扰
+        相关性判断（实测把正确答案从第 1 名降到第 2 名）。只取
+        「标题 + 正文」是与 bge-reranker 推荐用法一致的输入形态。
+        """
+        if isinstance(item, dict):
+            title = str(item.get("title") or "").strip()
+            content = str(item.get("content") or "").strip()
+            return f"{title}\n{content}" if title else content
+        return str(item)
+
     def score(self, query: str, texts: List[str]) -> List[float]:
         """query 与每个候选的相关性分数（sigmoid 归一化到 [0,1]）。"""
         if not texts:
@@ -307,11 +328,18 @@ class LocalReranker:
         logits = logits.reshape(-1)
         return [float(1.0 / (1.0 + np.exp(-x))) for x in logits]
 
-    def rerank(self, query: str, items: List[Any], top_k: int) -> List[Any]:
-        """按相关度降序重排 items（item 为任意对象，仅排序不修改），取 top_k。"""
+    def rerank(self, query: str, items: List[Any], top_k: int, min_signal: float = 0.0) -> List[Any]:
+        """按相关度降序重排 items（item 为任意对象，仅排序不修改），取 top_k。
+
+        min_signal（信号门禁）：打分最高分低于该阈值时**弃权**，保持召回
+        原顺序返回 top_k —— 重排模型对这批候选无判别力（如语义改写超出
+        小模型能力时全部分数趋近 0）时，重排只会引入噪声，不如信任召回。
+        """
         if not items or top_k <= 0:
             return items[:top_k]
-        scores = self.score(query, [str(item) for item in items])
+        scores = self.score(query, [self._item_text(item) for item in items])
+        if max(scores) < min_signal:
+            return items[:top_k]
         order = sorted(range(len(items)), key=lambda i: scores[i], reverse=True)
         return [items[i] for i in order[:top_k]]
 

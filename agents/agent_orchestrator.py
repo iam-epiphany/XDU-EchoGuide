@@ -4,21 +4,21 @@ AgentOrchestrator —— EchoGuide 编排器（决策闭环：Intent → Planner
 架构（v5 收口：Task-scoped SubAgent，中心化轻量 Agent Harness）：
   - 不再有 QA/EXECUTOR 职责 Agent 类，也没有 Role→Agent Pool。真正的
     Agent 单位 = 围绕一个 Task 的一次独立 TaskAgent Run：每个 Task 拥有
-    独立 goal / message / domain / action / depends_on / allowed_tools
+    独立 goal / message / domain / action / depends_on / allowed_write_tools
     与协作上下文。
   - QA/EXECUTOR 降级为 Execution Policy（roles.write_policy_for）：
       非 REQUEST 动作 → READ_ONLY（只读工具面）；
       REQUEST 动作 → WRITE_ALLOWED（可暴露满足策略的写工具）。
     Action 只影响工具可见性、写权限与行为指引，不构成 Agent 身份。
   - 领域（IntentDomain）只提供领域人格（DOMAIN_PERSONA）语境与 Skills
-    挂载键，不决定工具可见性、不选执行实体 —— "顾问"而非"门卫"。
+    挂载键，不决定工具可见性、不选执行实体、不过滤 Skill —— "顾问"而非"门卫"。
   - Fast/Deep 是 Execution Profile（profiles.py）：每 Profile 一个执行
     实例（同构复制多个 TaskAgent 没有能力差异，并发由 asyncio 承担）；
     未来接入异构 Model / Provider / Endpoint 时在此扩展路由。
   - 工具可见性 = 三层门禁交集（Agent-exposed ∩ Action Policy ∩ Task
     Capability）：注册级 agent_exposed + effect 声明（Tool.is_agent_visible，
     未声明副作用 fail-closed）+ Run 级写策略（READ_ONLY 缺省）+ Action 级
-    读写策略（QUERY/GREETING 拒写）+ 任务级 allowed_tools（Planner 声明的
+    读写策略（QUERY/GREETING 拒写）+ 任务级 allowed_write_tools（Planner 声明的
     最小权限），写工具集合由工具自身声明（Tool.effect → write_tools()）。
   - 决策闭环：
       Intent（domain/action/needs_knowledge，不做复杂度判定）
@@ -65,6 +65,13 @@ from agents.workflow import (
 
 logger = logging.getLogger(__name__)
 
+# 知识领域：这些领域的请求由 Harness 预检索注入证据（retrieval-first）。
+# personal 是个人数据操作（课表/待办），other 是闲聊，都不检索知识库。
+_KNOWLEDGE_DOMAINS = frozenset({
+    IntentDomain.ACADEMIC, IntentDomain.CAMPUS_LIFE,
+    IntentDomain.AFFAIRS, IntentDomain.IT_HELP,
+})
+
 
 @dataclass
 class Request:
@@ -78,7 +85,7 @@ class Request:
     action:      Optional[IntentAction]   = None        # 动作（Run 执行策略依据）
     goal:        str = ""        # Task goal（Task-scoped 指令，注入 system prompt）
     task_id:     str = ""        # 所属 Task（Agent Run 边界标识）
-    allowed_tools: Optional[List[str]] = None  # 任务级工具能力（Planner 声明，最小权限）
+    allowed_write_tools: Optional[List[str]] = None  # 任务级写工具白名单（Planner 声明，最小权限；读工具不受限）
     request_id:  str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     confidence: float = 0.0
     classifier_stage: str = "preset"
@@ -88,6 +95,7 @@ class Request:
     benchmark_strategy: str = "adaptive"
     state: Optional[RunState] = None   # Runtime 运行状态（编排器 run() 创建后回填）
     state_query: Optional[Dict[str, Any]] = None  # 查询理解产出（needs_knowledge，Verifier 消费）
+    auto_retrieve: bool = False        # 知识类请求：Harness 预检索注入证据（retrieval-first）
 
 
 @dataclass
@@ -110,7 +118,7 @@ class AgentOrchestrator:
 
     - 真正的 Agent 单位是 Task：每个 Task 由一次独立 TaskAgent Run 执行
       （Task-scoped context：goal + 领域人格 + 依赖结果 + 执行策略），
-      Fast/Deep 只是 Execution Profile；领域只做人格/Skills 挂载键；
+      Fast/Deep 只是 Execution Profile；领域只做人格挂载键（Skill 平级发现）；
     - Planner 统一输出 ExecutionPlan：本地 Fast Path（单任务/规则链/并行）
       零 LLM；"拿不准"才升级 LLM 规划，复杂度模式由 DAG 自动推导；
     - Harness 分波并行 + 失败传播（依赖失败 → 下游 BLOCKED），依赖任务
@@ -371,6 +379,9 @@ class AgentOrchestrator:
                     })
 
         # 2. Planner：统一输出 ExecutionPlan（Task DAG）；mode 由 DAG 自动推导
+        # 知识类请求：Harness 预检索注入证据（retrieval-first）——不依赖模型
+        # 自觉调用 knowledge_search（实测大多靠参数记忆作答，无证据可引用）
+        req.auto_retrieve = req.domain in _KNOWLEDGE_DOMAINS
         plan = await self._planner.plan(req, req.domain or IntentDomain.OTHER, req.action or IntentAction.OTHER)
         # Benchmark 单 Agent 基线：强制压回单任务（只影响执行形态，不影响意图）
         if req.benchmark_strategy == "single_agent" and plan.mode != "single":
@@ -531,13 +542,14 @@ class AgentOrchestrator:
             context=req.context,
             history=req.history,
             intent=req.intent,
-            domain=task.domain,   # 任务领域 → 挂载键（人格/Skills）
+            domain=task.domain,   # 任务领域 → 人格挂载键（Skill 平级发现，不按领域过滤）
             action=task.action,   # 任务自己的 action（不继承原始请求，决定 Run 执行策略）
             goal=task.goal,       # Task goal（注入 system prompt [任务目标]）
             task_id=task.task_id, # Agent Run 边界标识
-            allowed_tools=task.allowed_tools,  # 任务级工具能力（最小权限，Agent 双重门禁）
+            allowed_write_tools=task.allowed_write_tools,  # 任务级写工具白名单（最小权限，Agent 双重门禁）
             request_id=req.request_id,
             state=req.state,      # 协作任务继承运行状态（中间件钩子/预算计数不断链）
+            auto_retrieve=task.domain in _KNOWLEDGE_DOMAINS,  # 任务领域知识类 → 预检索
         )
         task_req.profile = req.profile
         task_req.complexity_mode = req.complexity_mode
@@ -586,11 +598,11 @@ class AgentOrchestrator:
             # 待办未创建"。由 Planner 声明，不硬编码具体任务标识。
             if task.required_tool and task.required_tool not in response.tools_used:
                 write_tools = self._tool_manager.write_tools() if self._tool_manager else frozenset()
-                if task.allowed_tools is not None and task.required_tool not in task.allowed_tools:
-                    # Task 级能力：补执行的写工具必须在任务声明的能力内（防御纵深）
+                if task.allowed_write_tools is not None and task.required_tool not in task.allowed_write_tools:
+                    # Task 级写能力：补执行的写工具必须在任务声明的能力内（防御纵深）
                     logger.warning(
-                        f"协作任务补执行被 Task 能力拒绝: {task.required_tool} "
-                        f"(allowed_tools={task.allowed_tools})"
+                        f"协作任务补执行被 Task 写能力拒绝: {task.required_tool} "
+                        f"(allowed_write_tools={task.allowed_write_tools})"
                     )
                     return response
                 if task.action is not None and not action_allows_tool(task.action, task.required_tool, write_tools):
@@ -604,12 +616,28 @@ class AgentOrchestrator:
                         "type": "tool", "name": task.required_tool,
                         "status": "start", "input": task.required_tool_args,
                     })
-                result = await self._tool_manager.call(
-                    task.required_tool,
-                    task.required_tool_args,
-                    context={"agent_type": task.domain.value, "user_id": req.user_id},
-                    use_rewrite=False,
-                ) if self._tool_manager is not None else None
+                # 补执行同样走统一 Runtime Tool 执行边界（before/after 钩子 + Trace
+                # span）：工具计数、预算与 trace 口径和 Agent 工具循环一致，不能绕过
+                # Runtime 直接调 ToolManager。
+                runtime = self._runtime
+                result = None
+                if runtime is not None and req.state is not None:
+                    await runtime.fire_tool_before(req.state, task.required_tool, task.required_tool_args)
+                try:
+                    async with span("tool_call", tool=task.required_tool):
+                        result = await self._tool_manager.call(
+                            task.required_tool,
+                            task.required_tool_args,
+                            context={"agent_type": task.domain.value, "user_id": req.user_id},
+                            use_rewrite=False,
+                        ) if self._tool_manager is not None else None
+                finally:
+                    if runtime is not None and req.state is not None:
+                        await runtime.fire_tool_after(
+                            req.state, task.required_tool,
+                            result.data if result is not None and result.success else None,
+                            result.error if result is not None and not result.success else None,
+                        )
                 if result is not None and result.success:
                     response.tools_used.append(task.required_tool)
                     content = str(task.required_tool_args.get("content", "待办事项"))
@@ -689,7 +717,7 @@ class AgentOrchestrator:
     def _agent(self, profile: Optional[ProfileName] = None) -> Optional[TaskAgent]:
         """Profile 的执行实例（每 Profile 单实例，缺省 Fast）。
 
-        领域不参与实例选择 —— 领域只做人格/Skills 挂载键，没有领域 Agent 实体。
+        领域不参与实例选择 —— 领域只做人格挂载键，没有领域 Agent 实体。
         未来接入真正异构 Model/Provider 池时，在这里扩展路由层。
         """
         return self._agents.get(profile or ProfileName.FAST)
@@ -702,7 +730,7 @@ class AgentOrchestrator:
         """
         执行一次 TaskAgent Run：按 Execution Profile 取执行实例（写策略由
         req.action 决定，write_policy_for 在 Agent 内生效；任务级工具能力由
-        req.allowed_tools 约束）；Fast 失败时同任务 Deep 重试。
+        req.allowed_write_tools 约束写工具）；Fast 失败时同任务 Deep 重试。
         """
         agent = self._agent(req.profile)
         if agent is None:

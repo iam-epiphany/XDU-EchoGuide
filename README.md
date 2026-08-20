@@ -34,9 +34,9 @@ Agent Runtime / Harness
 
 ![Deep RAG 实测](assets/readme/03-deep-rag.png)
 
-### 多 Agent 依赖 DAG
+### 多任务依赖 DAG
 
-![多 Agent DAG 实测](assets/readme/04-multi-agent-dag.png)
+![多任务 DAG 实测](assets/readme/04-multi-agent-dag.png)
 
 ### 多轮记忆与 Guard 拒绝
 
@@ -69,7 +69,7 @@ flowchart LR
 | Profile | 模型 | 思考模式 | 输出预算 | RAG 策略 | 典型任务 |
 |---|---|---|---:|---|---|
 | Fast | `deepseek-v4-flash` | 关闭 | 768 | Top-K 3，不改写、不重排 | 课表、天气、校车、确定性工具 |
-| Deep | `deepseek-v4-pro` | 开启，effort=high | 1536 | Top-K 5，查询改写 + 本地 bge 重排（LLM 兜底） | 政策问答、复杂请求、多 Agent |
+| Deep | `deepseek-v4-pro` | 开启，effort=high | 1536 | Top-K 5，查询改写 + 本地 bge 重排（LLM 兜底） | 政策问答、复杂请求、多任务 DAG |
 
 Monitor 按 Profile（`fast` / `deep` 两档）统计成功率、平均与 P50/P95 延迟、在途请求；Fast 在线表现不健康时临时升级 Deep。两种 Profile 可以分别配置 API Key、模型和端点；每 Profile 一个执行实例（同构复制多个 TaskAgent 没有能力差异，并发由 asyncio 承担，未来接入真正异构 Model/Endpoint 时再扩展实例级路由）。
 
@@ -120,7 +120,7 @@ python evaluation/memory_benchmark.py
 
 意图识别产出「领域 domain × 动作 action」二维结果，职责明确分开：
 
-- **Domain**：用于 persona、Skill 挂载与业务上下文，**不负责工具权限、不选执行实体**（"顾问"而非"门卫"）；
+- **Domain**：用于 persona 与业务上下文，**不负责工具权限、不选执行实体、不过滤 Skill**（Skill 平级发现，"顾问"而非"门卫"）；
 - **Action**：决定 TaskAgent Run 的执行策略（READ_ONLY / WRITE_ALLOWED）与工具读写权限；
 - **needs_knowledge**：是否需要知识检索，由 Verifier 消费（判定需要但执行链无检索证据 → 标记异常）。
 
@@ -140,7 +140,7 @@ python evaluation/memory_benchmark.py
 | action | 工具权限 | Prompt 行为指引 |
 |---|---|---|
 | `query` | 只读/查询类工具（禁止状态修改类） | 准确查询、如实回答，不执行修改操作 |
-| `request` | 完整工具（含执行类） | 积极调用工具解决问题，按需执行操作 |
+| `request` | 写工具（受 Action + 任务级 `allowed_write_tools` 白名单约束） | 积极调用工具解决问题，按需执行操作 |
 | `complaint` | 只读工具（保守） | 先识别具体问题点，再给出解决路径 |
 | `greeting` / `feedback` | 原则上不开放工具 | 简洁回应，避免无意义工具调用 |
 | `other` | 只读工具（保守） | 仅基于已有信息回答，不执行修改操作 |
@@ -152,8 +152,8 @@ Deep Profile 自主调用知识检索（Agent 通过 Tool 使用知识库），�
 - **文档解析与 Chunk**：`/knowledge/upload` 与 `data/knowledge_docs/` 投放目录支持 txt/md/json/jsonl 与 Firecrawl anydoc 全部格式（统一转 GFM Markdown）；分块采用 Markdown 结构感知策略（标题链注入块首、标题边界成块、表格/代码块整体保留），500 字/60 overlap；扫描件（无文本层 PDF）明确报错，不做 OCR。
 - **BGE Embedding**：本地 `bge-small-zh-v1.5`（ONNX，中文优化），进程内轻量推理，替代 ChromaDB 内置英文模型；模型不可用自动回退 MiniLM 空间并重嵌入迁移。
 - **查询改写**：LLM 把原始查询扩写成多角度子查询，解决"召回不全"。
-- **Rerank**：本地 `bge-reranker-base` cross-encoder 打分（毫秒级、零 token 成本），不可用自动降级 LLM，解决"召回不好/排序差"。
-- **Top-K Evidence + Citation**：回答末尾追加"可核验来源"（标题/URL/更新时间），仅暴露公开信息。
+- **Rerank**：本地 `bge-reranker-base` cross-encoder 打分（毫秒级、零 token 成本），不可用自动降级 LLM；打分输入为「标题+正文」文本对（避免 JSON 元数据噪声），`min_signal=0.7` 高置信门禁——重排无判别信号（如"补办"vs"办理"近义改写超出小模型能力）时弃权保持召回顺序，保证重排档不劣化。
+- **Grounding 链路（retrieval-first + sentence-level citation）**：知识类请求由 Harness 自动预检索一次并注入编号证据（不依赖模型自觉调用工具）；回答生成后按句匹配证据（字符 Dice + bge 余弦），支持的句子追加 `[i]` 引用、末尾列出"可核验来源"（标题/URL/更新时间）——引用正确性由执行层保证，无证据时剥掉裸引用。
 - **评测**：HitRate@K / Recall@K / MRR / 引用正确率（`evaluation/`）。
 
 ```bash
@@ -270,7 +270,7 @@ flowchart LR
     A --> Y["Deep Synthesizer"]
 ```
 
-DAG 每个任务由一次独立 TaskAgent Run 执行（独立 goal / message / 协作上下文 / 工具权限 / Trace），任务只读取自己声明的 `depends_on` 结果（SharedState 不做全量历史注入，避免上下文膨胀）；领域值只做 goal/人格/Skills 挂载键，不构成 Agent 身份。依赖缺失或出现循环时直接失败并记录计划错误，不会绕过 DAG 执行。不增加 Supervisor / Critic / Reflection / Debate / Swarm / Agent 间复杂通信协议。
+DAG 每个任务由一次独立 TaskAgent Run 执行（独立 goal / message / 协作上下文 / 工具权限 / Trace），任务只读取自己声明的 `depends_on` 结果（SharedState 不做全量历史注入，避免上下文膨胀）；领域值只做 goal/人格语境键（Skill 平级发现），不构成 Agent 身份。依赖缺失或出现循环时直接失败并记录计划错误，不会绕过 DAG 执行。不增加 Supervisor / Critic / Reflection / Debate / Swarm / Agent 间复杂通信协议。
 
 ## 外部 MCP 工具源（默认关闭，optional）
 
@@ -299,10 +299,28 @@ ECHOGUIDE_EXTERNAL_MCP_PREFIX=github
 
 ## 真实 Benchmark
 
-Benchmark 使用 12 个版本化场景，覆盖五个领域、上下文追问（LLM 结合历史分类）、Fast/Deep 路由、专属工具、RAG、多 Agent DAG 和 Guard。默认每个场景运行三次，并与 Always-LLM + Always-Deep 基线比较。
+Benchmark 使用 12 个版本化场景，覆盖五个领域、上下文追问（LLM 结合历史分类）、Fast/Deep 路由、专属工具、RAG、多任务 DAG 和 Guard。默认每个场景运行三次，并与 Always-LLM + Always-Deep 基线比较。
 
 <!-- BENCHMARK:START -->
-> 实测时间：待重新跑取（当前代码已收口重构，旧 commit 结果不再有效）
+> 实测时间：2026-08-20 01:18:47 +0800 · Commit `ee2658b-dirty` · 每场景重复 3 次
+
+| 指标 | 自适应链路 | Always-LLM + Always-Deep 基线 |
+|---|---:|---:|
+| 用例通过率 | 84.6% | 76.9% |
+| 领域准确率 | 91.7% | 91.7% |
+| 领域 Macro-F1 | 90.5% | 90.5% |
+| LLM 分类调用率 | 83.3% | 100.0% |
+| Profile 路由准确率 | 91.7% | 83.3% |
+| 复杂度 Precision / Recall | 100.0% / 100.0% | 100.0% / 100.0% |
+| 专属工具成功率 | 100.0% | 100.0% |
+| DAG 任务成功率 | 100.0% | 100.0% |
+| RAG HitRate@5 / Recall@5 / MRR | 100.0% / 100.0% / 1.00 | — |
+| 引用正确率 | 100.0% | 100.0% |
+| P50 延迟 | 7766 ms | 8601 ms |
+| P95 延迟 | 91466 ms | 78902 ms |
+| 输入 / 输出 Token | 475717 / 52309 | 473905 / 52008 |
+
+> 消融：专属工具成功率 100.0%，改用通用 RAG 后为 100.0%；依赖 DAG 成功率 100.0%，强制单 Agent 后为 0.0%。
 <!-- BENCHMARK:END -->
 
 完整机器可读结果保存在 [`assets/readme/demo-metrics.json`](assets/readme/demo-metrics.json)。报告记录时间、Git commit、模型、逐场景检查和失败信息，不隐藏不利结果。

@@ -1062,6 +1062,44 @@ def test_run_task_backfill_executes_on_request_action():
     result = _run(orch._run_task(req, task, SharedState()))
     assert "已按协作计划记录待办" in result.content
     assert "add_todo" in result.tools_used
+def test_run_task_backfill_goes_through_runtime_tool_boundary():
+    """补执行必须走统一 Runtime Tool 边界：before/after 钩子触发，
+    工具调用计数进 RunState（与 Agent 工具循环口径一致，不绕过 Runtime）。"""
+    from runtime.policy import ExecutionPolicy
+    from runtime.runtime import AgentRuntime
+    from runtime.state import RunState
+
+    orch = _orchestrator()
+    orch.set_tool_manager(_fake_tool_manager())
+    runtime = AgentRuntime(policy=ExecutionPolicy())
+    orch._runtime = runtime
+    for agent in orch._agents.values():
+        agent._runtime = runtime
+
+    async def fake_execute(task_req, on_event=None):
+        return AgentResponse(content="办理建议", success=True, tools_used=[])
+
+    orch._execute = fake_execute
+    task = Task(
+        task_id="t3",
+        domain=IntentDomain.PERSONAL,
+        action=IntentAction.REQUEST,
+        goal="记录待办",
+        message="帮我记个待办",
+        required_tool="add_todo",
+        required_tool_args={"content": "补办校园卡"},
+    )
+    req = _req("帮我记个待办", domain=IntentDomain.PERSONAL, action=IntentAction.REQUEST)
+    req.state = RunState(
+        request_id="r1", user_id="u1", conv_id="c1",
+        message=req.message, policy=runtime.policy,
+    )
+    result = _run(orch._run_task(req, task, SharedState()))
+    assert "已按协作计划记录待办" in result.content
+    # before_tool 计数：补执行的写工具调用计入 RunState（不绕过 Runtime 边界）
+    assert req.state.tool_call_count == 1
+
+
 
 
 # ── 编排器主链路（run）──────────────────────────────────────────────────────
@@ -1146,64 +1184,70 @@ def test_needs_knowledge_consumed_by_verifier():
     assert orch.verification_stats()["expected_retrieval_missing"] == 1
 
 
-# ── Task 级工具能力（allowed_tools，最小权限）────────────────────────────────
+# ── Task 级写能力（allowed_write_tools，最小权限）──────────────────────────
 
-def test_build_tools_respects_task_capability():
-    """任务级能力：REQUEST 任务只能看到 allowed_tools 内的工具（与 Action 策略取交集）。"""
+def test_build_tools_respects_task_write_capability():
+    """任务级写能力：REQUEST 任务只能看到 allowed_write_tools 内的写工具；
+    读工具不受限（与 Action 策略取交集）。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
     agent = orch._agents[ProfileName.FAST]
     req = _req("帮我记个待办", action=IntentAction.REQUEST)
-    req.allowed_tools = ["add_todo"]
+    req.allowed_write_tools = ["add_todo"]
 
     names = {t["name"] for t in agent._build_tools(req)}
-    assert names == {"add_todo"}  # 只暴露 add_todo，不因 REQUEST 拿到其他写工具
-    assert "complete_todo" not in names
-    assert "knowledge_search" not in names
+    assert "add_todo" in names              # 白名单内写工具可见
+    assert "complete_todo" not in names     # 白名单外写工具不可见
+    assert "knowledge_search" in names      # 读工具不受限
+    assert "query_schedule" in names
 
 
-def test_execute_tool_denies_outside_task_capability():
-    """执行前再次校验：allowed_tools 之外的写工具被硬拒绝（双重门禁）。"""
+def test_execute_tool_denies_outside_task_write_capability():
+    """执行前再次校验：allowed_write_tools 之外的写工具被硬拒绝（双重门禁）；
+    读工具不受任务白名单影响。"""
     orch = _orchestrator()
     orch.set_tool_manager(_fake_tool_manager())
     agent = orch._agents[ProfileName.FAST]
     req = _req("帮我记个待办", action=IntentAction.REQUEST)
-    req.allowed_tools = ["add_todo"]
+    req.allowed_write_tools = ["add_todo"]
 
-    # 能力内写工具放行
+    # 白名单内写工具放行
     data, error = _run(agent._execute_tool("add_todo", {"content": "x"}, req))
     assert error is None
-    # 能力外写工具拒绝（即使 action=REQUEST 且工具本身允许）
+    # 白名单外写工具拒绝（即使 action=REQUEST 且工具本身允许）
     data, error = _run(agent._execute_tool("complete_todo", {"id": 1}, req))
     assert data is None
-    assert "能力" in error
+    assert "写能力" in error
+    # 读工具不受任务白名单影响（正常执行链，非权限拒绝）
+    data, error = _run(agent._execute_tool("knowledge_search", {"query": "选课"}, req))
+    assert "权限" not in (error or "")
 
 
-def test_planner_rule_task_carries_capability():
-    """规则链 t3（REQUEST）只声明 add_todo 能力（最小权限，与 required_tool 一致）。"""
+def test_planner_rule_task_carries_write_capability():
+    """规则链 t3（REQUEST）只声明 add_todo 写能力（最小权限，与 required_tool 一致）。"""
     orch = _orchestrator()
     req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
     plan = _run(orch._planner.plan(req, req.domain, req.action))
     t3 = next(t for t in plan.tasks if t.task_id == "t3")
     assert t3.action == IntentAction.REQUEST
-    assert t3.allowed_tools == ["add_todo"]
+    assert t3.allowed_write_tools == ["add_todo"]
 
 
 def test_planner_single_request_task_gets_write_hint():
-    """单任务 REQUEST 最小权限：'帮我添加一个待办' → 只给 add_todo。"""
+    """单任务 REQUEST 最小权限：'帮我添加一个待办' → 只给 add_todo 写能力。"""
     orch = _orchestrator()
     req = _req("帮我添加一个补办校园卡的待办", domain=IntentDomain.PERSONAL, action=IntentAction.REQUEST)
     plan = _run(orch._planner.plan(req, req.domain, req.action))
     assert plan.mode == "single"
-    assert plan.tasks[0].allowed_tools == ["add_todo"]
+    assert plan.tasks[0].allowed_write_tools == ["add_todo"]
 
 
 def test_planner_single_query_task_no_capability():
-    """单任务 QUERY 不做任务级限制（allowed_tools=None，Action 策略已约束）。"""
+    """单任务 QUERY 不做任务级写限制（allowed_write_tools=None，Action 策略已约束）。"""
     orch = _orchestrator()
     req = _req("南校区食堂几点关门？", domain=IntentDomain.CAMPUS_LIFE, action=IntentAction.QUERY)
     plan = _run(orch._planner.plan(req, req.domain, req.action))
-    assert plan.tasks[0].allowed_tools is None
+    assert plan.tasks[0].allowed_write_tools is None
 
 
 def test_tasks_from_llm_validates_tools_field():
@@ -1212,12 +1256,12 @@ def test_tasks_from_llm_validates_tools_field():
     req = _req("帮我记个待办")
     orch._planner.set_tool_names({"add_todo", "complete_todo", "knowledge_search"})
 
-    # 合法 tools：保留为任务能力
+    # 合法 tools：保留为任务写能力
     tasks = orch._planner._tasks_from_llm([
         {"id": "t1", "domain": "personal", "action": "request", "tools": ["add_todo"]},
     ], req)
     assert tasks is not None
-    assert tasks[0].allowed_tools == ["add_todo"]
+    assert tasks[0].allowed_write_tools == ["add_todo"]
 
     # 引用未注册工具 → None（整链作废，回落本地 Fast Path）
     assert orch._planner._tasks_from_llm([
@@ -1232,17 +1276,17 @@ def test_tasks_from_llm_validates_tools_field():
     tasks = orch._planner._tasks_from_llm([
         {"id": "t1", "domain": "personal", "action": "request", "tools": ["anything"]},
     ], req)
-    assert tasks is not None and tasks[0].allowed_tools == ["anything"]
+    assert tasks is not None and tasks[0].allowed_write_tools == ["anything"]
 
 
 def test_capability_flows_to_task_request():
-    """allowed_tools 从 Task 流入 Task-scoped Request（Agent 门禁消费同一事实来源）。"""
+    """allowed_write_tools 从 Task 流入 Task-scoped Request（Agent 门禁消费同一事实来源）。"""
     orch = _orchestrator()
     req = _req("我明天下午有空，想去办校园卡，帮我记个待办")
     seen = []
 
     async def fake_execute(task_req, on_event=None):
-        seen.append((task_req.task_id, task_req.allowed_tools))
+        seen.append((task_req.task_id, task_req.allowed_write_tools))
         return AgentResponse(agent_type=task_req.domain.value, content="ok", success=True)
 
     orch._execute = fake_execute

@@ -17,7 +17,7 @@ from core.domains import IntentAction, IntentDomain
 
 # Action 层工具策略（公共工具层的读写门禁，职责划分：domain = 语境，action = 怎么处理）。
 #   - QUERY：只开放只读/查询类工具，禁止状态修改类工具；
-#   - REQUEST：允许按需开放完整工具（含执行类）；
+#   - REQUEST：允许按需开放写工具（任务级 allowed_write_tools 另行白名单）；
 #   - GREETING / FEEDBACK：原则上不开放工具；
 #   - COMPLAINT / OTHER：保守策略，只开放只读工具；
 #   - None（预置请求/兼容路径）：不额外限制（Run 级写策略 write_policy_for
@@ -36,7 +36,7 @@ def action_allows_tool(
     （无写工具上下文时保守视为全只读）。
     """
     if action == IntentAction.REQUEST:
-        return True  # 完整工具：按需执行
+        return True  # 写工具：按需执行（任务级写能力白名单另行约束）
     if action in (IntentAction.GREETING, IntentAction.FEEDBACK):
         return False  # 原则上不开放工具
     if action is None:

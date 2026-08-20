@@ -1,0 +1,129 @@
+{
+  "generated_at": "2026-08-20 09:59:58 +0800",
+  "code_commit": "ee2658b",
+  "intent": {
+    "pattern_only": {
+      "domain_accuracy": 0.8623,
+      "domain_macro_f1": 0.8176,
+      "action_accuracy": 0.6,
+      "action_macro_f1": 0.48,
+      "total": 202
+    },
+    "no_llm": {
+      "domain_accuracy": 0.8743,
+      "domain_macro_f1": 0.8286,
+      "action_accuracy": 0.6,
+      "action_macro_f1": 0.48,
+      "total": 202
+    },
+    "full": {
+      "domain_accuracy": 0.994,
+      "domain_macro_f1": 0.9942,
+      "action_accuracy": 1.0,
+      "action_macro_f1": 1.0,
+      "total": 202
+    }
+  },
+  "retrieval": {
+    "baseline": {
+      "hit_rate": 1.0,
+      "recall": 0.9914,
+      "mrr": 0.9784,
+      "total": 58
+    },
+    "rerank": {
+      "hit_rate": 1.0,
+      "recall": 0.9914,
+      "mrr": 0.9784,
+      "total": 58
+    },
+    "full": {
+      "hit_rate": 1.0,
+      "recall": 0.9914,
+      "mrr": 0.9784,
+      "total": 58
+    }
+  },
+  "dialog": {
+    "timestamp": "2026-08-20T09:03:29.799803",
+    "dataset": "dialog_cases_v1",
+    "dataset_counts": {
+      "intent": 0,
+      "routing": 0,
+      "retrieval": 0,
+      "dialog": 18
+    },
+    "code_commit": "ee2658b3b5f6c3dcfa3d0b1ce9ca612a7e8e3b95",
+    "generator_model": "deepseek-v4-flash",
+    "judge_model": "deepseek-v4-flash",
+    "judge_independent": false,
+    "pass_rate": 1.0,
+    "total_cases": 21,
+    "passed": 21,
+    "avg_scores": {
+      "relevance": 0.9952,
+      "accuracy": 0.9357,
+      "completeness": 0.9357,
+      "helpfulness": 0.9595,
+      "faithfulness": 0.9278,
+      "answer_correctness": 0.8571,
+      "citation_correctness": 1.0
+    },
+    "regressions": []
+  },
+  "demo_benchmark": {
+    "generated_at": "2026-08-20 01:18:47 +0800",
+    "commit": "ee2658b-dirty",
+    "repeat": 3,
+    "adaptive": {
+      "cases": 36,
+      "pass_rate": 0.8462,
+      "domain_accuracy": 0.9167,
+      "domain_macro_f1": 0.9048,
+      "profile_accuracy": 0.9167,
+      "complexity_accuracy": 1.0,
+      "complexity_precision": 1.0,
+      "complexity_recall": 1.0,
+      "tool_success_rate": 0.9167,
+      "specialized_tool_success_rate": 1.0,
+      "dag_success_rate": 1.0,
+      "citation_correctness": 1.0,
+      "llm_classifier_rate": 0.8333,
+      "p50_latency_ms": 7765.6,
+      "p95_latency_ms": 91466.1,
+      "input_tokens": 475717,
+      "output_tokens": 52309
+    },
+    "always_llm_deep": {
+      "cases": 36,
+      "pass_rate": 0.7692,
+      "domain_accuracy": 0.9167,
+      "domain_macro_f1": 0.9048,
+      "profile_accuracy": 0.8333,
+      "complexity_accuracy": 1.0,
+      "complexity_precision": 1.0,
+      "complexity_recall": 1.0,
+      "tool_success_rate": 0.9167,
+      "specialized_tool_success_rate": 1.0,
+      "dag_success_rate": 1.0,
+      "citation_correctness": 1.0,
+      "llm_classifier_rate": 1.0,
+      "p50_latency_ms": 8601.2,
+      "p95_latency_ms": 78902.3,
+      "input_tokens": 473905,
+      "output_tokens": 52008
+    },
+    "rag": {
+      "query": "西电转专业报名审核考核流程",
+      "hit_rate_at_5": 1.0,
+      "recall_at_5": 1.0,
+      "mrr": 1.0,
+      "rank": 1,
+      "returned": 5
+    }
+  },
+  "memory": {
+    "summary": "上下文卸载：3 个长工具结果，全量 9267 tokens → 卸载后 591 tokens，节省 93.6%\nL0 原文全量落库：12 轮 / 100% 保留\nL1 原子事实溯源：100.0%（证据链可下钻到 L0 原文）\nL3 画像版本：3 版，回滚 OK\nrefs 卸载找回：100.0%（100% 可恢复）\n画像提炼信号率：50.0%（仅信号句触发 LLM 提炼，控制成本）\n增量提炼：首次全量预热 OK，后续仅提炼新消息（老消息重复输入 0 条）",
+    "raw": "{\n  \"purpose\": \"分层记忆（L0-L3）+ 上下文卸载 · 确定性离线评测（模拟数据，无 API 依赖）\",\n  \"token_estimation\": \"中文 1 字符≈1 token，ASCII 4 字符≈1 token（相对对比口径）\",\n  \"offload\": {\n    \"items\": [\n      {\n        \"char_len\": 2186,\n        \"full_tokens\": 2184,\n        \"offload_tokens\": 211,\n        \"offloaded_chars\": 1960\n      },\n      {\n        \"char_len\": 4218,\n        \"full_tokens\": 3226,\n        \"offload_tokens\": 169,\n        \"offloaded_chars\": 3992\n      },\n      {\n        \"char_len\": 3859,\n        \"full_tokens\": 3857,\n        \"offload_tokens\": 211,\n        \"offloaded_chars\": 3633\n      }\n    ],\n    \"full_tokens\": 9267,\n    \"offload_tokens\": 591,\n    \"saved_tokens\": 8676,\n    \"offloaded_chars\": 9585,\n    \"saved_pct\": 93.6\n  },\n  \"signal\": {\n    \"user_turns\": 6,\n    \"signal_hits\": 3,\n    \"rate_pct\": 50.0\n  },\n  \"layers\": {\n    \"raw\": {\n      \"turns\": 12,\n      \"assert_full\": true\n    },\n    \"facts\": {\n      \"added\": 4,\n      \"dup_skipped\": true,\n      \"traceable\": 4,\n      \"total\": 4,\n      \"traceback_pct\": 100.0,\n      \"evidence_sample\": \"我最近在准备考研，想找个晚上开放的自...\"\n    },\n    \"profile\": {\n      \"versions\": 3,\n      \"rollback_ok\": true\n    },\n    \"refs\": {\n      \"saved\": 3,\n      \"recovered\": 3,\n      \"recover_pct\": 100.0\n    },\n    \"extract_mark\": {\n      \"first_pass_full\": true,\n      \"increment_only\": true,\n      \"reused_msgs\": 0\n    },\n    \"governance\": {\n      \"deactivate_ok\": true,\n      \"prune\": {\n        \"raw\": 16,\n        \"refs\": 3,\n        \"facts\": 1,\n        \"profiles\": 2\n      },\n      \"active_facts_left\": 3\n    }\n  }\n}\n\n===== 摘要 =====\n上下文卸载：3 个长工具结果，全量 9267 tokens → 卸载后 591 tokens，节省 93.6%\nL0 原文全量落库：12 轮 / 100% 保留\nL1 原子事实溯源：100.0%（证据链可下钻到 L0 原文）\nL3 画像版本：3 版，回滚 OK\nrefs 卸载找回：100.0%（100% 可恢复）\n画像提炼信号率：50.0%（仅信号句触发 LLM 提炼，控制成本）\n增量提炼：首次全量预热 OK，后续仅提炼新消息（老消息重复输入 0 条）\n"
+  }
+}

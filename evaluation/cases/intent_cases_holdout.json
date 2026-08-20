@@ -1,0 +1,411 @@
+{
+  "version": "1.0",
+  "description": "intent_cases 留出集（20%，优化过程不可见）",
+  "cases": [
+    {
+      "id": "affairs-028",
+      "message": "学位证丢失了怎么补办？",
+      "expected": "affairs",
+      "source": "keywords:补办",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "followup-001",
+      "message": "那几点开门呢？",
+      "expected": "campus_life",
+      "source": "curated:追问",
+      "context": {
+        "history": [
+          {
+            "role": "user",
+            "content": "南校区食堂几点关门？"
+          },
+          {
+            "role": "assistant",
+            "content": "南校区食堂一般晚上七点关门。"
+          }
+        ]
+      },
+      "reviewed": false
+    },
+    {
+      "id": "campus-016",
+      "message": "校车在哪里坐？",
+      "expected": "campus_life",
+      "source": "knowledge:校车",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-comp-008",
+      "message": "报修一周了都没人处理，我要投诉",
+      "expected": "complaint",
+      "source": "keywords:投诉",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-001",
+      "message": "教务系统登录不上怎么办？",
+      "expected": "it_help",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "followup-005",
+      "message": "下午呢？",
+      "expected": "personal",
+      "source": "curated:追问",
+      "context": {
+        "history": [
+          {
+            "role": "user",
+            "content": "明天上午有课吗？"
+          },
+          {
+            "role": "assistant",
+            "content": "明天上午没有课。"
+          }
+        ]
+      },
+      "reviewed": false
+    },
+    {
+      "id": "campus-017",
+      "message": "南校区到北校区怎么走？",
+      "expected": "campus_life",
+      "source": "keywords:南校区",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "academic-002",
+      "message": "选课分几个阶段？",
+      "expected": "academic",
+      "source": "keywords:选课",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "affairs-013",
+      "message": "奖学金什么时候评定？",
+      "expected": "affairs",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-req-004",
+      "message": "把这个待办标记为完成",
+      "expected": "request",
+      "source": "keywords:标记",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "personal-003",
+      "message": "明天第几节在哪上课？",
+      "expected": "personal",
+      "source": "keywords:第几节",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-033",
+      "message": "我准备考研，想找个晚上开放的自习室",
+      "expected": "campus_life",
+      "source": "curated:场景化",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-021",
+      "message": "校园网MAC地址绑定怎么弄？",
+      "expected": "it_help",
+      "source": "keywords:配置",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "followup-009",
+      "message": "那补办呢？",
+      "expected": "affairs",
+      "source": "curated:追问",
+      "context": {
+        "history": [
+          {
+            "role": "user",
+            "content": "校园卡挂失后怎么办？"
+          },
+          {
+            "role": "assistant",
+            "content": "挂失后需要尽快补办新卡。"
+          }
+        ]
+      },
+      "reviewed": false
+    },
+    {
+      "id": "action-comp-005",
+      "message": "教务系统老是崩",
+      "expected": "complaint",
+      "source": "curated:投诉",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-027",
+      "message": "南校区快递站在哪？",
+      "expected": "campus_life",
+      "source": "keywords:快递",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "other-002",
+      "message": "你是AI吗？",
+      "expected": "other",
+      "source": "curated:闲聊",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "followup-018",
+      "message": "别的呢？",
+      "expected": "personal",
+      "source": "curated:追问",
+      "context": {
+        "history": [
+          {
+            "role": "user",
+            "content": "这周有什么安排？"
+          },
+          {
+            "role": "assistant",
+            "content": "这周主要有课表和待办。"
+          }
+        ]
+      },
+      "reviewed": false
+    },
+    {
+      "id": "action-req-008",
+      "message": "帮我记个事：下周二去校医院",
+      "expected": "request",
+      "source": "keywords:记个",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "personal-018",
+      "message": "我下午有空吗？",
+      "expected": "personal",
+      "source": "keywords:安排",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "affairs-001",
+      "message": "校园卡丢了怎么补办？",
+      "expected": "affairs",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-032",
+      "message": "学校健身房在哪？",
+      "expected": "campus_life",
+      "source": "keywords:运动场",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "academic-024",
+      "message": "转专业报名审核流程是怎样的？",
+      "expected": "academic",
+      "source": "knowledge:转专业方案",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "academic-008",
+      "message": "选课要注意先修课要求吗？",
+      "expected": "academic",
+      "source": "keywords:先修课",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "academic-009",
+      "message": "培养方案的学分要求是什么？",
+      "expected": "academic",
+      "source": "keywords:培养方案",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "it-022",
+      "message": "校园网账号密码是什么？",
+      "expected": "it_help",
+      "source": "keywords:账号",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-req-005",
+      "message": "删除那条买书的待办",
+      "expected": "request",
+      "source": "keywords:删除",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "academic-023",
+      "message": "转专业需要满足什么条件？",
+      "expected": "academic",
+      "source": "knowledge:转专业方案",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "personal-028",
+      "message": "我今天什么时候有空？",
+      "expected": "personal",
+      "source": "keywords:安排",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "followup-017",
+      "message": "密码呢？",
+      "expected": "it_help",
+      "source": "curated:追问",
+      "context": {
+        "history": [
+          {
+            "role": "user",
+            "content": "账号被锁定了怎么解锁？"
+          },
+          {
+            "role": "assistant",
+            "content": "账号锁定后需要重置密码解锁。"
+          }
+        ]
+      },
+      "reviewed": false
+    },
+    {
+      "id": "action-fb-004",
+      "message": "查课表真方便，好用",
+      "expected": "feedback",
+      "source": "curated:反馈",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-003",
+      "message": "学校有哪些食堂？",
+      "expected": "campus_life",
+      "source": "keywords:食堂",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "followup-007",
+      "message": "周末呢？",
+      "expected": "campus_life",
+      "source": "curated:追问",
+      "context": {
+        "history": [
+          {
+            "role": "user",
+            "content": "工作日校车几点发？"
+          },
+          {
+            "role": "assistant",
+            "content": "工作日校车早中晚都有班次。"
+          }
+        ]
+      },
+      "reviewed": false
+    },
+    {
+      "id": "campus-012",
+      "message": "从南校区到北校区下一班校车几点？",
+      "expected": "campus_life",
+      "source": "seed",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-034",
+      "message": "信远楼在哪个校区？",
+      "expected": "campus_life",
+      "source": "knowledge:楼宇",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "affairs-004",
+      "message": "补办校园卡要多少钱？",
+      "expected": "affairs",
+      "source": "keywords:补办",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "affairs-012",
+      "message": "成绩单证明怎么盖章？",
+      "expected": "affairs",
+      "source": "keywords:盖章",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "followup-008",
+      "message": "还要预约吗？",
+      "expected": "campus_life",
+      "source": "curated:追问",
+      "context": {
+        "history": [
+          {
+            "role": "user",
+            "content": "校车在哪坐？"
+          },
+          {
+            "role": "assistant",
+            "content": "校车在南校区乘车点乘坐。"
+          }
+        ]
+      },
+      "reviewed": false
+    },
+    {
+      "id": "academic-007",
+      "message": "怎么查看我的选课结果？",
+      "expected": "academic",
+      "source": "keywords:选课",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "campus-005",
+      "message": "食堂几点关门？",
+      "expected": "campus_life",
+      "source": "knowledge:食堂与餐饮",
+      "context": null,
+      "reviewed": false
+    },
+    {
+      "id": "action-comp-002",
+      "message": "校车等了半小时还没来",
+      "expected": "complaint",
+      "source": "keywords:等了很久",
+      "context": null,
+      "reviewed": false
+    }
+  ]
+}

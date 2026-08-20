@@ -1,0 +1,23 @@
+{
+  "version": "1.0",
+  "description": "困难检索集：相似主题文档竞争场景（校园卡办理/充值/异常/补办），用于验证 rerank 在候选存在竞争时的价值（计划 §4.1 情况2）。",
+  "generated_at": "2026-08-20",
+  "cases": [
+    {"query": "校园卡丢了怎么补办？", "relevant_titles": ["校园卡补办流程"]},
+    {"query": "校园卡丢失了需要怎么处理？", "relevant_titles": ["校园卡补办流程", "校园卡异常处理"]},
+    {"query": "补办校园卡要准备什么材料？", "relevant_titles": ["校园卡补办流程"]},
+    {"query": "补办校园卡要花多少钱？", "relevant_titles": ["校园卡补办流程"]},
+    {"query": "校园卡挂失后还能正常使用吗？", "relevant_titles": ["校园卡异常处理", "校园卡补办流程"]},
+    {"query": "校园卡被冻结了怎么办？", "relevant_titles": ["校园卡异常处理"]},
+    {"query": "校园卡刷不了是什么原因？", "relevant_titles": ["校园卡异常处理"]},
+    {"query": "校园卡损坏了能换新卡吗？", "relevant_titles": ["校园卡异常处理"]},
+    {"query": "校园卡怎么充值？", "relevant_titles": ["校园卡充值说明"]},
+    {"query": "校园卡在哪里圈存？", "relevant_titles": ["校园卡充值说明"]},
+    {"query": "校园卡能在线充值吗？", "relevant_titles": ["校园卡充值说明"]},
+    {"query": "充值的钱怎么领到卡里？", "relevant_titles": ["校园卡充值说明"]},
+    {"query": "新生怎么领校园卡？", "relevant_titles": ["校园卡办理流程"]},
+    {"query": "办校园卡需要带身份证吗？", "relevant_titles": ["校园卡办理流程"]},
+    {"query": "教职工怎么办理校园卡？", "relevant_titles": ["校园卡办理流程"]},
+    {"query": "校园卡在哪里办理？", "relevant_titles": ["校园卡办理流程"]}
+  ]
+}
