@@ -51,6 +51,15 @@ def _benchmark_strategy(request: Optional[Request]) -> str:
     return value
 
 
+def _is_benchmark_request(request: Optional[Request]) -> bool:
+    """基准请求必须显式开启，且携带策略头；用于隔离语义缓存。"""
+    return bool(
+        request is not None
+        and os.getenv("ECHOGUIDE_BENCHMARK_ENABLED", "0") == "1"
+        and request.headers.get("X-EchoGuide-Benchmark-Strategy")
+    )
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, response: Response, request: Request = None):
     """
@@ -76,10 +85,12 @@ async def chat(req: ChatRequest, response: Response, request: Request = None):
 
     conv_id = req.conv_id or str(uuid.uuid4())
     request_started = time.perf_counter()
+    benchmark_request = _is_benchmark_request(request)
+    benchmark_strategy = _benchmark_strategy(request)
 
     # 全链路 trace（X-Trace-Id 响应头，/traces/{id} 可查）
     trace = begin_trace("chat")
-    trace.tags.update({"user_id": req.user_id, "conv_id": conv_id})
+    trace.tags.update({"user_id": req.user_id, "conv_id": conv_id, "benchmark": benchmark_request})
     response.headers["X-Trace-Id"] = trace.trace_id
 
     try:
@@ -100,7 +111,7 @@ async def chat(req: ChatRequest, response: Response, request: Request = None):
         #    - 强上下文依赖（skip：追问/省略句/指代/个人数据）→ 直接 bypass。
         cached = await state._cache_get(
             state._semantic_cache, req.message, user_id=req.user_id, dependence=dependence
-        ) if state._semantic_cache else None
+        ) if state._semantic_cache and not benchmark_request else None
         if cached and cached.get("domain") == "personal":
             logger.warning("命中 personal 领域缓存，丢弃（防跨用户串扰）")
             cached = None
@@ -140,7 +151,7 @@ async def chat(req: ChatRequest, response: Response, request: Request = None):
             conv_id=conv_id,
             context=ctx_text,
             history=history,
-            benchmark_strategy=_benchmark_strategy(request),
+            benchmark_strategy=benchmark_strategy,
         )
 
         # 4. 执行（RAG 检索由 Agent 通过工具调用自主完成 —— Agentic RAG）
@@ -157,7 +168,7 @@ async def chat(req: ChatRequest, response: Response, request: Request = None):
 
         # 6. 异步更新用户画像 + 双层语义缓存（不阻塞响应）
         state._spawn_background(state._memory.update_profile(req.user_id, conv_id))
-        if state._semantic_cache:
+        if state._semantic_cache and not benchmark_request:
             # 写入层决策：与读取侧同一规则（叠加编排信号：personal/request
             # → skip 不落库），classify 决定 global/user/skip，cache_tier 只做映射
             from mcp.semantic_cache import cache_tier, classify_context_dependence

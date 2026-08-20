@@ -197,18 +197,27 @@ class EchoGuardMiddleware:
             rate_key = f"token:{hashlib.sha256(auth_header).hexdigest()[:32]}"
         else:
             rate_key = f"anon:{client}"
-        if not self._limiter.allow(rate_key, self.settings.user_rate_per_min):
-            await self._reject(
-                send, 429, "请求过于频繁，请稍后再试",
-                path=path, method=method, subject=rate_key, reason="rate_limit",
-            )
-            return
-        if not self._limiter.allow(f"ip:{client}", self.settings.ip_rate_per_min):
-            await self._reject(
-                send, 429, "请求过于频繁，请稍后再试",
-                path=path, method=method, subject=f"ip:{client}", reason="rate_limit",
-            )
-            return
+        # 本地基准显式开启时，仅豁免吞吐量限流；仍完整执行输入长度和注入
+        # 检测。否则 28+ 场景的串行测评会被演示环境的分钟级限流截断，导致
+        # "缓存/429" 而非真实编排结果。生产环境未开启开关时该头没有任何作用。
+        headers = dict(scope.get("headers", []))
+        benchmark_request = (
+            os.getenv("ECHOGUIDE_BENCHMARK_ENABLED", "0") == "1"
+            and bool(headers.get(b"x-echoguide-benchmark-strategy", b"").strip())
+        )
+        if not benchmark_request:
+            if not self._limiter.allow(rate_key, self.settings.user_rate_per_min):
+                await self._reject(
+                    send, 429, "请求过于频繁，请稍后再试",
+                    path=path, method=method, subject=rate_key, reason="rate_limit",
+                )
+                return
+            if not self._limiter.allow(f"ip:{client}", self.settings.ip_rate_per_min):
+                await self._reject(
+                    send, 429, "请求过于频繁，请稍后再试",
+                    path=path, method=method, subject=f"ip:{client}", reason="rate_limit",
+                )
+                return
 
         # 4. 注入检测 + 输入约束（递归扫描所有字符串字段，覆盖
         # /chat 的 message、/mcp 的 params、/knowledge 的 documents 等）

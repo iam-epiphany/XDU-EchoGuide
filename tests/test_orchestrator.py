@@ -195,6 +195,17 @@ def test_tasks_from_llm_valid_chain_with_action():
     assert "用户请求" in tasks[1].message
 
 
+def test_tasks_from_llm_normalizes_write_task_to_personal_domain():
+    """写工具只操作个人数据，LLM 不能把创建提醒放进知识领域。"""
+    orch = _orchestrator()
+    tasks = orch._planner._tasks_from_llm([
+        {"id": "t1", "domain": "affairs", "action": "request", "goal": "创建缴费提醒"},
+    ], _req("缴费后帮我创建提醒"))
+    assert tasks is not None
+    assert tasks[0].action == IntentAction.REQUEST
+    assert tasks[0].domain == IntentDomain.PERSONAL
+
+
 def test_tasks_from_llm_bad_chain_falls_back():
     """依赖链非法（成环 / 缺失）→ 整链作废 → None。"""
     orch = _orchestrator()
@@ -232,6 +243,30 @@ def test_llm_plan_invalid_falls_back_to_fast():
     plan = _run(orch._planner.plan(req, IntentDomain.IT_HELP, IntentAction.QUERY))
     assert plan.mode == "single"  # 回落 Fast Path 单任务
     assert plan.tasks[0].domain == IntentDomain.IT_HELP
+
+
+def test_llm_single_task_domain_or_action_drift_falls_back_to_fast():
+    """单任务规划不得覆盖已完成的顶层意图识别，避免执行到错误的工具域。"""
+    orch = _orchestrator()
+
+    async def fake_llm_plan(req):
+        return ExecutionPlan([
+            Task(
+                task_id="t0",
+                domain=IntentDomain.CAMPUS_LIFE,
+                action=IntentAction.QUERY,
+                goal="错误的领域",
+                message=req.message,
+            )
+        ])
+
+    orch._planner._llm_plan = fake_llm_plan  # type: ignore[method-assign]
+    req = _req("校园卡丢了，补办需要什么材料？")
+    plan = _run(orch._planner.plan(req, IntentDomain.AFFAIRS, IntentAction.QUERY))
+
+    assert plan.mode == "single"
+    assert plan.tasks[0].domain == IntentDomain.AFFAIRS
+    assert plan.tasks[0].action == IntentAction.QUERY
 
 
 # ── Profile 决策 ─────────────────────────────────────────────────────────────

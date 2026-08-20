@@ -41,7 +41,7 @@ from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from anthropic import AsyncAnthropic
 
-from core.domains import IntentAction
+from core.domains import IntentAction, IntentDomain
 from agents.persona import ACTION_GUIDANCE, DOMAIN_PERSONA, action_allows_tool
 from agents.profiles import ExecutionProfile, ProfileName
 from memory.layered_store import (
@@ -374,6 +374,25 @@ class BaseAgent:
             int(getattr(usage, "output_tokens", 0) or 0),
         )
 
+    @staticmethod
+    def _operational_preflight(req: Any) -> Optional[Tuple[str, Dict[str, str]]]:
+        """为具备确定性结构化数据源的领域补齐一次只读查询。
+
+        领域是意图识别的结构化输出；完整用户请求交由各工具的别名/诊断树处理，
+        因而新增事项或表达改写不需要在此维护词表。
+        """
+        domain = getattr(req, "domain", None)
+        message = str(getattr(req, "message", "") or "")
+        if domain == IntentDomain.AFFAIRS:
+            return "query_affairs_process", {"service": message}
+        if domain == IntentDomain.IT_HELP:
+            return "diagnose_it_issue", {"system": message, "symptom": message}
+        if domain == IntentDomain.CAMPUS_LIFE:
+            # auto 由工具自身在全部公开结构化数据源上执行只读汇总；不在 Agent
+            # 层按校车/图书馆等具体题型维护关键词，避免评测题驱动的过拟合。
+            return "query_campus_info", {"category": "auto", "keyword": message}
+        return None
+
     async def _call_llm(self, req: Any, on_event: Optional[Any] = None) -> tuple[str, List[str], List[Dict[str, Any]], int, int, int, int]:
         """
         工具调用循环：
@@ -414,14 +433,36 @@ class BaseAgent:
                 messages.append({"role": "user", "content": evidence_text})
                 messages.append({"role": "assistant", "content": "好的，我已查看检索资料，将基于资料回答。"})
 
+        # 检索证据覆盖的是政策/说明文本；对于带结构化公共数据的领域，在首轮
+        # 同步执行一个由领域决定的只读工具。参数始终是完整用户请求，由工具自身
+        # 的版本化别名/诊断规则解析，不在这里添加任何具体题目关键词。
+        preflight = self._operational_preflight(req)
+        if preflight is not None:
+            name, params = preflight
+            data, error = await self._execute_tool(name, params, req)
+            if error is None:
+                tools_used.append(name)
+                messages.append({
+                    "role": "user",
+                    "content": f"[系统已查询结构化工具 {name}]\n{self._clean_text(data)}",
+                })
+                messages.append({"role": "assistant", "content": "好的，我会结合结构化查询结果回答。"})
+            else:
+                detail = f"operational preflight {name} failed: {error}"
+                logger.warning(detail)
+                if getattr(req, "state", None) is not None:
+                    req.state.errors.append(detail)
+
         tools = self._build_tools(req)
         system = self._build_system_prompt(req)
         if tools:
             system = (
                 f"{system}\n\n[工具使用]\n"
                 "你可以调用可用工具来获取信息（如检索校园知识库、查询外部数据源）。"
-                "若上下文中已提供「系统已检索资料」，直接基于资料回答，"
-                "不要再重复调用检索工具；事实性句子后面用 [i] 标注对应资料编号。"
+                "若上下文中已提供「系统已检索资料」，不要重复调用检索工具；"
+                "但这只是一份补充证据，不能替代专门工具：涉及个人状态、数值计算、"
+                "结构化流程、故障诊断、地点/班次/开放时段或实时外部信息时，必须先调用"
+                "与任务匹配的非检索工具，再结合资料回答。事实性句子后面用 [i] 标注对应资料编号。"
                 "未提供资料且需要知识时先调用检索工具；一次调用无进展或检索不到时如实说明，"
                 "不要反复调用同一工具或编造内容。"
             )

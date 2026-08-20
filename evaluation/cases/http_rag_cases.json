@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "description": "真实 HTTP 检索探针。每个相关标题来自当前知识库，覆盖政策、校车、图书馆、校园卡和 IT 相邻主题；结果由 demo_benchmark.py 调用 /search 实测。",
+  "cases": [
+    {"id": "rag-transfer-process", "query": "西电转专业报名审核考核流程", "relevant_titles": ["2023级本科生转专业公开实施方案示例"]},
+    {"id": "rag-course-adjustment", "query": "退改选期间可以换课吗", "relevant_titles": ["选课指南"]},
+    {"id": "rag-shuttle-alias", "query": "怎么从新校区去老校区", "relevant_titles": ["校园穿梭车（校车）", "校车时刻表说明"]},
+    {"id": "rag-library-hours", "query": "南校区图书馆晚上开放到几点", "relevant_titles": ["图书馆", "图书馆开放时间说明"]},
+    {"id": "rag-card-reissue", "query": "校园卡丢失后补办需要什么", "relevant_titles": ["校园卡补办流程"]},
+    {"id": "rag-card-recharge", "query": "校园卡充值后如何把余额领到卡里", "relevant_titles": ["校园卡充值说明"]},
+    {"id": "rag-card-exception", "query": "校园卡冻结了怎么办", "relevant_titles": ["校园卡异常处理"]},
+    {"id": "rag-leave", "query": "请病假要走什么流程", "relevant_titles": ["请假流程说明"]},
+    {"id": "rag-certificate", "query": "在读证明在哪里开", "relevant_titles": ["在读证明办理说明"]},
+    {"id": "rag-network", "query": "校园网认证成功但网页打不开", "relevant_titles": ["校园网连接问题排查"]}
+  ]
+}

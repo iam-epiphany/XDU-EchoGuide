@@ -187,8 +187,11 @@ def build_markdown(summary: dict) -> str:
     if demo:
         adaptive = demo.get("adaptive", {})
         baseline = demo.get("always_llm_deep", {})
+        samples = adaptive.get("metric_sample_counts", {})
+        rag = demo.get("rag", {})
         lines += [
             f"> 实测时间：{demo.get('generated_at')} · Commit `{demo.get('commit')}` · 每场景重复 {demo.get('repeat')} 次",
+            f"> 版本化 HTTP 场景：{adaptive.get('scenario_count', adaptive.get('cases', 0))} 个；RAG 探针：{rag.get('cases', 0)} 条。细分指标后的 n 为独立场景数。",
             "",
             "| 指标 | 自适应链路 | Always-LLM + Always-Deep 基线 |",
             "|---|---:|---:|",
@@ -196,9 +199,10 @@ def build_markdown(summary: dict) -> str:
             f"| 领域准确率 | {_pct(adaptive.get('domain_accuracy'))} | {_pct(baseline.get('domain_accuracy'))} |",
             f"| LLM 分类调用率 | {_pct(adaptive.get('llm_classifier_rate'))} | {_pct(baseline.get('llm_classifier_rate'))} |",
             f"| 复杂度 Precision / Recall | {_fmt(adaptive.get('complexity_precision'), 4)} / {_fmt(adaptive.get('complexity_recall'), 4)} | — |",
-            f"| 专属工具成功率 | {_pct(adaptive.get('specialized_tool_success_rate'))} | {_pct(baseline.get('specialized_tool_success_rate'))} |",
-            f"| DAG 任务成功率 | {_pct(adaptive.get('dag_success_rate'))} | {_pct(baseline.get('dag_success_rate'))} |",
-            f"| 引用正确率 | {_pct(adaptive.get('citation_correctness'))} | {_pct(baseline.get('citation_correctness'))} |",
+            f"| 专属工具成功率（n={samples.get('specialized_tool', 0)}） | {_pct(adaptive.get('specialized_tool_success_rate'))} | {_pct(baseline.get('specialized_tool_success_rate'))} |",
+            f"| DAG 任务成功率（n={samples.get('dag', 0)}） | {_pct(adaptive.get('dag_success_rate'))} | {_pct(baseline.get('dag_success_rate'))} |",
+            f"| RAG HitRate@5 / Recall@5 / MRR（n={rag.get('cases', 0)}） | {_pct(rag.get('hit_rate_at_5'))} / {_pct(rag.get('recall_at_5'))} / {_fmt(rag.get('mrr'))} | — |",
+            f"| 引用正确率（n={samples.get('citation', 0)}） | {_pct(adaptive.get('citation_correctness'))} | {_pct(baseline.get('citation_correctness'))} |",
             f"| P50 延迟 | {adaptive.get('p50_latency_ms', 0):.0f} ms | {baseline.get('p50_latency_ms', 0):.0f} ms |",
             f"| P95 延迟 | {adaptive.get('p95_latency_ms', 0):.0f} ms | {baseline.get('p95_latency_ms', 0):.0f} ms |",
             "",

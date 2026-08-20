@@ -90,6 +90,7 @@ class Request:
     confidence: float = 0.0
     classifier_stage: str = "preset"
     profile: Optional[ProfileName] = None
+    profile_policy: str = ""                  # 复杂度/置信度策略原始选择（不含 Monitor 故障转移）
     complexity_mode: str = "single"          # 由 Planner 产出的 ExecutionPlan.mode 回填
     complexity_reason: str = "单领域请求"
     benchmark_strategy: str = "adaptive"
@@ -660,6 +661,9 @@ class AgentOrchestrator:
             classifier_stage=req.classifier_stage,
             confidence=req.confidence,
         )
+        # 策略选择与运行时实际执行模型不是同一事实：Monitor 可以因在线健康状态
+        # 把 Fast 临时升级为 Deep。保留原始选择，便于评测路由策略且不掩盖降级。
+        req.profile_policy = selected.value
         # Monitor 反馈：Fast 在线表现不健康 → 临时升级 Deep（有限反馈，不引入在线学习）
         if selected == ProfileName.FAST and self._fast_unhealthy:
             logger.warning("Fast profile 不健康（Monitor 反馈），临时升级 Deep")
@@ -678,6 +682,7 @@ class AgentOrchestrator:
         meta: Dict[str, Any] = {
             "mode": mode,
             "profile": req.profile.value if req.profile else "fast",
+            "profile_policy": req.profile_policy or (req.profile.value if req.profile else "fast"),
             "domain": req.domain.value if req.domain else None,
             "classifier_stage": req.classifier_stage,
             "complexity_reason": req.complexity_reason,

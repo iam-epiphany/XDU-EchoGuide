@@ -241,8 +241,30 @@ class TaskPlanner:
         if fast.mode != "single" or not self._needs_llm_planning(req):
             return self._apply_write_hints(fast)
         llm_plan = await self._llm_plan(req)
-        if llm_plan is not None:
+        # 单任务 LLM 规划只能细化目标，不能推翻已完成的顶层意图识别。
+        # 否则规划器偶发的领域漂移会让执行器选错领域人格和结构化工具，出现
+        # "顶层识别为校务、实际按校园生活执行" 这类不可观测的执行偏差。
+        # 多任务计划允许各子任务拥有不同领域，仍由其 DAG 结构表达协作关系。
+        if (
+            llm_plan is not None
+            and (
+                llm_plan.mode != "single"
+                or (
+                    llm_plan.tasks[0].domain == domain
+                    and llm_plan.tasks[0].action == action
+                )
+            )
+        ):
             return self._apply_write_hints(llm_plan)
+        if llm_plan is not None:
+            logger.warning(
+                "LLM 单任务规划与顶层意图不一致，回落 Fast Path: "
+                "root=%s/%s planned=%s/%s",
+                domain.value,
+                action.value,
+                llm_plan.tasks[0].domain.value,
+                llm_plan.tasks[0].action.value,
+            )
         return self._apply_write_hints(fast)  # LLM 不可用/输出非法：回落本地（行为不比现状差）
 
     # ── Fast Path（本地规则）────────────────────────────────────────────────
@@ -557,6 +579,11 @@ class TaskPlanner:
                 action = IntentAction(str(raw.get("action") or "query"))
             except ValueError:
                 return None
+            # 当前系统的写工具全部作用于用户个人数据（待办/日程）。LLM 若把
+            # "创建提醒"这类 REQUEST 归到校务等知识领域，运行期会因能力边界
+            # 拒绝写入；在规划边界统一归正到 PERSONAL，而不是按某个业务词补丁。
+            if action == IntentAction.REQUEST:
+                domain = IntentDomain.PERSONAL
             goal = str(raw.get("goal") or "").strip() or self._task_goal_fallback(domain)
             message = str(raw.get("message") or "").strip()
             if not message:

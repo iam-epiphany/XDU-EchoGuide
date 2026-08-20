@@ -305,6 +305,14 @@ def test_campus_tool_unknown_category(tmp_path):
     assert result["available"] is False
 
 
+def test_campus_tool_auto_returns_all_public_data_categories(tmp_path):
+    """auto 是工具级汇总，不依赖 Agent 为每个校园问法维护关键词。"""
+    ctx = _ctx(tmp_path)
+    result = asyncio.run(campus_info_handler({"category": "auto", "keyword": "任意校园问题"}, ctx))
+    assert result["available"] is True
+    assert {"shuttle", "library", "venues", "buildings"} <= set(result)
+
+
 # ── with_service 注入 ─────────────────────────────────────────────────────────
 
 def test_with_service_injects_deps(tmp_path):

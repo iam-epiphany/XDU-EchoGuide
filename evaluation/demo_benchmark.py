@@ -6,6 +6,7 @@ import functools
 import json
 import math
 import os
+import re
 import statistics
 import subprocess
 import time
@@ -18,6 +19,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES_PATH = ROOT / "evaluation" / "demo_cases.json"
+RAG_CASES_PATH = ROOT / "evaluation" / "cases" / "http_rag_cases.json"
 RESULT_PATH = ROOT / "assets" / "readme" / "demo-metrics.json"
 README_PATH = ROOT / "README.md"
 # 专用 demo 账号可覆盖；自定义用户名时脚本会跳过个人数据清空（防误删真实数据）
@@ -88,12 +90,21 @@ def prepare_demo_data(client: httpx.Client) -> None:
 def run_case(client: httpx.Client, case: Dict[str, Any], strategy: str) -> Dict[str, Any]:
     conv_id = f"demo-{case['id']}-{strategy}-{time.time_ns()}"
     headers = {"X-EchoGuide-Benchmark-Strategy": strategy}
-    if case.get("prelude"):
-        first = client.post("/chat", headers=headers, json={"message": case["prelude"], "conv_id": conv_id})
-        first.raise_for_status()
-    started = time.perf_counter()
-    response = client.post("/chat", headers=headers, json={"message": case["question"], "conv_id": conv_id})
-    elapsed_ms = (time.perf_counter() - started) * 1000
+    try:
+        if case.get("prelude"):
+            first = client.post("/chat", headers=headers, json={"message": case["prelude"], "conv_id": conv_id})
+            first.raise_for_status()
+        started = time.perf_counter()
+        response = client.post("/chat", headers=headers, json={"message": case["question"], "conv_id": conv_id})
+        elapsed_ms = (time.perf_counter() - started) * 1000
+    except httpx.HTTPError as ex:
+        # 超时/连接错误是实测结果的一部分；记录失败并继续下一条，不能让单个
+        # 外部依赖卡住整轮 Benchmark，也不能把该请求从通过率分母中悄悄移除。
+        return {
+            "case_id": case["id"], "strategy": strategy, "ok": False,
+            "status": 0, "error": f"{type(ex).__name__}: {ex}",
+            "latency_ms": (time.perf_counter() - started) * 1000 if "started" in locals() else 0.0,
+        }
     expected_status = int(case.get("expected_status", 200))
     body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
     if response.status_code != expected_status:
@@ -105,7 +116,10 @@ def run_case(client: httpx.Client, case: Dict[str, Any], strategy: str) -> Dict[
     tools = execution.get("tools") or []
     checks = {
         "domain": body.get("domain") == case.get("expected_domain"),
-        "profile": execution.get("profile") == case.get("expected_profile"),
+        # profile_policy 是复杂度策略的原始选择；profile 是实际模型，可被
+        # Monitor 在 Fast 健康异常时临时升级为 Deep。二者分别统计，避免把
+        # 故障转移误判成分类错误。
+        "profile": execution.get("profile_policy", execution.get("profile")) == case.get("expected_profile"),
         "mode": execution.get("mode") == case.get("expected_mode"),
         "tools": set(case.get("required_tools", [])).issubset(tools),
     }
@@ -125,6 +139,11 @@ def run_case(client: httpx.Client, case: Dict[str, Any], strategy: str) -> Dict[
         # 不硬编码在代码里，数据/模型措辞变化时只需改 demo_cases.json。
         answer = str(body.get("response", ""))
         checks["citation"] = bool(body.get("knowledge_used")) and case["expected_citation_domain"] in answer
+    elif case.get("expect_citation"):
+        # 对未绑定单一官网域名的知识问答，检查执行链确实使用了知识库且最终答案
+        # 留下编号引用；这样既覆盖多来源文档，也不把某个 URL 写进评测代码。
+        answer = str(body.get("response", ""))
+        checks["citation"] = bool(body.get("knowledge_used")) and bool(re.search(r"\[\d+\]", answer))
     return {
         "case_id": case["id"], "strategy": strategy, "ok": all(checks.values()),
         "status": response.status_code, "checks": checks, "domain": body.get("domain"),
@@ -152,24 +171,44 @@ def aggregate(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     expected_complex = [CASE_BY_ID[row["case_id"]].get("expected_mode") != "single" for row in rows]
     predicted_complex = [(row.get("execution") or {}).get("mode") != "single" for row in rows]
     gate_tp = sum(expected and predicted for expected, predicted in zip(expected_complex, predicted_complex))
-    specialized = [row for row in rows if row["case_id"] in {"weighted_score", "affairs_card", "it_network"}]
-    dag_rows = [row for row in rows if row["case_id"] == "dependent_dag"]
-    citation_rows = [row for row in rows if row["case_id"] == "academic_policy"]
+    def tagged(tag: str) -> List[Dict[str, Any]]:
+        return [row for row in rows if tag in CASE_BY_ID[row["case_id"]].get("tags", [])]
+
+    def rate(group: List[Dict[str, Any]], check: str) -> float | None:
+        if not group:
+            return None
+        return round(sum((row.get("checks") or {}).get(check, False) for row in group) / len(group), 4)
+
+    specialized = tagged("specialized_tool")
+    dag_rows = tagged("dag")
+    citation_rows = tagged("citation")
+    scenario_count = len({row["case_id"] for row in records})
     return {
         "cases": len(rows),
+        "scenario_count": scenario_count,
         # 通过率分母为全部记录（含期望非 200 的安全用例，如 Guard 403）：
         # 拦截成功同样算作通过，避免"只罚不奖"的不对称口径。
         "pass_rate": round(sum(bool(row.get("ok")) for row in records) / max(1, len(records)), 4),
         "domain_accuracy": round(sum((row.get("checks") or {}).get("domain", False) for row in rows) / max(1, len(rows)), 4),
         "domain_macro_f1": round(sum(f1_values) / max(1, len(f1_values)), 4),
         "profile_accuracy": round(sum((row.get("checks") or {}).get("profile", False) for row in rows) / max(1, len(rows)), 4),
+        "runtime_deep_fallback_rate": round(sum(
+            (row.get("execution") or {}).get("profile_policy") == "fast"
+            and (row.get("execution") or {}).get("profile") == "deep"
+            for row in rows
+        ) / max(1, len(rows)), 4),
         "complexity_accuracy": round(sum((row.get("checks") or {}).get("mode", False) for row in rows) / max(1, len(rows)), 4),
         "complexity_precision": round(gate_tp / max(1, sum(predicted_complex)), 4),
         "complexity_recall": round(gate_tp / max(1, sum(expected_complex)), 4),
         "tool_success_rate": round(sum((row.get("checks") or {}).get("tools", False) for row in rows) / max(1, len(rows)), 4),
-        "specialized_tool_success_rate": round(sum((row.get("checks") or {}).get("tools", False) for row in specialized) / max(1, len(specialized)), 4),
-        "dag_success_rate": round(sum((row.get("checks") or {}).get("dag", False) for row in dag_rows) / max(1, len(dag_rows)), 4),
-        "citation_correctness": round(sum((row.get("checks") or {}).get("citation", False) for row in citation_rows) / max(1, len(citation_rows)), 4),
+        "specialized_tool_success_rate": rate(specialized, "tools"),
+        "dag_success_rate": rate(dag_rows, "dag"),
+        "citation_correctness": rate(citation_rows, "citation"),
+        "metric_sample_counts": {
+            "specialized_tool": len({row["case_id"] for row in specialized}),
+            "dag": len({row["case_id"] for row in dag_rows}),
+            "citation": len({row["case_id"] for row in citation_rows}),
+        },
         "llm_classifier_rate": round(sum(exe.get("classifier_stage") == "llm" for exe in executions) / max(1, len(executions)), 4),
         "p50_latency_ms": round(statistics.median(latencies), 1) if latencies else 0.0,
         "p95_latency_ms": round(percentile(latencies, 0.95), 1),
@@ -179,51 +218,79 @@ def aggregate(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def measure_rag(client: httpx.Client) -> Dict[str, Any]:
-    """用公开政策标题作为唯一相关文档，实测 Top-5 HitRate/Recall/MRR。"""
-    query = "西电转专业报名审核考核流程"
-    response = client.post("/search", params={"query": query, "top_k": 5})
-    response.raise_for_status()
-    results = response.json().get("results") or []
-    ranks = [i for i, item in enumerate(results, 1) if "转专业公开实施方案" in str(item.get("title", ""))]
-    rank = ranks[0] if ranks else 0
+    """对版本化 HTTP RAG 探针逐条请求，避免单一查询的 100% 误导性。"""
+    payload = json.loads(RAG_CASES_PATH.read_text(encoding="utf-8"))
+    cases = payload["cases"]
+    records = []
+    for case in cases:
+        try:
+            response = client.post("/search", params={"query": case["query"], "top_k": 5})
+            response.raise_for_status()
+            results = response.json().get("results") or []
+        except httpx.HTTPError:
+            results = []
+        titles = [str(item.get("title", "")) for item in results]
+        expected = case["relevant_titles"]
+        matched_targets = {
+            target for target in expected
+            if any(target in title or title in target for title in titles)
+        }
+        rank = next(
+            (index for index, title in enumerate(titles, 1)
+             if any(target in title or title in target for target in expected)),
+            0,
+        )
+        records.append({
+            "case_id": case["id"],
+            "query": case["query"],
+            "expected_titles": expected,
+            "returned_titles": titles,
+            "rank": rank,
+            "hit": bool(rank),
+            "recall": round(len(matched_targets) / len(expected), 4),
+        })
     return {
-        "query": query,
-        "hit_rate_at_5": 1.0 if rank else 0.0,
-        "recall_at_5": 1.0 if rank else 0.0,
-        "mrr": round(1.0 / rank, 4) if rank else 0.0,
-        "rank": rank,
-        "returned": len(results),
+        "cases": len(records),
+        "hit_rate_at_5": round(sum(row["hit"] for row in records) / max(1, len(records)), 4),
+        "recall_at_5": round(sum(row["recall"] for row in records) / max(1, len(records)), 4),
+        "mrr": round(sum(1.0 / row["rank"] if row["rank"] else 0.0 for row in records) / max(1, len(records)), 4),
+        "records": records,
     }
 
 
 def markdown_block(report: Dict[str, Any]) -> str:
     adaptive = report["summary"]["adaptive"]
     baseline = report["summary"].get("always_llm_deep", {})
+    def percentage(value: Any) -> str:
+        return f"{float(value or 0):.1%}"
+    samples = adaptive.get("metric_sample_counts", {})
     return "\n".join([
         "<!-- BENCHMARK:START -->",
         f"> 实测时间：{report['generated_at']} · Commit `{report['commit']}` · 每场景重复 {report['repeat']} 次",
+        f"> 版本化 HTTP 场景：{adaptive.get('scenario_count', 0)} 个；RAG 探针：{report['rag'].get('cases', 0)} 条。指标后的 n 为独立场景数。",
         "",
         "| 指标 | 自适应链路 | Always-LLM + Always-Deep 基线 |",
         "|---|---:|---:|",
-        f"| 用例通过率 | {adaptive['pass_rate']:.1%} | {baseline.get('pass_rate', 0):.1%} |",
-        f"| 领域准确率 | {adaptive['domain_accuracy']:.1%} | {baseline.get('domain_accuracy', 0):.1%} |",
-        f"| 领域 Macro-F1 | {adaptive['domain_macro_f1']:.1%} | {baseline.get('domain_macro_f1', 0):.1%} |",
-        f"| LLM 分类调用率 | {adaptive['llm_classifier_rate']:.1%} | {baseline.get('llm_classifier_rate', 0):.1%} |",
-        f"| Profile 路由准确率 | {adaptive['profile_accuracy']:.1%} | {baseline.get('profile_accuracy', 0):.1%} |",
+        f"| 用例通过率 | {percentage(adaptive['pass_rate'])} | {percentage(baseline.get('pass_rate'))} |",
+        f"| 领域准确率 | {percentage(adaptive['domain_accuracy'])} | {percentage(baseline.get('domain_accuracy'))} |",
+        f"| 领域 Macro-F1 | {percentage(adaptive['domain_macro_f1'])} | {percentage(baseline.get('domain_macro_f1'))} |",
+        f"| LLM 分类调用率 | {percentage(adaptive['llm_classifier_rate'])} | {percentage(baseline.get('llm_classifier_rate'))} |",
+        f"| Profile 路由准确率 | {percentage(adaptive['profile_accuracy'])} | {percentage(baseline.get('profile_accuracy'))} |",
+        f"| Fast→Deep 运行时降级率 | {percentage(adaptive['runtime_deep_fallback_rate'])} | {percentage(baseline.get('runtime_deep_fallback_rate'))} |",
         f"| 复杂度 Precision / Recall | {adaptive['complexity_precision']:.1%} / {adaptive['complexity_recall']:.1%} | {baseline.get('complexity_precision', 0):.1%} / {baseline.get('complexity_recall', 0):.1%} |",
-        f"| 专属工具成功率 | {adaptive['specialized_tool_success_rate']:.1%} | {baseline.get('specialized_tool_success_rate', 0):.1%} |",
-        f"| DAG 任务成功率 | {adaptive['dag_success_rate']:.1%} | {baseline.get('dag_success_rate', 0):.1%} |",
-        f"| RAG HitRate@5 / Recall@5 / MRR | {report['rag']['hit_rate_at_5']:.1%} / {report['rag']['recall_at_5']:.1%} / {report['rag']['mrr']:.2f} | — |",
-        f"| 引用正确率 | {adaptive['citation_correctness']:.1%} | {baseline.get('citation_correctness', 0):.1%} |",
+        f"| 专属工具成功率（n={samples.get('specialized_tool', 0)}） | {percentage(adaptive['specialized_tool_success_rate'])} | {percentage(baseline.get('specialized_tool_success_rate'))} |",
+        f"| DAG 任务成功率（n={samples.get('dag', 0)}） | {percentage(adaptive['dag_success_rate'])} | {percentage(baseline.get('dag_success_rate'))} |",
+        f"| RAG HitRate@5 / Recall@5 / MRR（n={report['rag'].get('cases', 0)}） | {report['rag']['hit_rate_at_5']:.1%} / {report['rag']['recall_at_5']:.1%} / {report['rag']['mrr']:.2f} | — |",
+        f"| 引用正确率（n={samples.get('citation', 0)}） | {percentage(adaptive['citation_correctness'])} | {percentage(baseline.get('citation_correctness'))} |",
         f"| P50 延迟 | {adaptive['p50_latency_ms']:.0f} ms | {baseline.get('p50_latency_ms', 0):.0f} ms |",
         f"| P95 延迟 | {adaptive['p95_latency_ms']:.0f} ms | {baseline.get('p95_latency_ms', 0):.0f} ms |",
         f"| 输入 / 输出 Token | {adaptive['input_tokens']} / {adaptive['output_tokens']} | {baseline.get('input_tokens', 0)} / {baseline.get('output_tokens', 0)} |",
         "",
         "> 消融：专属工具成功率 {adaptive_specialized}，改用通用 RAG 后为 {generic_specialized}；依赖 DAG 成功率 {adaptive_dag}，强制单 Agent 后为 {single_dag}。".format(
-            adaptive_specialized=f"{adaptive['specialized_tool_success_rate']:.1%}",
-            generic_specialized=f"{report['summary'].get('generic_rag', {}).get('specialized_tool_success_rate', 0):.1%}",
-            adaptive_dag=f"{adaptive['dag_success_rate']:.1%}",
-            single_dag=f"{report['summary'].get('single_agent', {}).get('dag_success_rate', 0):.1%}",
+            adaptive_specialized=percentage(adaptive['specialized_tool_success_rate']),
+            generic_specialized=percentage(report['summary'].get('generic_rag', {}).get('specialized_tool_success_rate')),
+            adaptive_dag=percentage(adaptive['dag_success_rate']),
+            single_dag=percentage(report['summary'].get('single_agent', {}).get('dag_success_rate')),
         ),
         "<!-- BENCHMARK:END -->",
     ])
@@ -243,6 +310,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--repeat", type=int, default=3)
+    parser.add_argument("--timeout", type=float, default=120.0,
+                        help="单个 HTTP 请求超时秒数；超时会记为失败并继续后续用例。")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--update-readme", action="store_true")
     args = parser.parse_args()
@@ -250,19 +319,35 @@ def main() -> int:
     cases = load_cases()
     records: List[Dict[str, Any]] = []
     rag_metrics: Dict[str, Any] = {}
-    with httpx.Client(base_url=args.base_url, timeout=120.0, follow_redirects=True) as client:
+    request_timeout = max(10.0, min(args.timeout, 180.0))
+    with httpx.Client(base_url=args.base_url, timeout=request_timeout, follow_redirects=True) as client:
         login_or_register(client)
         prepare_demo_data(client)
         strategies = ("adaptive",) if args.smoke else ("adaptive", "always_llm_deep")
         for strategy in strategies:
-            for _ in range(repeat):
+            for run_index in range(repeat):
                 for case in cases:
-                    records.append(run_case(client, case, strategy))
+                    record = run_case(client, case, strategy)
+                    records.append(record)
+                    print(
+                        f"[{strategy} {run_index + 1}/{repeat}] {case['id']}: "
+                        f"{'PASS' if record.get('ok') else 'FAIL'} "
+                        f"(HTTP {record.get('status')})",
+                        flush=True,
+                    )
         if not args.smoke:
-            for strategy, ids in (("generic_rag", {"weighted_score", "affairs_card", "it_network"}), ("single_agent", {"dependent_dag"})):
+            # 消融集按 tags 选择，新增场景后不需要回头修改硬编码 ID 集合。
+            for strategy, tag in (("generic_rag", "specialized_tool"), ("single_agent", "dag")):
                 for case in cases:
-                    if case["id"] in ids:
-                        records.append(run_case(client, case, strategy))
+                    if tag in case.get("tags", []):
+                        record = run_case(client, case, strategy)
+                        records.append(record)
+                        print(
+                            f"[{strategy}] {case['id']}: "
+                            f"{'PASS' if record.get('ok') else 'FAIL'} "
+                            f"(HTTP {record.get('status')})",
+                            flush=True,
+                        )
         rag_metrics = measure_rag(client)
 
     report = {

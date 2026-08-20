@@ -387,7 +387,7 @@ def _build_runtime() -> None:
     _tool_manager.register(Tool(
         name="query_campus_info",
         description=(
-            "查询西电校园公开信息（结构化数据）。category: shuttle（校车，返回下一班及剩余分钟，"
+            "查询西电校园公开信息（结构化数据）。category: auto（汇总全部公开数据）/ shuttle（校车，返回下一班及剩余分钟，"
             "keyword 可传方向如'南→北'）/ buildings（楼宇，keyword 传楼名如'信远楼'）/ "
             "venues（运动场馆，keyword 可传场馆名）/ library（图书馆开放时间）。数据暂未录入时返回提示"
         ),
@@ -395,7 +395,7 @@ def _build_runtime() -> None:
         schema={
             "type": "object",
             "properties": {
-                "category": {"type": "string", "description": "shuttle/buildings/venues/library"},
+                "category": {"type": "string", "description": "auto/shuttle/buildings/venues/library"},
                 "keyword": {"type": "string", "description": "校车方向或楼名/场馆名"},
             },
             "required": ["category"],

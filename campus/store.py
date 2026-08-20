@@ -212,6 +212,23 @@ class CampusInfoStore:
         """统一查询入口（MCP 工具 / REST API 共用）。"""
         category = (category or "").strip().lower()
         keyword = (keyword or "").strip() or None
+        if category == "auto":
+            # 无法由确定性数据自身判断用户意图时，统一返回各公开数据源的
+            # 最新只读快照。调用方可以结合原始问题选择相关字段；这里不维护
+            # 面向单个问法的关键词路由，新增公开数据类别也只需扩展本分支。
+            shuttle = self.next_shuttle()
+            shuttle["data_freshness"] = self._freshness("shuttle_schedule.json")
+            library = self.library_info()
+            library["data_freshness"] = self._freshness("library.json")
+            return {
+                "available": True,
+                "query": keyword,
+                "shuttle": shuttle,
+                "library": library,
+                "venues": self.list_venues(),
+                "buildings": self.find_building(""),
+                "message": "已读取校园公开结构化信息；若数据源未覆盖该事项，请以官方公告为准。",
+            }
         if category in ("shuttle", "校车", "班车"):
             result = self.next_shuttle(keyword)
             result["data_freshness"] = self._freshness("shuttle_schedule.json")

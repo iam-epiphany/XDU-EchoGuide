@@ -19,7 +19,8 @@ async def campus_info_handler(params: Dict[str, Any], context: Any) -> Dict[str,
     查询校园公开信息。
 
     params:
-      category: "shuttle"（校车）/ "buildings"（楼宇）/ "venues"（场馆）/ "library"（图书馆）
+      category: "auto"（汇总公开数据）/ "shuttle"（校车）/ "buildings"（楼宇）/
+                "venues"（场馆）/ "library"（图书馆）
       keyword:  查询关键词：
                 - shuttle：方向，如"南→北"（不传则返回两个方向下一班）
                 - buildings：楼名/别名，如"信远楼"（不传返回全部）
@@ -30,6 +31,6 @@ async def campus_info_handler(params: Dict[str, Any], context: Any) -> Dict[str,
     if store is None:
         return {"available": False, "message": "校园信息数据源不可用，请稍后重试。"}
 
-    category = str(params.get("category", "")).strip() or "shuttle"
+    category = str(params.get("category", "")).strip() or "auto"
     keyword = str(params.get("keyword", "")).strip() or None
     return store.search(category, keyword)

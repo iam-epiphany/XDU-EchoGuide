@@ -332,7 +332,7 @@ class _FakeOrchestrator:
         )
 
 
-def _run_chat(user_id, context_text="", message="南校区食堂几点关门？"):
+def _run_chat(user_id, context_text="", message="南校区食堂几点关门？", request=None):
     """打桩跑一遍 /chat 非流式主链路，返回缓存调用记录。"""
     import api.main as m
     import api.state as state
@@ -344,7 +344,7 @@ def _run_chat(user_id, context_text="", message="南校区食堂几点关门？"
     state._semantic_cache = cache
 
     req = m.ChatRequest(message=message, user_id=user_id)
-    resp = asyncio.run(m.chat(req, Response()))
+    resp = asyncio.run(m.chat(req, Response(), request=request))
     assert resp.response  # 正常返回
     return cache
 
@@ -353,6 +353,20 @@ def test_chat_fact_query_reads_global():
     """无记忆上下文的事实查询 → dependence="global"（只读 Global）。"""
     cache = _run_chat("u1")
     assert cache.gets and cache.gets[0] == ("南校区食堂几点关门？", "u1", "global")
+
+
+def test_explicit_benchmark_request_bypasses_semantic_cache(monkeypatch):
+    """基准必须跑编排链，不能把历史语义缓存当成模型/工具结果。"""
+    from starlette.requests import Request
+
+    monkeypatch.setenv("ECHOGUIDE_BENCHMARK_ENABLED", "1")
+    request = Request({
+        "type": "http", "method": "POST", "path": "/chat",
+        "headers": [(b"x-echoguide-benchmark-strategy", b"adaptive")],
+    })
+    cache = _run_chat("u1", request=request)
+    assert cache.gets == []
+    assert cache.puts == []
 
 
 def test_chat_fact_query_with_history_still_reads_global():
