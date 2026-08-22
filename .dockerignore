@@ -8,6 +8,18 @@ __pycache__
 .pytest_cache
 .mypy_cache
 .ruff_cache
+.zcode
+
+# 根目录临时运行、评测、审阅与个人材料
+.tmp-*
+docs/
+_docs_gen/
+学习文档/
+个人文档/
+简历/
+resumes/
+/*.pdf
+/dist/
 
 .DS_Store
 *.log
