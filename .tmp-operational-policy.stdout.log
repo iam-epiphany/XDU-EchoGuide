@@ -1,0 +1,1 @@
+{'ok': False, 'checks': {'domain': True, 'profile': True, 'mode': True, 'tools': False}, 'tools': ['knowledge_search']}

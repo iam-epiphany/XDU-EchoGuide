@@ -159,22 +159,24 @@ def test_followup_shaped_skips_embedding_goes_llm():
     assert result.classifier_stage == "llm"
 
 
-def test_full_question_keeps_embedding():
-    """完整问句（无强信号 + pattern 有主题词）→ 放行 Embedding 免费路径。"""
+def test_weak_pattern_goes_directly_to_llm_without_embedding():
+    """Pattern 未达高置信时直接 LLM，Embedding 不能单独决定路由。"""
     rec = _recognizer()
 
-    async def fake_embedding(message):
-        return {"domain": IntentDomain.ACADEMIC, "action": IntentAction.OTHER,
-                "confidence": 0.90, "margin": 0.2}
+    async def embedding_should_not_run(message):
+        raise AssertionError("弱 Pattern 不应先走 Embedding")
 
-    async def llm_should_not_run(message, history, complexity_only=False, state=None):
-        raise AssertionError("完整问句不应跳过 Embedding")
+    async def fake_llm(message, history, state=None):
+        return {"domain": IntentDomain.ACADEMIC, "action": IntentAction.QUERY,
+                "domain_confidence": 0.90, "confidence": 0.90, "reasoning": "mock"}
 
-    rec._embedding_recognize = fake_embedding
-    rec._llm_recognize = llm_should_not_run
-    result = asyncio.run(rec.recognize("绩点怎么算的？"))  # pattern 弱命中 academic@0.55
+    rec._embedding_recognize = embedding_should_not_run
+    rec._llm_recognize = fake_llm
+    trace = {}
+    result = asyncio.run(rec.recognize("绩点怎么算的？", _trace=trace))  # pattern 弱命中 academic@0.55
     assert result.domain == IntentDomain.ACADEMIC
-    assert result.classifier_stage == "embedding"
+    assert result.classifier_stage == "llm"
+    assert trace["embedding_candidates"] == []
 
 
 # ── 缓存指纹（同句追问不同上下文不复用）──────────────────────────────────────
@@ -227,7 +229,7 @@ def test_cache_stats_before_any_request():
 # ── 级联分类 ─────────────────────────────────────────────────────────────────
 
 def test_cascade_pattern_skips_llm():
-    """Pattern 高置信 + Embedding 双确认（同域）→ 免费直返，不调用 LLM。"""
+    """Pattern 高置信 + Embedding 同域、高分且 margin 达标 → 免费直返。"""
     rec = _recognizer()
 
     async def fake_embedding(message):
@@ -294,14 +296,13 @@ def test_pattern_subthreshold_embedding_arbitrates_to_llm():
     assert "低于阈值" in result.reasoning  # 仲裁原因可追溯：同向但分数不足
 
 
-def test_embedding_weak_pattern_conflict_arbitrates_to_llm():
-    """Embedding 高置信命中但与 pattern 弱信号方向矛盾 → LLM 仲裁。"""
+def test_pattern_embedding_low_margin_arbitrates_to_llm():
+    """双确认必须包含 margin：同向且高分但候选太接近时仍走 LLM。"""
     rec = _recognizer()
 
     async def fake_embedding(message):
-        # pattern 弱命中 academic（"考试"），Embedding 却判 personal（"考试安排"）
-        return {"domain": IntentDomain.PERSONAL, "action": IntentAction.OTHER,
-                "confidence": 0.90, "margin": 0.3}
+        return {"domain": IntentDomain.ACADEMIC, "action": IntentAction.OTHER,
+                "confidence": 0.90, "margin": 0.05}
 
     async def fake_llm(message, history, state=None):
         return {"domain": IntentDomain.ACADEMIC, "action": IntentAction.QUERY,
@@ -309,25 +310,27 @@ def test_embedding_weak_pattern_conflict_arbitrates_to_llm():
 
     rec._embedding_recognize = fake_embedding
     rec._llm_recognize = fake_llm
-    result = asyncio.run(rec.recognize("什么时候考试？"))  # pattern 弱命中 academic@0.55
+    result = asyncio.run(rec.recognize("选课成绩学分有什么规定？"))
     assert result.domain == IntentDomain.ACADEMIC
     assert result.classifier_stage == "llm"
+    assert "margin" in result.reasoning
 
 
-def test_cascade_embedding_skips_llm():
+def test_embedding_without_high_pattern_goes_directly_to_llm():
     rec = _recognizer()
 
-    async def fake_embedding(message):
-        return {"domain": IntentDomain.IT_HELP, "action": IntentAction.OTHER, "confidence": 0.87, "margin": 0.2}
+    async def embedding_should_not_run(message):
+        raise AssertionError("Embedding 不应作为独立免费路径")
 
-    async def llm_should_not_run(message, history, complexity_only=False, state=None):
-        raise AssertionError("高置信度 Embedding 不应调用 LLM")
+    async def fake_llm(message, history, state=None):
+        return {"domain": IntentDomain.IT_HELP, "action": IntentAction.QUERY,
+                "domain_confidence": 0.87, "confidence": 0.87, "reasoning": "mock"}
 
-    rec._embedding_recognize = fake_embedding
-    rec._llm_recognize = llm_should_not_run
+    rec._embedding_recognize = embedding_should_not_run
+    rec._llm_recognize = fake_llm
     result = asyncio.run(rec.recognize("网络服务出现一个模糊问题"))
     assert result.domain == IntentDomain.IT_HELP
-    assert result.classifier_stage == "embedding"
+    assert result.classifier_stage == "llm"
 
 
 def test_force_llm_bypasses_cascade():

@@ -1,0 +1,102 @@
+{
+  "adaptive": {
+    "cases": 22,
+    "scenario_count": 28,
+    "pass_rate": 0.2143,
+    "domain_accuracy": 0.8636,
+    "domain_macro_f1": 0.8872,
+    "profile_accuracy": 0.3182,
+    "complexity_accuracy": 0.3636,
+    "complexity_precision": 0.0714,
+    "complexity_recall": 1.0,
+    "tool_success_rate": 0.3182,
+    "specialized_tool_success_rate": 0.2222,
+    "dag_success_rate": null,
+    "citation_correctness": 1.0,
+    "metric_sample_counts": {
+      "specialized_tool": 9,
+      "dag": 0,
+      "citation": 2
+    },
+    "llm_classifier_rate": 0.2727,
+    "p50_latency_ms": 27.8,
+    "p95_latency_ms": 7463.8,
+    "input_tokens": 9226,
+    "output_tokens": 1997
+  },
+  "always_llm_deep": {
+    "cases": 0,
+    "scenario_count": 0,
+    "pass_rate": 0.0,
+    "domain_accuracy": 0.0,
+    "domain_macro_f1": 0.0,
+    "profile_accuracy": 0.0,
+    "complexity_accuracy": 0.0,
+    "complexity_precision": 0.0,
+    "complexity_recall": 0.0,
+    "tool_success_rate": 0.0,
+    "specialized_tool_success_rate": null,
+    "dag_success_rate": null,
+    "citation_correctness": null,
+    "metric_sample_counts": {
+      "specialized_tool": 0,
+      "dag": 0,
+      "citation": 0
+    },
+    "llm_classifier_rate": 0.0,
+    "p50_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "generic_rag": {
+    "cases": 0,
+    "scenario_count": 0,
+    "pass_rate": 0.0,
+    "domain_accuracy": 0.0,
+    "domain_macro_f1": 0.0,
+    "profile_accuracy": 0.0,
+    "complexity_accuracy": 0.0,
+    "complexity_precision": 0.0,
+    "complexity_recall": 0.0,
+    "tool_success_rate": 0.0,
+    "specialized_tool_success_rate": null,
+    "dag_success_rate": null,
+    "citation_correctness": null,
+    "metric_sample_counts": {
+      "specialized_tool": 0,
+      "dag": 0,
+      "citation": 0
+    },
+    "llm_classifier_rate": 0.0,
+    "p50_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "single_agent": {
+    "cases": 0,
+    "scenario_count": 0,
+    "pass_rate": 0.0,
+    "domain_accuracy": 0.0,
+    "domain_macro_f1": 0.0,
+    "profile_accuracy": 0.0,
+    "complexity_accuracy": 0.0,
+    "complexity_precision": 0.0,
+    "complexity_recall": 0.0,
+    "tool_success_rate": 0.0,
+    "specialized_tool_success_rate": null,
+    "dag_success_rate": null,
+    "citation_correctness": null,
+    "metric_sample_counts": {
+      "specialized_tool": 0,
+      "dag": 0,
+      "citation": 0
+    },
+    "llm_classifier_rate": 0.0,
+    "p50_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "input_tokens": 0,
+    "output_tokens": 0
+  }
+}

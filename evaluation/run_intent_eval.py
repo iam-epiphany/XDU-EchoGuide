@@ -3,14 +3,14 @@
 用法：
   python evaluation/run_intent_eval.py                         # full 级联（需 API key）
   python evaluation/run_intent_eval.py --ablation pattern_only # 仅关键词（离线）
-  python evaluation/run_intent_eval.py --ablation no_llm       # 关键词+Embedding（离线）
+  python evaluation/run_intent_eval.py --ablation no_llm       # Pattern+Embedding 双确认（离线）
   python evaluation/run_intent_eval.py --held-out 0.2          # 留出 20% 未见用例
   python evaluation/run_intent_eval.py --out data/eval/intent_xxx.json
 
 消融档位（core/intent_recognizer.py ablation_mode）：
   - pattern_only：关键词匹配（最朴素基线）
-  - no_llm：级联免费路径（关键词 + Embedding），无 LLM 仲裁
-  - full：完整级联（追问→LLM / 双确认直返 / Embedding 直返 / LLM 仲裁）
+  - no_llm：仅 Pattern + Embedding 双确认的免费路径，无 LLM 仲裁
+  - full：完整级联（追问→LLM / 双确认直返 / 其余→LLM 仲裁）
 
 统计口径：
   - expected 为 IntentDomain 值（academic/campus_life/affairs/it_help/personal/other）

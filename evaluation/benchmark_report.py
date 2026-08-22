@@ -119,7 +119,7 @@ def build_markdown(summary: dict) -> str:
     ]
     mode_names = {
         "pattern_only": "仅关键词（Pattern）",
-        "no_llm": "Pattern + Embedding（无 LLM）",
+        "no_llm": "Pattern + Embedding 双确认（无 LLM）",
         "full": "完整级联（+ LLM 仲裁）",
     }
     for mode in ("pattern_only", "no_llm", "full"):

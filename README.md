@@ -48,9 +48,8 @@ Agent Runtime / Harness
 flowchart LR
     U["学生请求"] --> G["级联意图识别<br/>domain × action"]
     G -->|"① 追问形态（指代承接 / 省略句）"| L["LLM 分类 / 仲裁（携带最近对话）"]
-    G -->|"② Pattern ≥ 0.90 且 Embedding 同向 ≥ 0.80（双确认）"| P["Planner<br/>ExecutionPlan / Task DAG"]
-    G -->|"③ Embedding ≥ 0.80 且 margin ≥ 0.10"| P
-    G -->|"④ 未命中 / 低置信度 / 双确认失败 / 方向分歧"| L
+    G -->|"② Pattern ≥ 0.90 + Embedding 同向 ≥ 0.80 且 margin ≥ 0.10（双确认）"| P["Planner<br/>ExecutionPlan / Task DAG"]
+    G -->|"③ Pattern 未达高置信 / 双确认失败 / 方向分歧"| L
     L --> P
     P -->|"1 个 task（single）"| F["V4 Flash · Fast"]
     P -->|"RAG / 低置信度"| D["V4 Pro · Deep"]
@@ -131,9 +130,8 @@ python evaluation/memory_benchmark.py
 级联识别策略（宁多付成本、不静默误判）：
 
 1. **追问形态** → 直接 LLM（带最近对话，由 LLM 结合上下文裁决）；
-2. **Pattern 高置信 + Embedding 双确认**（关键词 ≥0.90 且 Embedding 同向 ≥0.80）→ 免费直返；
-3. **Embedding 达到阈值且与第二候选有足够间隔**（≥0.80 / margin ≥0.10）→ 返回；
-4. **未命中或低置信度** → LLM（携带最近对话）。
+2. **Pattern 高置信 + Embedding 双确认**（关键词 ≥0.90、Embedding 同向 ≥0.80 且 margin ≥0.10）→ 免费直返；
+3. **Pattern 未达高置信、双确认失败或方向分歧** → 直接 LLM（携带最近对话；Embedding 不单独直返）。
 
 领域关键词唯一来源在 `core/domains.py`（单一事实来源，意图识别器、编排器、API 层共用，消除旧版三处重复维护的漂移问题）。
 

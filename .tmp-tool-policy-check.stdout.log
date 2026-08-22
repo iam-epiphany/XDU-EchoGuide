@@ -1,0 +1,4 @@
+{'id': 'affairs_card', 'ok': False, 'status': 200, 'checks': {'domain': True, 'profile': True, 'mode': True, 'tools': False}, 'tools': ['knowledge_search']}
+{'id': 'it_network', 'ok': False, 'status': 200, 'checks': {'domain': True, 'profile': False, 'mode': True, 'tools': False}, 'tools': ['knowledge_search']}
+{'id': 'campus_shuttle', 'ok': False, 'status': 200, 'checks': {'domain': True, 'profile': True, 'mode': True, 'tools': False}, 'tools': ['knowledge_search']}
+{'id': 'dependent_dag', 'ok': False, 'status': 0, 'checks': None, 'tools': None}

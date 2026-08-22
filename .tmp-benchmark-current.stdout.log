@@ -1,0 +1,130 @@
+[adaptive 1/1] personal_schedule: PASS (HTTP 200)
+[adaptive 1/1] personal_todo: PASS (HTTP 200)
+[adaptive 1/1] personal_schedule_tomorrow: FAIL (HTTP 200)
+[adaptive 1/1] personal_add_todo: PASS (HTTP 200)
+[adaptive 1/1] weighted_score: PASS (HTTP 200)
+[adaptive 1/1] weighted_score_variant: PASS (HTTP 200)
+[adaptive 1/1] academic_policy: PASS (HTTP 200)
+[adaptive 1/1] academic_course_policy: PASS (HTTP 200)
+[adaptive 1/1] affairs_card: PASS (HTTP 200)
+[adaptive 1/1] affairs_card_fee: PASS (HTTP 200)
+[adaptive 1/1] affairs_leave: FAIL (HTTP 200)
+[adaptive 1/1] affairs_certificate: PASS (HTTP 200)
+[adaptive 1/1] it_network: FAIL (HTTP 200)
+[adaptive 1/1] it_login: PASS (HTTP 200)
+[adaptive 1/1] it_vpn: PASS (HTTP 200)
+[adaptive 1/1] campus_shuttle: PASS (HTTP 200)
+[adaptive 1/1] campus_shuttle_last: PASS (HTTP 200)
+[adaptive 1/1] campus_library: PASS (HTTP 200)
+[adaptive 1/1] campus_dining: PASS (HTTP 200)
+[adaptive 1/1] campus_weather: PASS (HTTP 200)
+[adaptive 1/1] library_followup: PASS (HTTP 200)
+[adaptive 1/1] parallel_request: PASS (HTTP 200)
+[adaptive 1/1] parallel_network_shuttle: PASS (HTTP 200)
+[adaptive 1/1] dependent_dag: PASS (HTTP 200)
+[adaptive 1/1] dependent_dag_paraphrase: PASS (HTTP 200)
+[adaptive 1/1] dependent_llm_paraphrase: FAIL (HTTP 200)
+[adaptive 1/1] guard_injection: PASS (HTTP 403)
+[adaptive 1/1] guard_injection_en: PASS (HTTP 403)
+{
+  "adaptive": {
+    "cases": 26,
+    "scenario_count": 28,
+    "pass_rate": 0.8571,
+    "domain_accuracy": 0.9615,
+    "domain_macro_f1": 0.9624,
+    "profile_accuracy": 0.8846,
+    "complexity_accuracy": 1.0,
+    "complexity_precision": 1.0,
+    "complexity_recall": 1.0,
+    "tool_success_rate": 0.9615,
+    "specialized_tool_success_rate": 1.0,
+    "dag_success_rate": 1.0,
+    "citation_correctness": 1.0,
+    "metric_sample_counts": {
+      "specialized_tool": 9,
+      "dag": 3,
+      "citation": 2
+    },
+    "llm_classifier_rate": 0.8462,
+    "p50_latency_ms": 8161.7,
+    "p95_latency_ms": 71858.1,
+    "input_tokens": 232438,
+    "output_tokens": 30311
+  },
+  "always_llm_deep": {
+    "cases": 0,
+    "scenario_count": 0,
+    "pass_rate": 0.0,
+    "domain_accuracy": 0.0,
+    "domain_macro_f1": 0.0,
+    "profile_accuracy": 0.0,
+    "complexity_accuracy": 0.0,
+    "complexity_precision": 0.0,
+    "complexity_recall": 0.0,
+    "tool_success_rate": 0.0,
+    "specialized_tool_success_rate": null,
+    "dag_success_rate": null,
+    "citation_correctness": null,
+    "metric_sample_counts": {
+      "specialized_tool": 0,
+      "dag": 0,
+      "citation": 0
+    },
+    "llm_classifier_rate": 0.0,
+    "p50_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "generic_rag": {
+    "cases": 0,
+    "scenario_count": 0,
+    "pass_rate": 0.0,
+    "domain_accuracy": 0.0,
+    "domain_macro_f1": 0.0,
+    "profile_accuracy": 0.0,
+    "complexity_accuracy": 0.0,
+    "complexity_precision": 0.0,
+    "complexity_recall": 0.0,
+    "tool_success_rate": 0.0,
+    "specialized_tool_success_rate": null,
+    "dag_success_rate": null,
+    "citation_correctness": null,
+    "metric_sample_counts": {
+      "specialized_tool": 0,
+      "dag": 0,
+      "citation": 0
+    },
+    "llm_classifier_rate": 0.0,
+    "p50_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "single_agent": {
+    "cases": 0,
+    "scenario_count": 0,
+    "pass_rate": 0.0,
+    "domain_accuracy": 0.0,
+    "domain_macro_f1": 0.0,
+    "profile_accuracy": 0.0,
+    "complexity_accuracy": 0.0,
+    "complexity_precision": 0.0,
+    "complexity_recall": 0.0,
+    "tool_success_rate": 0.0,
+    "specialized_tool_success_rate": null,
+    "dag_success_rate": null,
+    "citation_correctness": null,
+    "metric_sample_counts": {
+      "specialized_tool": 0,
+      "dag": 0,
+      "citation": 0
+    },
+    "llm_classifier_rate": 0.0,
+    "p50_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "input_tokens": 0,
+    "output_tokens": 0
+  }
+}
